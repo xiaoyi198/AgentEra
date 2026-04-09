@@ -35,6 +35,11 @@ Thumbs.db
 
 # Debug logs
 debug_llm.jsonl
+测试.md
 
 # saves
 saves/*
+
+# skill
+.agents/
+
