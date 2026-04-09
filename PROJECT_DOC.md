@@ -37,6 +37,7 @@
 │   ├── llm_client.py                # 【核心】OpenAI 兼容 LLM 客户端
 │   ├── agent_runtime.py             # 【核心】Agent 基类 + 官员/机构 Agent 实现
 │   ├── action_agent.py              # 【核心】行动模拟 Agent（读写世界状态）
+│   ├── tianji_agent.py              # 【调试】天玑 AI（全工具注入，独立于主循环）
 │   ├── router.py                    # 【核心】世界运行法则（LLM 驱动的路由中枢）
 │   ├── orchestrator.py              # 【核心】主循环，驱动整个模拟
 │   ├── court_graph.py               # 朝廷层级图（官员/地点查询）
@@ -56,6 +57,7 @@
 │       ├── official_template.txt    # 官员通用 prompt 模板
 │       ├── router.txt               # Router system prompt
 │       ├── action_agent.txt         # 行动 Agent prompt 模板
+│       ├── tianji.txt               # 天玑 AI system prompt（可选，缺失时使用内置默认）
 │       └── {官员ID}.txt             # 某官员的专用 prompt（可选，优先级最高）
 │
 ├── frontend/                        # 前端（React + Vite）
@@ -65,11 +67,13 @@
 │   │   ├── GodView.jsx              # 【上帝视角】调试界面（时间线/Router日志/定时器/Prompt编辑）
 │   │   ├── WorldStateView.jsx       # 【世界状态】实体/库存 CRUD + 地点坐标编辑
 │   │   ├── AgentEditor.jsx          # 【Agent 编辑器】可视化编辑官员/地点/人格
+│   │   ├── TianJiView.jsx           # 【天玑 AI】全工具调试对话页
 │   │   ├── editor-main.jsx          # 编辑器独立入口
+│   │   ├── tianji-main.jsx          # 天玑独立入口
 │   │   ├── hooks/useWebSocket.js    # WebSocket hook
 │   │   ├── App.css / editor.css     # 样式
 │   │   └── index.css                # 全局样式
-│   ├── index.html / editor.html
+│   ├── index.html / editor.html / tianji.html
 │   ├── package.json
 │   └── vite.config.js
 │
@@ -190,7 +194,34 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.5 action_agent.py — 行动模拟 Agent
+### 3.5 tianji_agent.py — 天玑调试 Agent
+
+**作用**：全工具注入的调试对话 Agent，独立于 Orchestrator 主循环。开发者可在不启动模拟的情况下，通过对话直接读写世界状态、触发行动推演、模拟路由指令。
+
+**设计特点**：
+- 维护独立的 `messages` 对话历史，不进入 Orchestrator 的任何路径
+- `_dispatch_table: dict[str, Callable]` 字典分发，新增工具只需注册一行
+- 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见，不污染主模拟 chain_id
+- 执行规则：`create_timer` / `execute_policy` / `request_action` 真实执行写库；`wake_agent` / `relay_decree` / `mark_withheld` / `submit_action` dry-run 仅记录
+
+**工具集**（三类）：
+| 类别 | 工具 |
+|------|------|
+| 世界状态 | `query_entity` / `query_inventory` / `update_entity_status` / `update_inventory` / `complete_action` |
+| Router | `wake_agent` / `create_timer` / `execute_policy` / `relay_decree` / `mark_withheld` |
+| Agent FC | `submit_action` / `request_action` |
+
+**重要方法**：
+| 方法 | 作用 |
+|------|------|
+| `reset()` | 清空对话历史，重新注入 system prompt |
+| `chat(user_text)` | 主入口，async generator，yield SSE 事件（assistant_delta / tool_call / tool_result / done） |
+| `_dispatch_tool(name, args)` | 统一分发，执行后写 chain_log |
+| `_build_tools()` | 合并三套工具集返回 schema 列表 |
+
+---
+
+### 3.6 action_agent.py — 行动模拟 Agent
 
 **作用**：模拟官员行动的过程和结果，读写世界状态数据库。
 
@@ -211,7 +242,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.6 court_graph.py — 朝廷层级图
+### 3.7 court_graph.py — 朝廷层级图
 
 **作用**：基于 SQLite 存储官员和地理数据，提供层级查询和距离计算。
 
@@ -240,7 +271,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.7 timer_system.py — 定时器系统
+### 3.8 timer_system.py — 定时器系统
 
 **作用**：管理延迟定时器，模拟古代公文传递的时间延迟。
 
@@ -257,7 +288,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.8 chain_log.py — 调用链日志
+### 3.9 chain_log.py — 调用链日志
 
 **作用**：记录所有消息传递过程，支持上帝视角查看信息失真。
 
@@ -272,7 +303,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.9 world_state.py — 世界状态数据库
+### 3.10 world_state.py — 世界状态数据库
 
 **作用**：存储世界中所有实体的动态状态和库存。
 
@@ -300,7 +331,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.10 llm_client.py — LLM 客户端
+### 3.11 llm_client.py — LLM 客户端
 
 **作用**：封装 OpenAI 兼容的 LLM API 调用。
 
@@ -311,10 +342,11 @@ BaseAgent (抽象基类)
 - Token 用量统计
 - 调试日志（debug_llm.jsonl）
 - 配置热更新
+- `chat_stream()` — 流式调用，yield delta/tool_call_delta/done 事件；出错自动退化为非流式
 
 ---
 
-### 3.11 daming_court/loader.py — DLC 数据加载器
+### 3.12 daming_court/loader.py — DLC 数据加载器
 
 **作用**：从 JSON 配置加载官员、地点、事件、世界状态，创建 Agent 实例。
 
@@ -422,7 +454,16 @@ chain_abc123:
 | `/api/time-scale` | GET/POST | 时间倍率（需暂停） |
 | `/api/prompts` | GET/POST | Prompt 文件读写 |
 
-### 5.4 调试接口
+### 5.4 天玑 AI
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/tianji/chat` | POST | SSE 流式对话（body: `{message: str}`） |
+| `/api/tianji/reset` | POST | 清空对话历史，重新注入 system prompt |
+| `/api/tianji/history` | GET | 返回当前 messages（供刷新后恢复展示） |
+| `/api/tianji/tools` | GET | 返回工具 schema，按类别分组 |
+
+### 5.5 调试接口
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -433,7 +474,7 @@ chain_abc123:
 | `/api/token-usage` | GET | Token 用量统计 |
 | `/api/in-transit` | GET | 在途公文列表 |
 
-### 5.5 世界状态
+### 5.6 世界状态
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -445,7 +486,7 @@ chain_abc123:
 | `/api/world-state/{entity_id}/inventory` | PUT | 新增或覆盖单条库存 |
 | `/api/world-state/{entity_id}/inventory/{category}/{item_name}` | DELETE | 删除单条库存 |
 
-### 5.6 Agent 编辑器
+### 5.7 Agent 编辑器
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -460,7 +501,7 @@ chain_abc123:
 | `/api/editor/personas/{name}` | PUT/DELETE | 新增/删除人格种子 |
 | `/api/editor/personas/batch` | POST | 批量保存人格种子 |
 
-### 5.7 WebSocket
+### 5.8 WebSocket
 
 | 端点 | 说明 |
 |------|------|
@@ -588,10 +629,16 @@ CREATE TABLE inventory (
 
 ### 8.2 GodView.jsx — 上帝视角
 
-- 时间线（chain log 增量拉取，自动滚动）
+- 时间线（chain log 增量拉取，自动滚动，天玑 AI 调用以青色高亮）
 - Router 决策日志
 - 定时器状态（pending + fired）
 - Prompt 编辑器（可热更新 router prompt）
+
+### 8.5 TianJiView.jsx — 天玑 AI（`/tianji.html`）
+
+- 三栏布局：工具列表面板 | 对话区 | 世界状态快照
+- 工具调用块折叠展示，可展开查看完整参数与返回值
+- 会话重置按钮；顶部快捷导航到皇帝视角和 Agent 编辑器
 
 ### 8.3 AgentEditor.jsx — Agent 编辑器
 
@@ -692,6 +739,9 @@ CREATE TABLE inventory (
 - **随机事件生成器**：周期性自动触发蝗灾/旱灾/民变
 - **时间模拟器**：科学计算过程耗时
 - **集成测试**：mock LLM 的端到端链路测试
+
+### v1 已完成（本期新增）
+- **天玑 AI**：全工具注入的调试对话 Agent，独立前端页面，SSE 流式回复，工具调用可视化
 
 ### v1.1+
 - **Agent 孵化机制**：机构 Agent 在某些条件下自动孵化出独立的官员 Agent

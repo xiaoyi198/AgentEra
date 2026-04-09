@@ -12,6 +12,7 @@
 │   ├── llm_client.py            # LLM 客户端：OpenAI-compatible，自动重试，token 计数，debug 日志
 │   ├── agent_runtime.py         # Agent 基类 + OfficialAgent + InstitutionAgent（含记忆序列化）
 │   ├── action_agent.py          # 行动模拟 Agent：读写世界状态，多轮 FC 循环
+│   ├── tianji_agent.py          # 天玑调试 Agent：注入全工具集，独立于 Orchestrator
 │   ├── world_state.py           # 世界状态数据库：实体（地点/人物/机构）+ 库存管理
 │   ├── router.py                # 世界运行法则（Router）：LLM 驱动，解析意图→路由→定时器
 │   └── orchestrator.py          # 主循环：实时推进，后台 Agent 调用，暂停/存档/读档
@@ -27,6 +28,7 @@
 │       ├── official_template.txt # 官员通用 prompt 模板
 │       ├── router.txt           # Router system prompt
 │       ├── action_agent.txt     # 行动 Agent prompt 模板
+│       ├── tianji.txt           # 天玑 AI system prompt（可选，缺失时使用内置默认）
 │       └── {官员ID}.txt         # 某官员的专用 prompt（可选，优先级最高）
 │
 ├── config/
@@ -40,8 +42,10 @@
 │       ├── GodView.jsx          # 上帝视角调试界面（时间线/Router日志/定时器/Prompt编辑）
 │       ├── WorldStateView.jsx   # 世界状态管理（实体/库存 CRUD + 地点坐标编辑）
 │       ├── AgentEditor.jsx      # Agent 编辑器（官员/地点/人格的可视化编辑）
+│       ├── TianJiView.jsx       # 天玑 AI 调试页（三栏：工具列表/对话/世界状态）
 │       ├── editor-main.jsx      # 编辑器独立入口（editor.html）
-│       ├── App.css / editor.css # 样式
+│       ├── tianji-main.jsx      # 天玑独立入口（tianji.html）
+│       ├── App.css / editor.css / tianji.css  # 样式
 │       ├── index.css            # 全局样式
 │       └── hooks/useWebSocket.js
 │
@@ -69,7 +73,7 @@
 - 定时器延迟固定用游戏时间：`delay_days * 86400`，改速度自然影响触发快慢
 - 修改速度只能在暂停时进行
 
-### 6 类 Agent
+### 7 类 Agent
 
 | 类型 | 实现状态 | 说明 |
 |------|----------|------|
@@ -77,6 +81,7 @@
 | 机构 Agent (InstitutionAgent) | ✅ 已实现 | 模拟机构除一把手外所有员工，同样支持双 FC |
 | 世界运行法则 (RouterAgent) | ✅ 已实现 | LLM 驱动中枢，解析意图→路由→定时器 |
 | 行动模拟 Agent (ActionAgent) | ✅ 已实现 | 模拟行动过程和结果，读写世界状态，多轮 FC 循环 |
+| 天玑调试 Agent (TianJiAgent) | ✅ 已实现 | 注入全工具集，与用户对话，独立于 Orchestrator 主循环 |
 | 随机事件生成器 | ❌ 未实现 | 周期性生成灾害/民变 |
 | 时间模拟器 | ❌ 未实现 | 科学计算过程耗时 |
 
@@ -212,8 +217,28 @@ Agent 运行时：
     - 调用 LLM → 解析工具调用 → 执行工具 → 追加结果到 messages
     - 直到调用 complete_action 或达到最大轮次
   - 返回 ActionResult
-- `_dispatch_tool()` — 执行单次 FC 工具调用，操作 WorldState
+- `_dispatch_tool()` — 执行单次 FC 工具调用，内部调用模块级共享函数
 - `_build_system_prompt()` — 加载 prompt 模板，填充字段并注入世界上下文
+- `execute_world_state_tool(world_state, name, args, changes_made)` — **模块级共享函数**，供 ActionAgent 和 TianJiAgent 共用，避免重复实现
+- `WORLD_STATE_TOOLS` — 模块级工具列表常量（不含 complete_action），供 TianJiAgent 复用
+
+### multiagent_framework/tianji_agent.py
+
+天玑调试 Agent（独立于 Orchestrator）：
+- `TianJiAgent` — 与用户对话，注入全部工具集（世界状态 + Router + Agent 双 FC）
+- 构造参数：`llm_client / world_state / court_graph / timer_system / chain_log / action_agent / router`
+- `reset()` — 清空 messages，重新注入 system prompt
+- `chat(user_text)` — 主入口，async generator，yield SSE 事件流：
+  - `{"type": "assistant_delta", "text": "..."}` — LLM 文本
+  - `{"type": "tool_call", "name": "...", "arguments": {...}}` — 工具调用
+  - `{"type": "tool_result", "name": "...", "result": {...}}` — 工具结果
+  - `{"type": "tool_round_start", "round": N}` — 工具轮开始
+  - `{"type": "done"}` — 本轮结束
+- `_dispatch_table: dict[str, Callable]` — 工具分发器（可插拔），新增工具只需在 `__init__` 注册
+- 工具执行规则：
+  - `create_timer` / `execute_policy` / `request_action` → **真实执行**，写库
+  - 其余 Router 工具 / `submit_action` / `wake_agent` → **dry-run**，仅记录日志
+- 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见且不污染主模拟
 
 ### multiagent_framework/world_state.py
 
@@ -266,7 +291,8 @@ Agent 运行时：
 
 LLM 客户端：
 - `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent）
-- `LLMClient.chat()` — 异步调用，自动重试，并发控制
+- `LLMClient.chat()` — 异步调用（非流式），自动重试，并发控制
+- `LLMClient.chat_stream()` — 流式调用，yield delta/tool_call_delta/done 事件；出错时退化为非流式
 - `TokenCounter` — 累计 token 统计
 - `update_config()` — 热更新配置
 
@@ -284,7 +310,7 @@ DLC 数据加载：
 ### main.py
 
 FastAPI 后端入口：
-- `init_orchestrator(load_from_save=False)` — 从配置文件初始化 Orchestrator（LLM/时间/CourtGraph/Timer/ChainLog/Router/ActionAgent/WorldState）
+- `init_orchestrator(load_from_save=False)` — 从配置文件初始化 Orchestrator + TianJiAgent（LLM/时间/CourtGraph/Timer/ChainLog/Router/ActionAgent/WorldState）
 - `_load_dlc(orch, court, llm, world_state, load_from_save=False)` — 加载大明朝廷 DLC
   - `load_from_save=False`：完整加载（世界状态 JSON + 官员/地点坐标/Agent + 初始事件注入）
   - `load_from_save=True`：读档模式，跳过世界状态 JSON 覆盖和初始事件注入，仅重建 Agent 对象（记忆由 `load_state()` 恢复）
@@ -311,9 +337,18 @@ FastAPI 后端入口：
 
 上帝视角调试界面：
 - 时间线（chain log 增量拉取，自动滚动）
+- 天玑 AI 的工具调用日志也会出现在此时间线（`tianji` 类型，青色高亮）
 - Router 决策日志
 - 定时器状态（pending + fired）
 - Prompt 编辑器（official_template / router / personas，支持热更新）
+
+### frontend/src/TianJiView.jsx
+
+天玑 AI 调试页面（`tianji.html`）：
+- 三栏布局：工具列表（按类别折叠）| 对话区 | 世界状态面板
+- SSE 解析：工具调用块按 gid 幂等合并，防止 React 批量更新导致重复渲染
+- `assistantText` 快照机制：在调用 `setDisplayMsgs` 前捕获当前值，防止 React 批量 updater 闭包读到已重置的空字符串
+- 工具调用块可折叠，展示参数和返回值
 
 ### frontend/src/AgentEditor.jsx
 
@@ -560,6 +595,15 @@ python -m pytest tests/unit/ -v
 | `/api/world-state/{entity_id}/status` | POST | 手动修改实体 current_status（调试用） |
 | `/api/world-state/{entity_id}/inventory` | PUT | 新增或覆盖单条库存 |
 | `/api/world-state/{entity_id}/inventory/{category}/{item_name}` | DELETE | 删除单条库存 |
+
+### 天玑 AI
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/tianji/chat` | POST | SSE 流式对话（body: `{message: str}`） |
+| `/api/tianji/reset` | POST | 清空对话历史，重新注入 system prompt |
+| `/api/tianji/history` | GET | 返回当前 messages（供刷新后恢复展示） |
+| `/api/tianji/tools` | GET | 返回工具 schema，按类别分组（前端工具面板用） |
 
 ### Agent 编辑器
 

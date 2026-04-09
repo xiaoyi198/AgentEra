@@ -35,3 +35,6 @@ Thumbs.db
 
 # Debug logs
 debug_llm.jsonl
+
+# saves
+saves/*

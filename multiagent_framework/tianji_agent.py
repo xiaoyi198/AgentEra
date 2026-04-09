@@ -150,6 +150,9 @@ class TianJiAgent:
             if response.tool_calls:
                 had_tools = True
                 empty_retries = 0
+                # 如果 LLM 同时返回了文字 + tool_calls，先把文字发给前端
+                if response.content and response.content.strip():
+                    yield {"type": "assistant_delta", "text": response.content}
                 yield {"type": "tool_round_start", "round": _round}
 
                 self.messages.append({
@@ -218,7 +221,9 @@ class TianJiAgent:
                 })
                 continue
 
-            # 没执行过工具或重试次数用完 → 放弃
+            # 没执行过工具或重试次数用完 → 兜底通知前端
+            yield {"type": "assistant_delta", "text": "（模型未返回文字回复，请重新提问）"}
+            self.messages.append({"role": "assistant", "content": "（模型未返回文字回复）"})
             break
 
         yield {"type": "done"}

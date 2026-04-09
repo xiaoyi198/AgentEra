@@ -221,12 +221,13 @@ export default function TianJiView() {
 
       const flushAssistant = () => {
         if (assistantText.trim()) {
+          const snapshot = assistantText  // 快照：防止 React 批量更新时闭包读到已重置的值
           setDisplayMsgs(prev => {
             const last = prev[prev.length - 1]
             if (last && last.role === 'assistant') {
-              return [...prev.slice(0, -1), { role: 'assistant', content: assistantText }]
+              return [...prev.slice(0, -1), { role: 'assistant', content: snapshot }]
             }
-            return [...prev, { role: 'assistant', content: assistantText }]
+            return [...prev, { role: 'assistant', content: snapshot }]
           })
           assistantText = ''
         }
@@ -276,12 +277,13 @@ export default function TianJiView() {
             if (!event.text) continue  // 跳过空文本
             finalizeToolGroup()
             assistantText += event.text
+            const snapshot = assistantText  // 快照：防止 React 批量更新时闭包读到被重置的值
             setDisplayMsgs(prev => {
               const last = prev[prev.length - 1]
               if (last && last.role === 'assistant') {
-                return [...prev.slice(0, -1), { role: 'assistant', content: assistantText }]
+                return [...prev.slice(0, -1), { role: 'assistant', content: snapshot }]
               }
-              return [...prev, { role: 'assistant', content: assistantText }]
+              return [...prev, { role: 'assistant', content: snapshot }]
             })
           } else if (event.type === 'tool_round_start') {
             flushAssistant()

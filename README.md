@@ -10,11 +10,12 @@
 - 用 LLM 驱动官员决策、Router 路由和行动推演
 - 用定时器系统模拟公文在不同层级和地理距离间的传递延迟
 - 记录整条调用链，支持查看信息失真、压下不报、循环链路
-- 提供 4 个前端视图
+- 提供 5 个前端视图
   - 皇帝视角：看奏折、批复、下旨、查看在途公文
   - 上帝视角：看 Agent 时间线、Router 决策、定时器、Prompt 热编辑
   - Agent 编辑器：改官员树、地点、人格种子、Prompt 预览、导入导出
   - 世界状态：实体/库存 CRUD、地点坐标编辑
+  - **天玑 AI**：全工具注入的调试对话助手，不进入主模拟循环，直接读写世界状态、触发行动、模拟路由指令
 - 支持存档 / 读档
 - 支持运行时修改模型配置与时间倍率
 
@@ -61,6 +62,7 @@
 - `multiagent_framework/agent_runtime.py`：官员 Agent / 机构 Agent 运行时
 - `multiagent_framework/router.py`：LLM 驱动的世界路由中枢
 - `multiagent_framework/action_agent.py`：行动模拟 Agent，读写世界状态
+- `multiagent_framework/tianji_agent.py`：天玑调试 Agent，注入全工具集，独立于主模拟
 - `multiagent_framework/timer_system.py`：定时器堆 + SQLite 持久化
 - `multiagent_framework/chain_log.py`：调用链日志与上帝视角数据来源
 - `multiagent_framework/court_graph.py`：朝廷层级与地点结构
@@ -190,6 +192,7 @@ sh start.sh
 
 - 主界面：`http://localhost:3000`
 - Agent 编辑器：`http://localhost:3000/editor.html`
+- **天玑 AI**：`http://localhost:3000/tianji.html`
 - 后端 API：`http://localhost:8000`
 - 世界状态在主界面的 Tab 中切换
 
@@ -245,6 +248,14 @@ sh start.sh
 - 新建/编辑/删除实体（级联删库存）
 - 库存行内编辑（点击单元格直接修改）
 - 地点坐标编辑（X/Y，平面直角坐标系）
+
+### 天玑 AI（`/tianji.html`）
+
+- 全工具注入的调试对话助手，独立于 Orchestrator 主循环
+- 三栏布局：可用工具列表 | 对话区 | 世界状态快照
+- 工具调用以折叠块形式展示，可展开查看参数与结果
+- 支持 SSE 流式回复
+- 会话日志以 `tianji_` 前缀写入 chain_log，上帝视角可见
 
 ## 配置文件说明
 
@@ -322,6 +333,13 @@ LLM 接口配置：
 ### 玩家动作
 
 - `POST /api/player-action`
+
+### 天玑 AI
+
+- `POST /api/tianji/chat` — SSE 流式对话
+- `POST /api/tianji/reset` — 清空会话
+- `GET /api/tianji/history` — 获取消息历史
+- `GET /api/tianji/tools` — 获取工具分类 schema（前端侧边栏用）
 
 ### 调试与观察
 
