@@ -1,0 +1,56 @@
+{
+  "entities": [
+    {
+      "id": "吴县",
+      "type": "location",
+      "name": "吴县",
+      "description": "苏州府下辖县，鱼米之乡，人口稠密。知县张三（贪腐）治下。",
+      "current_status": "遭遇蝗灾，灾情严重，百姓困苦"
+    },
+    {
+      "id": "昆山",
+      "type": "location",
+      "name": "昆山县",
+      "description": "苏州府下辖县，地处水乡，商贸发达。知县李四（忠直）治下。",
+      "current_status": "遭遇蝗灾，知县如实上报"
+    },
+    {
+      "id": "苏州",
+      "type": "location",
+      "name": "苏州府",
+      "description": "江南重镇，辖吴县、昆山等多县。知府况钟（忠直）主政。",
+      "current_status": "正常运转，关注下辖各县蝗灾"
+    },
+    {
+      "id": "南京",
+      "type": "location",
+      "name": "南京",
+      "description": "大明陪都，江南布政使司驻地。",
+      "current_status": "正常"
+    },
+    {
+      "id": "北京",
+      "type": "location",
+      "name": "北京",
+      "description": "大明京师，皇帝及中央六部驻地。",
+      "current_status": "正常"
+    },
+    {
+      "id": "户部",
+      "type": "institution",
+      "name": "户部",
+      "description": "掌管全国土地、赋税、户口、漕粮、财政。六部之一。",
+      "current_status": "正常运转"
+    }
+  ],
+  "inventory": [
+    {"entity_id": "吴县", "category": "粮食", "item_name": "稻米", "quantity": 8000, "description": "石"},
+    {"entity_id": "吴县", "category": "货币", "item_name": "白银", "quantity": 3000, "description": "两"},
+    {"entity_id": "昆山", "category": "粮食", "item_name": "稻米", "quantity": 6000, "description": "石"},
+    {"entity_id": "昆山", "category": "货币", "item_name": "白银", "quantity": 2000, "description": "两"},
+    {"entity_id": "苏州", "category": "粮食", "item_name": "稻米", "quantity": 25000, "description": "石"},
+    {"entity_id": "苏州", "category": "货币", "item_name": "白银", "quantity": 15000, "description": "两"},
+    {"entity_id": "户部", "category": "货币", "item_name": "国库白银", "quantity": 500000, "description": "两"},
+    {"entity_id": "户部", "category": "粮食", "item_name": "漕粮", "quantity": 200000, "description": "石"}
+  ]
+}

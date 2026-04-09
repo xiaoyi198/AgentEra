@@ -1,0 +1,15 @@
+{
+  "initial_events": [
+    {
+      "event_id": "evt_001",
+      "event_type": "locust_plague",
+      "severity": 8,
+      "target_agents": ["吴县知县_张三", "昆山知县_李四"],
+      "initial_payload": {
+        "area": "苏州府",
+        "coverage": 0.6,
+        "description": "苏州府下辖吴县、昆山县爆发严重蝗灾，田地被毁六成，百姓流离失所。"
+      }
+    }
+  ]
+}

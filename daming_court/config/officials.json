@@ -1,0 +1,140 @@
+{
+  "officials": [
+    {
+      "id": "皇帝",
+      "name": "皇帝",
+      "rank": 15,
+      "location_id": "京城",
+      "role": "player",
+      "agent_type": "official",
+      "superior_id": null,
+      "personality_seed": "忠直"
+    },
+    {
+      "id": "司礼监太监_王振",
+      "name": "王振",
+      "rank": 13,
+      "location_id": "京城",
+      "role": "eunuch",
+      "agent_type": "official",
+      "superior_id": "皇帝",
+      "personality_seed": "圆滑"
+    },
+    {
+      "id": "内阁_杨士奇",
+      "name": "杨士奇",
+      "rank": 10,
+      "location_id": "京城",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "司礼监太监_王振",
+      "personality_seed": "忠直"
+    },
+    {
+      "id": "通政司",
+      "name": "通政司",
+      "rank": 9,
+      "location_id": "京城",
+      "role": "official",
+      "agent_type": "institution",
+      "superior_id": "内阁_杨士奇",
+      "personality_seed": "忠直"
+    },
+    {
+      "id": "户部",
+      "name": "户部",
+      "rank": 12,
+      "location_id": "京城",
+      "role": "official",
+      "agent_type": "institution",
+      "superior_id": "皇帝",
+      "personality_seed": "圆滑"
+    },
+    {
+      "id": "江南布政使_周忱",
+      "name": "周忱",
+      "rank": 8,
+      "location_id": "江南",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "通政司",
+      "personality_seed": "忠直"
+    },
+    {
+      "id": "苏州知府_况钟",
+      "name": "况钟",
+      "rank": 5,
+      "location_id": "苏州",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "江南布政使_周忱",
+      "personality_seed": "忠直"
+    },
+    {
+      "id": "吴县知县_张三",
+      "name": "张三",
+      "rank": 1,
+      "location_id": "吴县",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "苏州知府_况钟",
+      "personality_seed": "贪腐",
+      "enabled": true,
+      "extra_prompt": ""
+    },
+    {
+      "id": "昆山知县_李四",
+      "name": "李四",
+      "rank": 1,
+      "location_id": "昆山",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "苏州知府_况钟",
+      "personality_seed": "忠直"
+    }
+  ],
+  "locations": [
+    {
+      "id": "京城",
+      "name": "京城",
+      "region": "直隶",
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "江南",
+      "name": "江南布政使司",
+      "region": "江南",
+      "x": 200,
+      "y": -1490
+    },
+    {
+      "id": "苏州",
+      "name": "苏州府",
+      "region": "江南",
+      "x": 450,
+      "y": -1730
+    },
+    {
+      "id": "吴县",
+      "name": "吴县",
+      "region": "江南",
+      "x": 448,
+      "y": -1732
+    },
+    {
+      "id": "昆山",
+      "name": "昆山县",
+      "region": "江南",
+      "x": 510,
+      "y": -1680
+    },
+    {
+      "id": "南京",
+      "name": "南京",
+      "region": "",
+      "x": 429.0,
+      "y": -1741.0
+    }
+  ]
+}
