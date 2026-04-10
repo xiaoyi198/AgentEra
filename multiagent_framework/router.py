@@ -9,100 +9,13 @@ from typing import Any
 
 from .agent_runtime import BaseAgent, AgentConfig
 from .court_graph import CourtGraph
+from .fc_tools import ROUTER_TOOLS
 from .llm_client import LLMClient, LLMResponse
 from .types import AgentAction, ChainLogEntry, RouterCommand, RouterCommandType, TimerEntry
 
 logger = logging.getLogger(__name__)
 
 MAX_HOPS = 10
-
-# Router 的 FC 工具集
-ROUTER_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "wake_agent",
-            "description": "唤醒指定 Agent，直接投递消息",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标 Agent ID"},
-                    "message": {"type": "string", "description": "传递的消息内容"},
-                    "from_agent": {"type": "string", "description": "消息来源 Agent ID"},
-                },
-                "required": ["target", "message"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_timer",
-            "description": "创建延迟定时器，消息在指定天数后送达",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标 Agent ID"},
-                    "delay_days": {"type": "number", "description": "延迟天数"},
-                    "message": {"type": "string", "description": "送达时的消息内容"},
-                    "from_agent": {"type": "string", "description": "消息来源 Agent ID"},
-                    "urgency": {"type": "string", "description": "紧急程度"},
-                },
-                "required": ["target", "delay_days", "message"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_policy",
-            "description": "调用世界模拟 Agent 执行政策效果",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "policy": {"type": "string", "description": "政策描述"},
-                    "location": {"type": "string", "description": "执行地点"},
-                    "executor": {"type": "string", "description": "执行者 Agent ID"},
-                },
-                "required": ["policy", "location"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "relay_decree",
-            "description": "传递皇帝圣旨给指定官员",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "decree": {"type": "string", "description": "圣旨内容"},
-                    "targets": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "接收圣旨的 Agent ID 列表",
-                    },
-                    "urgency": {"type": "string"},
-                },
-                "required": ["decree", "targets"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "mark_withheld",
-            "description": "标记消息被压下不报",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reason": {"type": "string", "description": "压下原因"},
-                },
-                "required": ["reason"],
-            },
-        },
-    },
-]
 
 
 class RouterAgent:
@@ -133,7 +46,6 @@ class RouterAgent:
 2. 查找合适的目标（上级、指定目标等）
 3. 决定消息传递方式（直接唤醒 or 创建定时器延迟送达）
 4. 对于政策执行类行动，调用 execute_policy
-5. 对于压下不报的行动，调用 mark_withheld
 
 延迟规则参考（你可以根据情况灵活调整）：
 - 直属上下级私信：0天延迟，用 wake_agent
@@ -292,13 +204,6 @@ class RouterAgent:
                     "decree": args.get("decree", ""),
                     "urgency": args.get("urgency", "normal"),
                 },
-                chain_id=f"chain_{uuid.uuid4().hex[:8]}",
-                source_action=source_action,
-            )
-        elif fc_name == "mark_withheld":
-            return RouterCommand(
-                command_type=RouterCommandType.MARK_WITHHELD,
-                payload={"reason": args.get("reason", "")},
                 chain_id=f"chain_{uuid.uuid4().hex[:8]}",
                 source_action=source_action,
             )

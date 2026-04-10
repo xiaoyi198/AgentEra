@@ -1,9 +1,11 @@
 """天玑 AI — 全流程测试对话 Agent.
 
-独立于 Orchestrator，维护自己的对话历史，注入所有 FC 工具集：
-- ActionAgent 工具（世界状态读写）
-- Router 工具（路由指令模拟）
-- Agent 工具（submit_action / request_action dry-run）
+独立于 Orchestrator，维护自己的对话历史，注入所有 FC 工具集（ALL_TOOLS）。
+
+与生产路径**行为完全一致**：天玑执行 FC 时也走 fc_handlers.dispatch_fc，
+所以 wake_agent / create_timer / execute_policy / relay_decree
+等命令在天玑会话中产生和主模拟一模一样的副作用（真实唤醒、真实排定时器、
+用真实 sim_time 作为时间基准等）。
 
 每轮对话通过 SSE 事件流返回：tool_call / tool_result / assistant_delta / done。
 """
@@ -16,12 +18,17 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from .action_agent import WORLD_STATE_TOOLS, execute_world_state_tool
-from .agent_runtime import REQUEST_ACTION_TOOL, SUBMIT_ACTION_TOOL
+from .fc_handlers import (
+    FCContext,
+    command_to_fc_args,
+    command_type_to_fc_name,
+    dispatch_fc,
+    parse_submit_action,
+)
+from .fc_tools import ALL_TOOLS
 from .llm_client import LLMClient
-from .router import ROUTER_TOOLS
 from .timer_system import TimerSystem
-from .types import ChainLogEntry, TimerEntry
+from .types import ChainLogEntry
 from .world_state import WorldState
 
 logger = logging.getLogger(__name__)
@@ -63,6 +70,7 @@ class TianJiAgent:
         chain_log: Any,         # ChainLog
         action_agent: Any,      # ActionAgent
         router: Any | None = None,
+        orchestrator: Any | None = None,  # 可选注入；有则共享 sim_time / pending_wakeups
         system_prompt_path: str = "daming_court/prompts/tianji.txt",
     ) -> None:
         self.llm = llm_client
@@ -72,33 +80,18 @@ class TianJiAgent:
         self.chain_log = chain_log
         self.action_agent = action_agent
         self.router = router
+        self.orchestrator = orchestrator
         self._prompt_path = system_prompt_path
 
         self.session_id: str = f"tianji_{uuid.uuid4().hex[:8]}"
         self.messages: list[dict[str, Any]] = []
         self._tools = self._build_tools()
 
-        # 注册工具分发器（可插拔：新工具只需在此 dict 中注册）
-        self._dispatch_table: dict[str, Any] = {
-            # 世界状态工具 → 共享函数
-            "query_entity": self._do_world_state,
-            "query_inventory": self._do_world_state,
-            "update_entity_status": self._do_world_state,
-            "update_inventory": self._do_world_state,
-            # complete_action → 天玑上下文仅 ack
-            "complete_action": self._do_complete_action,
-            # Router 工具
-            "wake_agent": self._do_wake_agent,
-            "create_timer": self._do_create_timer,
-            "execute_policy": self._do_execute_policy,
-            "relay_decree": self._do_relay_decree,
-            "mark_withheld": self._do_mark_withheld,
-            # Agent 双 FC
-            "submit_action": self._do_submit_action,
-            "request_action": self._do_request_action,
-        }
-
         self.reset()
+
+    def attach_orchestrator(self, orchestrator: Any) -> None:
+        """在 orchestrator 构造后反向挂载，便于天玑共享 sim_time / pending_wakeups."""
+        self.orchestrator = orchestrator
 
     # ── 公开接口 ──
 
@@ -231,38 +224,85 @@ class TianJiAgent:
     # ── 工具构建 ──
 
     def _build_tools(self) -> list[dict[str, Any]]:
-        """合并三套工具集：世界状态 + Router + Agent 双 FC."""
-        return WORLD_STATE_TOOLS + [
-            {
-                "type": "function",
-                "function": {
-                    "name": "complete_action",
-                    "description": "（在天玑测试模式下）标记一次行动模拟结束，返回总结。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "result_description": {"type": "string"},
-                            "duration_days": {"type": "number"},
-                            "success": {"type": "boolean"},
-                        },
-                        "required": ["result_description", "duration_days"],
-                    },
-                },
-            }
-        ] + ROUTER_TOOLS + [SUBMIT_ACTION_TOOL, REQUEST_ACTION_TOOL]
+        """天玑注入全量 FC 工具集（来自 fc_tools.ALL_TOOLS）."""
+        return list(ALL_TOOLS)
 
-    # ── 工具分发 ──
+    # ── 工具分发 —— 所有 FC 走 fc_handlers.dispatch_fc，与生产路径共享实现 ──
+
+    def _build_ctx(self) -> FCContext:
+        """组装天玑的 FCContext.
+
+        若挂载了 orchestrator，共享其 sim_time / pending_wakeups / _agent_tasks
+        以及 _run_action 绑定方法 —— 这样天玑调用 wake_agent / create_timer /
+        execute_policy 等都产生与生产路径一致的真实副作用。
+        """
+        orch = self.orchestrator
+        return FCContext(
+            world_state=self.world_state,
+            court=self.court,
+            timers=self.timers,
+            chain_log=self.chain_log,
+            action_agent=self.action_agent,
+            pending_wakeups=getattr(orch, "_pending_wakeups", None) if orch else None,
+            run_action=getattr(orch, "_run_action", None) if orch else None,
+            agent_tasks=getattr(orch, "_agent_tasks", None) if orch else None,
+            sim_time=getattr(orch, "_sim_time", 0.0) if orch else 0.0,
+            seconds_per_day=86400.0,
+            caller_id="tianji",
+            chain_id=f"{_CHAIN_PREFIX}{self.session_id}",
+        )
 
     async def _dispatch_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        handler = self._dispatch_table.get(name)
-        if handler is None:
-            return {"ok": False, "error": f"未知工具：{name}"}
-        # 部分处理器是 async
-        import inspect
-        if inspect.iscoroutinefunction(handler):
-            result = await handler(name, args)
+        """天玑统一分发：submit_action / request_action 特殊路径，其余走 dispatch_fc."""
+        ctx = self._build_ctx()
+
+        # submit_action → 先解析成 AgentAction → 走 Router → Router 产生的命令
+        # 再通过 dispatch_fc 真实执行（与 Orchestrator._execute_commands 同逻辑）
+        if name == "submit_action":
+            if self.router is None:
+                result = {"ok": False, "error": "Router 未挂载，无法路由行动"}
+            else:
+                agent_id = args.get("agent_id", "tianji_test")
+                agent_action = parse_submit_action(agent_id, args)
+                try:
+                    commands = await self.router.process_batch([agent_action])
+                    executed: list[dict[str, Any]] = []
+                    for cmd in commands:
+                        ctx.chain_id = cmd.chain_id
+                        ctx.source_action = cmd.source_action
+                        fc_name = command_type_to_fc_name(cmd.command_type)
+                        fc_args = command_to_fc_args(cmd)
+                        exec_result = await dispatch_fc(fc_name, ctx, fc_args)
+                        executed.append({
+                            "type": fc_name,
+                            "args": fc_args,
+                            "result": exec_result,
+                        })
+                    result = {
+                        "ok": True,
+                        "routed": True,
+                        "commands": executed,
+                        "note": f"已进入 Router 并真实执行 {len(executed)} 条路由指令",
+                    }
+                except Exception as e:
+                    logger.exception("tianji submit_action failed: %s", e)
+                    result = {"ok": False, "error": str(e)}
+
+        # request_action → 等价于 execute_policy 直接跑 ActionAgent
+        elif name == "request_action":
+            fc_args = {
+                "action_type": args.get("action_type", "unknown"),
+                "description": args.get("description", ""),
+                "location": args.get("target_location", ""),
+                "executor": "tianji_test",
+                "resources": args.get("resources", "（未指定）"),
+            }
+            result = await dispatch_fc("execute_policy", ctx, fc_args)
+
+        # 其余 FC 直接分发
         else:
-            result = handler(name, args)
+            result = await dispatch_fc(name, ctx, args)
+
         # 所有工具调用都记录到 chain_log（上帝视角可见）
         self._append_chain_log(
             fc_called=name,
@@ -272,154 +312,6 @@ class TianJiAgent:
             ),
         )
         return result
-
-    # ── 世界状态工具 ──
-
-    def _do_world_state(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return execute_world_state_tool(self.world_state, name, args, changes_made=None)
-
-    # ── complete_action（天玑仅 ack）──
-
-    def _do_complete_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "mode": "tianji_ack",
-            "result_description": args.get("result_description", ""),
-            "duration_days": args.get("duration_days", 1.0),
-            "success": args.get("success", True),
-        }
-
-    # ── Router 工具 ──
-
-    def _do_wake_agent(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        target = args.get("target", "")
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "note": f"天玑模式：wake_agent 不真实唤醒 Agent。target={target!r}",
-        }
-
-    def _do_create_timer(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        import time
-        target = args.get("target", "")
-        delay_days = float(args.get("delay_days", 1.0))
-        message = args.get("message", "")
-        # 真实写入定时器表（fire_at 取当前时间 + 延迟，用真实秒占位 sim_time 未知）
-        entry = TimerEntry(
-            fire_at=time.time() + delay_days * 86400,
-            target_agent=target,
-            payload={"message": message, "from": "tianji_test"},
-            chain_id=f"{_CHAIN_PREFIX}{self.session_id}",
-        )
-        timer_id = self.timers.schedule(entry)
-        return {
-            "ok": True,
-            "timer_id": timer_id,
-            "note": f"已写入定时器表，fire_at 按真实时间偏移 {delay_days} 天（仅供测试，主模拟运行时会触发）",
-        }
-
-    async def _do_execute_policy(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        policy = args.get("policy", "")
-        location = args.get("location", "")
-        executor = args.get("executor", "tianji_test")
-        payload = {
-            "action_type": "policy",
-            "executor_id": executor,
-            "target_location": location,
-            "description": policy,
-            "resources": "（天玑测试）",
-        }
-        try:
-            result = await self.action_agent.process(payload)
-            return {
-                "ok": True,
-                "action_type": result.action_type,
-                "result_description": result.result_description,
-                "duration_days": result.duration_days,
-                "success": result.success,
-                "changes_made": result.changes_made,
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    def _do_relay_decree(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        targets = args.get("targets", [])
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "note": f"天玑模式：relay_decree 不真实传达。targets={targets}",
-        }
-
-    def _do_mark_withheld(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return {"ok": True, "mode": "dry_run", "note": "天玑模式：mark_withheld 已记录日志"}
-
-    # ── Agent 双 FC ──
-
-    async def _do_submit_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        action = args.get("action", "do_nothing")
-        content = args.get("content", "")
-        original_intent = args.get("original_intent", "")
-        is_distorting = args.get("is_distorting", False)
-        urgency = args.get("urgency", "normal")
-        agent_id = args.get("agent_id", "tianji_test")
-
-        if self.router is None:
-            return {
-                "ok": False,
-                "error": "Router 未挂载，无法路由行动",
-            }
-
-        from .types import AgentAction
-        agent_action = AgentAction(
-            agent_id=agent_id,
-            action=action,
-            content=content,
-            original_intent=original_intent,
-            is_distorting=is_distorting,
-            urgency=urgency,
-        )
-        try:
-            commands = await self.router.process_batch([agent_action])
-            return {
-                "ok": True,
-                "routed": True,
-                "commands": [
-                    {
-                        "type": c.command_type.value if hasattr(c.command_type, "value") else str(c.command_type),
-                        "target": c.target_agent,
-                        "message": c.message,
-                    }
-                    for c in commands
-                ],
-                "note": f"已真实进入 Router，生成 {len(commands)} 条路由指令",
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    async def _do_request_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        action_type = args.get("action_type", "unknown")
-        target_location = args.get("target_location", "")
-        description = args.get("description", "")
-        resources = args.get("resources", "（未指定）")
-        payload = {
-            "action_type": action_type,
-            "executor_id": "tianji_test",
-            "target_location": target_location,
-            "description": description,
-            "resources": resources,
-        }
-        try:
-            result = await self.action_agent.process(payload)
-            return {
-                "ok": True,
-                "action_type": result.action_type,
-                "result_description": result.result_description,
-                "duration_days": result.duration_days,
-                "success": result.success,
-                "changes_made": result.changes_made,
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
 
     # ── 内部工具 ──
 
@@ -466,23 +358,21 @@ _DEFAULT_SYSTEM_PROMPT = """你是「天玑」，大明王朝·朝堂风云世�
 - `update_inventory(entity_id, category, item_name, quantity_delta)` — 增减库存
 - `complete_action(result_description, duration_days)` — 标记行动模拟结束
 
-**路由指令工具**（模拟 Router 行为，dry-run 模式不真实唤醒 Agent）：
-- `wake_agent(target, message)` — 记录"唤醒"意图
-- `create_timer(target, delay_days, message)` — 真实写入定时器表
+**路由指令工具**（与生产路径行为一致，会产生真实副作用）：
+- `wake_agent(target, message)` — 真实唤醒目标 Agent（下一 tick 送达）
+- `create_timer(target, delay_days, message)` — 写入定时器表（使用模拟时间）
 - `execute_policy(policy, location, executor)` — 调用 ActionAgent 推演结果（真实执行）
-- `relay_decree(decree, targets)` — 记录"传达圣旨"意图
-- `mark_withheld(reason)` — 记录"压下不报"意图
+- `relay_decree(decree, targets)` — 真实传达圣旨给指定官员
 
-**官员行为工具**（模拟 Agent 的 FC 调用，dry-run）：
-- `submit_action(action, content, original_intent, is_distorting, urgency)` — 模拟官员表达意图
+**官员行为工具**：
+- `submit_action(action, content, original_intent, is_distorting, urgency)` — 进入 Router 路由并真实执行
 - `request_action(action_type, target_location, description)` — 调用 ActionAgent 推演行动（真实执行）
 
 ## 工作原则
 
 1. 不确定时，先用 `query_entity` / `query_inventory` 了解现状
 2. 对于写操作，在执行前告知用户你将要做什么
-3. `execute_policy` 和 `request_action` 会**真实修改世界状态**，请谨慎调用
-4. `wake_agent` / `relay_decree` / `mark_withheld` / `submit_action` 是 dry-run，仅记录日志，不影响实际模拟
-5. 每次工具调用结果会反馈给你，请整合后用自然语言告知用户
-6. 保持古风叙事口吻，符合大明朝廷背景
+3. 所有工具调用都会产生**真实副作用**（修改世界状态、唤醒 Agent、创建定时器等），请谨慎调用
+4. 每次工具调用结果会反馈给你，请整合后用自然语言告知用户
+5. 保持古风叙事口吻，符合大明朝廷背景
 """

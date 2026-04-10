@@ -35,6 +35,8 @@
 │   ├── __init__.py
 │   ├── types.py                     # 【核心】所有数据结构定义
 │   ├── llm_client.py                # 【核心】OpenAI 兼容 LLM 客户端
+│   ├── fc_tools.py                  # 【核心】FC 工具定义中央注册表（所有工具 schema）
+│   ├── fc_handlers.py               # 【核心】FC 处理函数中央注册表（每工具一个 handler）
 │   ├── agent_runtime.py             # 【核心】Agent 基类 + 官员/机构 Agent 实现
 │   ├── action_agent.py              # 【核心】行动模拟 Agent（读写世界状态）
 │   ├── tianji_agent.py              # 【调试】天玑 AI（全工具注入，独立于主循环）
@@ -102,7 +104,7 @@
 | `PlayerAction` | 皇帝的操作（approve/reject/hold/issue_decree） |
 
 **关键枚举**：
-- `RouterCommandType`: WAKE_AGENT, CREATE_TIMER, EXECUTE_POLICY, RELAY_DECREE, BROADCAST, MARK_WITHHELD, NO_OP
+- `RouterCommandType`: WAKE_AGENT, CREATE_TIMER, EXECUTE_POLICY, RELAY_DECREE, BROADCAST, NO_OP
 - `PlayerActionType`: APPROVE, REJECT, HOLD, ISSUE_DECREE
 
 ---
@@ -134,7 +136,8 @@ run() 主循环（0.25s 间隔）
 | `_tick()` | 单次 tick：检查定时器 → 派发唤醒 → 处理玩家操作 |
 | `_process_agents_background()` | 后台并行调用 Agent → Router 批量处理 → 执行指令 |
 | `_call_agent_safe()` | 调用单个 Agent，记录 chain log，异常安全 |
-| `_execute_commands()` | 执行 Router 产生的指令（WAKE_AGENT/CREATE_TIMER/EXECUTE_POLICY 等） |
+| `_build_fc_context()` | 组装 FCContext（sim_time / pending_wakeups / _run_action 等） |
+| `_execute_commands()` | 遍历 RouterCommand，调用 dispatch_fc 统一执行 |
 | `_handle_player_action()` | 处理皇帝操作：找太监 → 唤醒太监传达旨意 |
 | `_fuzzy_find_agent()` | 模糊匹配 Agent（Router 返回地名/简称时容错） |
 | `inject_event()` | 注入事件，为每个 target_agent 创建唤醒 |
@@ -159,7 +162,6 @@ run() 主循环（0.25s 间隔）
 | `create_timer(target, delay_days, message)` | 创建延迟定时器，N 天后送达 |
 | `execute_policy(policy, location, executor)` | 调用世界模拟 Agent 执行政策效果 |
 | `relay_decree(decree, targets)` | 传递皇帝圣旨给指定官员 |
-| `mark_withheld(reason)` | 标记消息被压下不报 |
 
 **重要方法**：
 | 方法 | 作用 |
@@ -170,7 +172,48 @@ run() 主循环（0.25s 间隔）
 
 ---
 
-### 3.4 agent_runtime.py — Agent 运行时
+### 3.4 fc_tools.py — FC 工具定义注册表
+
+**作用**：所有 FC 工具的唯一定义来源。各 Agent 按需 import 所需工具分组，不再各自维护。
+
+| 分组常量 | 用途 |
+|---------|------|
+| `WORLD_STATE_TOOLS` | 世界状态读写（4 个，不含 complete_action） |
+| `ACTION_AGENT_TOOLS` | `WORLD_STATE_TOOLS + complete_action` |
+| `ROUTER_TOOLS` | `wake_agent / create_timer / execute_policy / relay_decree` |
+| `AGENT_TOOLS` | `submit_action / request_action` |
+| `ALL_TOOLS` | 天玑用，全量 11 个工具 |
+
+**扩展规则**：新增工具只需在此文件定义 schema + 加入对应分组，无需改动任何 Agent 文件。
+
+---
+
+### 3.5 fc_handlers.py — FC 处理函数注册表
+
+**作用**：每个 FC 工具有且仅有一个 handler。所有调用方（Orchestrator / ActionAgent / TianJiAgent）组装 `FCContext` 后调用 `dispatch_fc`，行为完全一致。
+
+**核心抽象**：
+
+`FCContext` 数据类打包所有依赖：
+- `world_state`, `court`, `timers`, `chain_log`, `action_agent`
+- `pending_wakeups`, `run_action`, `agent_tasks` — Orchestrator 共享引用（可选）
+- `sim_time`, `seconds_per_day`, `caller_id`, `chain_id`, `source_action`
+- `changes_made` — ActionAgent 收集世界状态变更列表
+
+**关键函数**：
+| 函数 | 说明 |
+|------|------|
+| `dispatch_fc(name, ctx, args)` | 统一分发入口，async-aware |
+| `command_type_to_fc_name(cmd_type)` | RouterCommandType → FC 工具名 |
+| `command_to_fc_args(cmd)` | RouterCommand → FC 参数 dict |
+| `parse_agent_fc_response(response, agent_id)` | LLM 响应 → AgentAction |
+| `parse_submit_action / parse_request_action` | FC args → AgentAction |
+
+**扩展规则**：新增工具只需写一个 handler 函数，加入 `FC_HANDLERS` 字典即可。
+
+---
+
+### 3.7 agent_runtime.py — Agent 运行时
 
 **作用**：Agent 基类定义 + 官员/机构 Agent 实现。
 
@@ -194,21 +237,21 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.5 tianji_agent.py — 天玑调试 Agent
+### 3.8 tianji_agent.py — 天玑调试 Agent
 
 **作用**：全工具注入的调试对话 Agent，独立于 Orchestrator 主循环。开发者可在不启动模拟的情况下，通过对话直接读写世界状态、触发行动推演、模拟路由指令。
 
 **设计特点**：
 - 维护独立的 `messages` 对话历史，不进入 Orchestrator 的任何路径
-- `_dispatch_table: dict[str, Callable]` 字典分发，新增工具只需注册一行
+- `attach_orchestrator(orch)` 反向注入后共享 `sim_time / pending_wakeups`，所有工具产生与主模拟一致的真实副作用
 - 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见，不污染主模拟 chain_id
-- 执行规则：`create_timer` / `execute_policy` / `request_action` 真实执行写库；`wake_agent` / `relay_decree` / `mark_withheld` / `submit_action` dry-run 仅记录
+- 统一走 `dispatch_fc(name, FCContext, args)` 执行，与 Orchestrator 共用同一份 handler 代码
 
-**工具集**（三类）：
+**工具集**（三类，共 11 个）：
 | 类别 | 工具 |
 |------|------|
 | 世界状态 | `query_entity` / `query_inventory` / `update_entity_status` / `update_inventory` / `complete_action` |
-| Router | `wake_agent` / `create_timer` / `execute_policy` / `relay_decree` / `mark_withheld` |
+| Router | `wake_agent` / `create_timer` / `execute_policy` / `relay_decree` |
 | Agent FC | `submit_action` / `request_action` |
 
 **重要方法**：
@@ -216,12 +259,13 @@ BaseAgent (抽象基类)
 |------|------|
 | `reset()` | 清空对话历史，重新注入 system prompt |
 | `chat(user_text)` | 主入口，async generator，yield SSE 事件（assistant_delta / tool_call / tool_result / done） |
+| `_build_ctx()` | 组装 FCContext，挂载 Orchestrator 时共享其运行时引用 |
 | `_dispatch_tool(name, args)` | 统一分发，执行后写 chain_log |
-| `_build_tools()` | 合并三套工具集返回 schema 列表 |
+| `_build_tools()` | 返回 ALL_TOOLS schema 列表 |
 
 ---
 
-### 3.6 action_agent.py — 行动模拟 Agent
+### 3.9 action_agent.py — 行动模拟 Agent
 
 **作用**：模拟官员行动的过程和结果，读写世界状态数据库。
 
@@ -237,12 +281,12 @@ BaseAgent (抽象基类)
 **工作流程**：
 1. 收到行动请求（action_type/executor_id/target_location/description）
 2. 构建动态 system prompt（注入世界状态上下文）
-3. 多轮 FC 循环（最多 5 轮）：查询实体 → 更新状态/库存 → complete_action
+3. 多轮 FC 循环（最多 5 轮）：组装 `FCContext` → `dispatch_fc` → 查询实体 → 更新状态/库存 → complete_action
 4. 返回 ActionResult（结果描述/耗时/成功与否/变更记录）
 
 ---
 
-### 3.7 court_graph.py — 朝廷层级图
+### 3.10 court_graph.py — 朝廷层级图
 
 **作用**：基于 SQLite 存储官员和地理数据，提供层级查询和距离计算。
 
@@ -271,7 +315,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.8 timer_system.py — 定时器系统
+### 3.11 timer_system.py — 定时器系统
 
 **作用**：管理延迟定时器，模拟古代公文传递的时间延迟。
 
@@ -288,7 +332,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.9 chain_log.py — 调用链日志
+### 3.12 chain_log.py — 调用链日志
 
 **作用**：记录所有消息传递过程，支持上帝视角查看信息失真。
 
@@ -303,7 +347,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.10 world_state.py — 世界状态数据库
+### 3.13 world_state.py — 世界状态数据库
 
 **作用**：存储世界中所有实体的动态状态和库存。
 
@@ -331,7 +375,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.11 llm_client.py — LLM 客户端
+### 3.14 llm_client.py — LLM 客户端
 
 **作用**：封装 OpenAI 兼容的 LLM API 调用。
 
@@ -346,7 +390,7 @@ BaseAgent (抽象基类)
 
 ---
 
-### 3.12 daming_court/loader.py — DLC 数据加载器
+### 3.15 daming_court/loader.py — DLC 数据加载器
 
 **作用**：从 JSON 配置加载官员、地点、事件、世界状态，创建 Agent 实例。
 
@@ -757,3 +801,5 @@ CREATE TABLE inventory (
 3. **时间推进不被 LLM 阻塞**：Agent 调用作为后台 asyncio.Task
 4. **定时器延迟用游戏时间**：`delay_days * 86400` 游戏秒，改速度自然影响触发快慢
 5. **DLC 分离**：框架层（multiagent_framework）可复用于其他场景
+6. **FC 工具单点定义**：工具 schema 在 `fc_tools.py`，handler 在 `fc_handlers.py`，每个工具只有一份代码；添加新工具只需改这两个文件
+7. **FCContext 模式**：调用方组装上下文，handler 消费上下文；Orchestrator 和天玑用同一个 handler，靠 context 字段决定执行路径（有 `run_action` → 异步调度；无则直接 await）

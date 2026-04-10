@@ -6,6 +6,8 @@
   update_inventory / complete_action）
 - 支持多轮 FC 循环，直到调用 complete_action 或达到最大轮次
 - 返回 ActionResult（而非 AgentAction）
+
+所有 FC 执行逻辑统一走 fc_handlers.dispatch_fc，不再有本地实现。
 """
 
 from __future__ import annotations
@@ -15,239 +17,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .fc_handlers import FCContext, dispatch_fc
+from .fc_tools import ACTION_AGENT_TOOLS
 from .llm_client import LLMClient
 from .types import ActionResult
 from .world_state import WorldState
 
 logger = logging.getLogger(__name__)
-
-
-# ── FC 工具定义 ──
-
-QUERY_ENTITY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "query_entity",
-        "description": "查询一个实体（地点/人物/机构/组织）的描述与当前状况。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string", "description": "实体 ID"},
-            },
-            "required": ["entity_id"],
-        },
-    },
-}
-
-QUERY_INVENTORY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "query_inventory",
-        "description": "查询一个实体的库存（粮食、货币、兵力、物资等）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string", "description": "实体 ID"},
-            },
-            "required": ["entity_id"],
-        },
-    },
-}
-
-UPDATE_ENTITY_STATUS_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "update_entity_status",
-        "description": "更新一个实体的当前状况（current_status 字段），用一句话描述该实体目前发生了什么。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string", "description": "实体 ID"},
-                "new_status": {"type": "string", "description": "新的当前状况描述"},
-            },
-            "required": ["entity_id", "new_status"],
-        },
-    },
-}
-
-UPDATE_INVENTORY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "update_inventory",
-        "description": "相对增减某实体的库存条目。quantity_delta 正数为增加，负数为减少。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string"},
-                "category": {"type": "string", "description": "类别：粮食/货币/兵力/物资"},
-                "item_name": {"type": "string", "description": "条目名：稻米/白银/官兵 等"},
-                "quantity_delta": {"type": "number", "description": "变化量，正增负减"},
-                "reason": {"type": "string", "description": "变动原因（用于日志）"},
-            },
-            "required": ["entity_id", "category", "item_name", "quantity_delta"],
-        },
-    },
-}
-
-COMPLETE_ACTION_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "complete_action",
-        "description": "结束本次行动模拟，返回结果、耗时和对执行者的重要发现。必须作为最后一次工具调用。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "result_description": {
-                    "type": "string",
-                    "description": "行动结果描述，将作为消息送回执行者。简明扼要、聚焦关键发现。",
-                },
-                "duration_days": {
-                    "type": "number",
-                    "description": "行动耗时（模拟天数）",
-                },
-                "success": {
-                    "type": "boolean",
-                    "description": "行动是否成功达成目标",
-                },
-            },
-            "required": ["result_description", "duration_days"],
-        },
-    },
-}
-
-ACTION_AGENT_TOOLS = [
-    QUERY_ENTITY_TOOL,
-    QUERY_INVENTORY_TOOL,
-    UPDATE_ENTITY_STATUS_TOOL,
-    UPDATE_INVENTORY_TOOL,
-    COMPLETE_ACTION_TOOL,
-]
-
-# 世界状态工具集（不含 complete_action），供 TianJiAgent 等复用
-WORLD_STATE_TOOLS = [
-    QUERY_ENTITY_TOOL,
-    QUERY_INVENTORY_TOOL,
-    UPDATE_ENTITY_STATUS_TOOL,
-    UPDATE_INVENTORY_TOOL,
-]
-
-
-def _resolve_entity_id(world_state: WorldState, entity_id: str) -> tuple[str, bool]:
-    """精确匹配失败时回退到模糊匹配，返回 (resolved_id, is_fuzzy_matched).
-
-    模糊匹配使用 search_entities（在 id/name/description 中 LIKE 搜索），
-    取第一个结果的 id。若仍找不到，返回原始 entity_id 和 False。
-    """
-    if world_state.get_entity(entity_id):
-        return entity_id, False
-    candidates = world_state.search_entities(entity_id)
-    if candidates:
-        return candidates[0].id, True
-    return entity_id, False
-
-
-def execute_world_state_tool(
-    world_state: WorldState,
-    name: str,
-    args: dict[str, Any],
-    changes_made: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """执行单次世界状态类 FC 工具调用，返回 JSON 可序列化结果.
-
-    供 ActionAgent 和 TianJiAgent 共用，避免逻辑重复。
-    支持的工具：query_entity / query_inventory / update_entity_status / update_inventory.
-    `changes_made` 可为 None（天玑调试时不强制记录）。
-    entity_id 参数支持模糊匹配：精确找不到时自动回退到 LIKE 搜索。
-    """
-    try:
-        if name == "query_entity":
-            raw_id = args.get("entity_id", "")
-            resolved_id, fuzzy = _resolve_entity_id(world_state, raw_id)
-            ent = world_state.get_entity(resolved_id)
-            if not ent:
-                return {"found": False, "message": "实体不存在"}
-            result = {
-                "found": True,
-                "id": ent.id,
-                "type": ent.type,
-                "name": ent.name,
-                "description": ent.description,
-                "current_status": ent.current_status,
-            }
-            if fuzzy:
-                result["fuzzy_matched"] = True
-                result["original_query"] = raw_id
-            return result
-
-        if name == "query_inventory":
-            raw_id = args.get("entity_id", "")
-            resolved_id, fuzzy = _resolve_entity_id(world_state, raw_id)
-            items = world_state.get_inventory(resolved_id)
-            result = {
-                "entity_id": resolved_id,
-                "items": [
-                    {
-                        "category": it.category,
-                        "item_name": it.item_name,
-                        "quantity": it.quantity,
-                        "description": it.description,
-                    }
-                    for it in items
-                ],
-            }
-            if fuzzy:
-                result["fuzzy_matched"] = True
-                result["original_query"] = raw_id
-            return result
-
-        if name == "update_entity_status":
-            raw_id = args.get("entity_id", "")
-            entity_id, fuzzy = _resolve_entity_id(world_state, raw_id)
-            new_status = args.get("new_status", "")
-            world_state.update_status(entity_id, new_status, 0.0)
-            if changes_made is not None:
-                changes_made.append({
-                    "type": "status_update",
-                    "entity_id": entity_id,
-                    "new_status": new_status,
-                })
-            result = {"ok": True, "entity_id": entity_id}
-            if fuzzy:
-                result["fuzzy_matched"] = True
-                result["original_query"] = raw_id
-            return result
-
-        if name == "update_inventory":
-            raw_id = args.get("entity_id", "")
-            entity_id, fuzzy = _resolve_entity_id(world_state, raw_id)
-            category = args.get("category", "")
-            item_name = args.get("item_name", "")
-            delta = float(args.get("quantity_delta", 0))
-            reason = args.get("reason", "")
-            new_qty = world_state.update_inventory(
-                entity_id, category, item_name, delta, reason,
-            )
-            if changes_made is not None:
-                changes_made.append({
-                    "type": "inventory_update",
-                    "entity_id": entity_id,
-                    "category": category,
-                    "item_name": item_name,
-                    "delta": delta,
-                    "new_quantity": new_qty,
-                    "reason": reason,
-                })
-            result = {"ok": True, "new_quantity": new_qty, "entity_id": entity_id}
-            if fuzzy:
-                result["fuzzy_matched"] = True
-                result["original_query"] = raw_id
-            return result
-
-        return {"ok": False, "error": f"未知世界状态工具：{name}"}
-
-    except Exception as e:
-        logger.exception("world_state tool %s failed: %s", name, e)
-        return {"ok": False, "error": str(e)}
 
 
 # ── ActionAgent ──
@@ -368,6 +144,11 @@ class ActionAgent:
 
             round_calls: list[dict[str, Any]] = []
             complete_called = False
+            ctx = FCContext(
+                world_state=self.world_state,
+                changes_made=changes_made,
+                caller_id=executor_id,
+            )
             for tc in response.tool_calls:
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
@@ -375,7 +156,7 @@ class ActionAgent:
                     args = json.loads(fn.get("arguments", "{}") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                tool_result = self._dispatch_tool(name, args, changes_made)
+                tool_result = await dispatch_fc(name, ctx, args)
 
                 messages.append({
                     "role": "tool",
@@ -390,9 +171,9 @@ class ActionAgent:
                 })
 
                 if name == "complete_action":
-                    result_description = args.get("result_description", "")
-                    duration_days = float(args.get("duration_days", 1.0))
-                    success = bool(args.get("success", True))
+                    result_description = tool_result.get("result_description", "")
+                    duration_days = float(tool_result.get("duration_days", 1.0))
+                    success = bool(tool_result.get("success", True))
                     complete_called = True
 
             fc_trace.append({
@@ -421,20 +202,6 @@ class ActionAgent:
             error=error,
             fc_trace=fc_trace,
         )
-
-    # ── 内部：工具调度 ──
-
-    def _dispatch_tool(
-        self,
-        name: str,
-        args: dict[str, Any],
-        changes_made: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """执行一次 FC 工具调用，返回 JSON 可序列化的结果."""
-        if name == "complete_action":
-            # 主循环会解析 args，本函数只回显一个 ack
-            return {"ok": True}
-        return execute_world_state_tool(self.world_state, name, args, changes_made)
 
     # ── 内部：prompt 构建 ──
 

@@ -10,6 +10,8 @@
 │   ├── chain_log.py             # 调用链日志：JSONL 追加写入 + 内存索引
 │   ├── court_graph.py           # 层级图：SQLite 存储官员/地理，查询上下级/距离
 │   ├── llm_client.py            # LLM 客户端：OpenAI-compatible，自动重试，token 计数，debug 日志
+│   ├── fc_tools.py              # FC 工具定义中央注册表（所有工具 schema，按 Agent 分组）
+│   ├── fc_handlers.py           # FC 处理函数中央注册表（每工具一个 handler，统一分发）
 │   ├── agent_runtime.py         # Agent 基类 + OfficialAgent + InstitutionAgent（含记忆序列化）
 │   ├── action_agent.py          # 行动模拟 Agent：读写世界状态，多轮 FC 循环
 │   ├── tianji_agent.py          # 天玑调试 Agent：注入全工具集，独立于 Orchestrator
@@ -87,6 +89,9 @@
 
 ### 两套 FC 工具集
 
+> 所有工具定义集中在 `fc_tools.py`，处理逻辑集中在 `fc_handlers.py`。
+> 添加新工具只需在这两个文件各加一处，Agent 文件无需改动。
+
 **Agent 工具**（官员/机构 Agent 使用，二选一）：
 
 | 工具 | 作用 |
@@ -102,7 +107,6 @@
 | `create_timer(target, delay_days, message, from_agent)` | 创建延迟定时器，N 天后送达 |
 | `execute_policy(policy, location, executor)` | 调用 ActionAgent 执行政策效果 |
 | `relay_decree(decree, targets)` | 传递皇帝圣旨给指定官员 |
-| `mark_withheld(reason)` | 标记消息被压下不报 |
 
 **ActionAgent 工具**（行动模拟使用）：
 
@@ -150,7 +154,37 @@
 
 ## 关键文件说明
 
-### multiagent_framework/types.py
+### multiagent_framework/fc_tools.py
+
+FC 工具定义的中央注册表：
+
+- 每个工具以具名常量定义（`WAKE_AGENT_TOOL`, `CREATE_TIMER_TOOL` 等），共 11 个
+- 预组合工具集：
+  - `WORLD_STATE_TOOLS` — 世界状态读写（不含 complete_action）
+  - `ACTION_AGENT_TOOLS` — `WORLD_STATE_TOOLS + COMPLETE_ACTION_TOOL`
+  - `ROUTER_TOOLS` — `wake_agent / create_timer / execute_policy / relay_decree`
+  - `AGENT_TOOLS` — `submit_action / request_action`
+  - `ALL_TOOLS` — 天玑用，全量 11 个工具
+- **添加新工具**：在此文件定义工具 schema，加入对应分组；Agent 代码无需改动
+
+### multiagent_framework/fc_handlers.py
+
+FC 处理函数的中央注册表：
+
+- `FCContext` — 执行上下文数据类，打包所有依赖：
+  - `world_state`, `court`, `timers`, `chain_log`, `action_agent`
+  - `pending_wakeups`, `run_action`, `agent_tasks` — Orchestrator 共享引用
+  - `sim_time`, `seconds_per_day`, `caller_id`, `chain_id`, `source_action`
+  - `changes_made` — ActionAgent 收集世界状态变更
+- **每个 FC 工具一个 handler**，全部注册在 `FC_HANDLERS: dict[str, (handler, is_async)]`：
+  - 世界状态组：`handle_query_entity / handle_query_inventory / handle_update_entity_status / handle_update_inventory`
+  - `handle_complete_action` — 纯解析，返回结构化结果，调用方决定收尾
+  - Router 组（async）：`handle_wake_agent / handle_create_timer / handle_execute_policy / handle_relay_decree`
+- `dispatch_fc(name, ctx, args)` — 统一分发入口，async-aware
+- `command_type_to_fc_name(cmd_type)` — RouterCommandType 枚举 → FC 工具名
+- `command_to_fc_args(cmd)` — RouterCommand → FC 参数 dict（Orchestrator 桥接用）
+- `parse_submit_action / parse_request_action` — FC args → AgentAction
+- `parse_agent_fc_response(response, agent_id)` — LLM 响应 → AgentAction（官员/机构 Agent 用）
 
 所有数据结构定义。修改字段时注意同步：
 - `ChainLogEntry` — chain_log.py 的序列化/反序列化
@@ -173,7 +207,8 @@
   - 检测 `request_action` → 绕过 Router，直接分发给 ActionAgent
   - 检测 hop 超限 → 标记 loop_detected
 - `_run_action()` — 运行 ActionAgent 模拟行动，完成后创建 Timer 把结果送回发起者
-- `_execute_commands()` — 执行 Router 产生的指令（WAKE_AGENT/CREATE_TIMER/EXECUTE_POLICY/RELAY_DECREE/MARK_WITHHELD）
+- `_build_fc_context()` — 组装 `FCContext`，注入 sim_time、pending_wakeups、_run_action 绑定等
+- `_execute_commands(commands)` — 遍历 RouterCommand 列表，调用 `dispatch_fc` 统一执行；不再有 if/elif 分支
 - `_handle_player_action()` — 确定性逻辑，皇帝→太监→逐级传达
 - `_fuzzy_find_agent()` — Router 返回模糊 ID 时的容错匹配（ID包含关键词 → 地点匹配 → 名字匹配）
 - `save_state()` — 存档：需先暂停，调用 `timers.save_all()`，序列化所有 Agent 记忆，返回含 sim_time / seconds_per_day / agent_memories / timer_count 的 dict
@@ -202,11 +237,10 @@ Agent 运行时：
 - `OfficialAgent.process()` — 官员 Agent 主入口：
   - 将事件/消息加入记忆
   - 构建 messages（system + memory）
-  - 调用 LLM（tools=[SUBMIT_ACTION_TOOL, REQUEST_ACTION_TOOL]）
-  - 解析双 FC 响应
+  - 调用 LLM（tools=AGENT_TOOLS）
+  - 调用 `parse_agent_fc_response()`（来自 fc_handlers）解析双 FC 响应
   - 记录自己的行动到记忆
 - `InstitutionAgent.process()` — 机构 Agent，逻辑类似
-- `_parse_dual_fc_response()` — 解析 LLM 响应，支持 submit_action / request_action 双 FC
 
 ### multiagent_framework/action_agent.py
 
@@ -214,19 +248,17 @@ Agent 运行时：
 - `process(payload)` — 模拟一次行动：
   - 构建动态 system prompt（注入世界状态上下文）
   - 多轮 FC 循环（最多 max_rounds=5 轮）：
-    - 调用 LLM → 解析工具调用 → 执行工具 → 追加结果到 messages
-    - 直到调用 complete_action 或达到最大轮次
+    - 组装 `FCContext(world_state=..., changes_made=..., caller_id=...)` 后调用 `dispatch_fc`
+    - 直到 `complete_action` 或达到最大轮次
   - 返回 ActionResult
-- `_dispatch_tool()` — 执行单次 FC 工具调用，内部调用模块级共享函数
 - `_build_system_prompt()` — 加载 prompt 模板，填充字段并注入世界上下文
-- `execute_world_state_tool(world_state, name, args, changes_made)` — **模块级共享函数**，供 ActionAgent 和 TianJiAgent 共用，避免重复实现
-- `WORLD_STATE_TOOLS` — 模块级工具列表常量（不含 complete_action），供 TianJiAgent 复用
 
 ### multiagent_framework/tianji_agent.py
 
 天玑调试 Agent（独立于 Orchestrator）：
-- `TianJiAgent` — 与用户对话，注入全部工具集（世界状态 + Router + Agent 双 FC）
-- 构造参数：`llm_client / world_state / court_graph / timer_system / chain_log / action_agent / router`
+- `TianJiAgent` — 与用户对话，注入全部工具集（ALL_TOOLS，11 个）
+- 构造参数：`llm_client / world_state / court_graph / timer_system / chain_log / action_agent / router / orchestrator（可选）`
+- `attach_orchestrator(orch)` — 反向注入 Orchestrator，共享 `sim_time / pending_wakeups / _agent_tasks`；使天玑 `wake_agent / create_timer` 等产生与主模拟一致的真实副作用
 - `reset()` — 清空 messages，重新注入 system prompt
 - `chat(user_text)` — 主入口，async generator，yield SSE 事件流：
   - `{"type": "assistant_delta", "text": "..."}` — LLM 文本
@@ -234,10 +266,8 @@ Agent 运行时：
   - `{"type": "tool_result", "name": "...", "result": {...}}` — 工具结果
   - `{"type": "tool_round_start", "round": N}` — 工具轮开始
   - `{"type": "done"}` — 本轮结束
-- `_dispatch_table: dict[str, Callable]` — 工具分发器（可插拔），新增工具只需在 `__init__` 注册
-- 工具执行规则：
-  - `create_timer` / `execute_policy` / `request_action` → **真实执行**，写库
-  - 其余 Router 工具 / `submit_action` / `wake_agent` → **dry-run**，仅记录日志
+- `_build_ctx()` — 组装 `FCContext`，当挂载了 Orchestrator 时共享其运行时引用
+- `_dispatch_tool(name, args)` — 统一分发：`submit_action` → Router；`request_action` → `execute_policy` 路径；其余 → `dispatch_fc`
 - 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见且不污染主模拟
 
 ### multiagent_framework/world_state.py
@@ -656,8 +686,7 @@ Orchestrator._tick()
             ├─ WAKE_AGENT → 加入 _pending_wakeups（下次 tick 处理）
             ├─ CREATE_TIMER → timers.schedule()
             ├─ EXECUTE_POLICY → _run_action()（后台 Task）
-            ├─ RELAY_DECREE → 为每个 target 加入 _pending_wakeups
-            └─ MARK_WITHHELD → 记录 chain log（status=withheld）
+            └─ RELAY_DECREE → 为每个 target 加入 _pending_wakeups
 ```
 
 ### ActionAgent 执行流程

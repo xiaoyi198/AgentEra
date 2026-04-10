@@ -1099,7 +1099,7 @@ async def tianji_tools():
     # 按类别分组
     world_state_names = {"query_entity", "query_inventory", "update_entity_status",
                          "update_inventory", "complete_action"}
-    router_names = {"wake_agent", "create_timer", "execute_policy", "relay_decree", "mark_withheld"}
+    router_names = {"wake_agent", "create_timer", "execute_policy", "relay_decree"}
     agent_names = {"submit_action", "request_action"}
 
     categorized = {"世界状态": [], "路由指令": [], "官员行为": [], "其他": []}

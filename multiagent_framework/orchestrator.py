@@ -12,6 +12,12 @@ from .action_agent import ActionAgent
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
+from .fc_handlers import (
+    FCContext,
+    command_to_fc_args,
+    command_type_to_fc_name,
+    dispatch_fc,
+)
 from .router import RouterAgent, MAX_HOPS
 from .timer_system import TimerSystem
 from .types import (
@@ -616,91 +622,36 @@ class Orchestrator:
         )
 
     async def _execute_commands(self, commands: list[RouterCommand]) -> None:
-        """执行 Router 产生的指令."""
+        """执行 Router 产生的指令 —— 统一走 fc_handlers.dispatch_fc."""
+        ctx = self._build_fc_context()
         for cmd in commands:
-            if cmd.command_type == RouterCommandType.WAKE_AGENT:
-                self._pending_wakeups.append({
-                    "target": cmd.target,
-                    "payload": cmd.payload,
-                    "chain_id": cmd.chain_id,
-                })
+            ctx.chain_id = cmd.chain_id
+            ctx.source_action = cmd.source_action
+            fc_name = command_type_to_fc_name(cmd.command_type)
+            args = command_to_fc_args(cmd)
+            # RouterCommand 的 delay_seconds 是权威值，直接还原成 delay_days
+            if cmd.command_type == RouterCommandType.CREATE_TIMER and cmd.delay_seconds:
+                args["delay_days"] = cmd.delay_seconds / GAME_SECONDS_PER_DAY
+            try:
+                await dispatch_fc(fc_name, ctx, args)
+            except Exception as e:
+                logger.exception("dispatch_fc(%s) failed: %s", fc_name, e)
 
-            elif cmd.command_type == RouterCommandType.CREATE_TIMER:
-                timer = TimerEntry(
-                    fire_at=self._sim_time + cmd.delay_seconds,
-                    target_agent=cmd.target or "",
-                    payload=cmd.payload,
-                    chain_id=cmd.chain_id,
-                    created_at=self._sim_time,
-                )
-                self.timers.schedule(timer)
-                logger.info("Timer created: %s → %s in %.0fs (%.1f days)",
-                            cmd.source_action.agent_id if cmd.source_action else "?",
-                            cmd.target, cmd.delay_seconds,
-                            cmd.delay_seconds / GAME_SECONDS_PER_DAY)
-
-            elif cmd.command_type == RouterCommandType.EXECUTE_POLICY:
-                logger.info("Policy execution: %s", cmd.payload)
-                if self.action_agent is not None:
-                    # Router 触发路径：source_action 的 agent 是发起者
-                    source_id = (
-                        cmd.source_action.agent_id if cmd.source_action else ""
-                    )
-                    # 尝试从 payload 里取 executor_id，否则回退到 source agent
-                    payload_for_action = dict(cmd.payload)
-                    payload_for_action.setdefault(
-                        "executor_id",
-                        cmd.payload.get("executor") or source_id,
-                    )
-                    payload_for_action.setdefault(
-                        "target_location",
-                        cmd.payload.get("location", ""),
-                    )
-                    payload_for_action.setdefault(
-                        "action_type",
-                        cmd.payload.get("policy", "execute_policy"),
-                    )
-                    payload_for_action.setdefault(
-                        "description",
-                        cmd.payload.get("description")
-                        or (cmd.source_action.content if cmd.source_action else ""),
-                    )
-                    task = asyncio.create_task(
-                        self._run_action(
-                            payload=payload_for_action,
-                            source_agent_id=source_id,
-                            chain_id=cmd.chain_id,
-                            event_id="",
-                        )
-                    )
-                    self._agent_tasks.add(task)
-                else:
-                    logger.warning("EXECUTE_POLICY but no ActionAgent registered")
-
-            elif cmd.command_type == RouterCommandType.RELAY_DECREE:
-                for target_id in cmd.targets:
-                    self._pending_wakeups.append({
-                        "target": target_id,
-                        "payload": {
-                            "message": f"圣旨：{cmd.payload.get('decree', '')}",
-                            "from": "皇帝",
-                        },
-                        "chain_id": cmd.chain_id,
-                    })
-
-            elif cmd.command_type == RouterCommandType.MARK_WITHHELD:
-                if cmd.source_action:
-                    self.chain_log.append(ChainLogEntry(
-                        chain_id=cmd.chain_id,
-                        sim_time=self._sim_time,
-                        caller=cmd.source_action.agent_id,
-                        caller_agent_type="official",
-                        fc_called="submit_action",
-                        original_text=cmd.source_action.original_intent,
-                        transmitted_text=cmd.source_action.content,
-                        is_distorted=cmd.source_action.is_distorting,
-                        status="withheld",
-                    ))
+    def _build_fc_context(self) -> FCContext:
+        """组装 Orchestrator 主模拟路径的 FCContext."""
+        return FCContext(
+            world_state=getattr(self.action_agent, "world_state", None),
+            court=self.court,
+            timers=self.timers,
+            chain_log=self.chain_log,
+            action_agent=self.action_agent,
+            pending_wakeups=self._pending_wakeups,
+            run_action=self._run_action,
+            agent_tasks=self._agent_tasks,
+            sim_time=self._sim_time,
+            seconds_per_day=GAME_SECONDS_PER_DAY,
+            caller_id="orchestrator",
+        )
 
     async def _handle_player_action(
         self, action: PlayerAction, result: TickResult,
