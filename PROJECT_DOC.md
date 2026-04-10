@@ -18,7 +18,15 @@
 
 ```
 世界模拟器/
-├── main.py                          # 【后端入口】FastAPI 服务器，所有 REST/WebSocket API
+├── main.py                          # 【后端入口】初始化 + lifespan + 注册路由
+├── routers/                         # 【API 路由层】按功能拆分的 FastAPI Router 模块
+│   ├── __init__.py
+│   ├── _state.py                    # 共享全局状态（orchestrator/tianji_agent/ws_clients）
+│   ├── simulation.py                # 模拟控制（start/pause/resume）+ 设置 + 天玑 AI + WebSocket
+│   ├── saves.py                     # 存档管理（存/读/列表/重命名/删除）
+│   ├── editor.py                    # Agent 编辑器（官员/地点/人格/Prompt CRUD）
+│   ├── worldstate.py                # 世界状态（实体/库存 CRUD）
+│   └── debug.py                     # 调试接口（timeline/timers/router-log/action-log）
 ├── requirements.txt                 # Python 依赖（fastapi, uvicorn, httpx, websockets, pydantic）
 ├── start.bat / start.sh             # 一键启动脚本
 ├── saves/
