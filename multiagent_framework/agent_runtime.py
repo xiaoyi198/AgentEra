@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -34,7 +36,7 @@ class BaseAgent(ABC):
     def __init__(self, config: AgentConfig, llm_client: LLMClient) -> None:
         self.config = config
         self.llm = llm_client
-        self.memory: deque[dict[str, str]] = deque(maxlen=config.max_memory)
+        self.memory: deque[dict[str, Any]] = deque(maxlen=config.max_memory)
 
     @property
     def agent_id(self) -> str:
@@ -52,21 +54,54 @@ class BaseAgent(ABC):
     def add_memory(self, role: str, content: str) -> None:
         self.memory.append({"role": role, "content": content})
 
-    def serialize_memory(self) -> list[dict[str, str]]:
+    def serialize_memory(self) -> list[dict[str, Any]]:
         """序列化记忆为可持久化的列表."""
         return list(self.memory)
 
-    def deserialize_memory(self, data: list[dict[str, str]]) -> None:
+    def deserialize_memory(self, data: list[dict[str, Any]]) -> None:
         """从持久化列表恢复记忆."""
         self.memory.clear()
         for msg in data:
             self.memory.append(msg)
 
-    def get_messages(self) -> list[dict[str, str]]:
+    def get_messages(self) -> list[dict[str, Any]]:
         """构建 LLM messages（system prompt + memory）."""
-        messages = [{"role": "system", "content": self.config.system_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self.config.system_prompt}]
         messages.extend(self.memory)
         return messages
+
+    def _record_response_to_memory(self, response: LLMResponse) -> None:
+        """将 LLM 响应以 OpenAI 协议正确格式写入记忆.
+
+        有 tool_calls → assistant(tool_calls) + tool(result)
+        纯文本     → assistant(text) + user(纠正提示)
+        """
+        if response.tool_calls:
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": response.content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": tc.get("function", {}),
+                    }
+                    for tc in response.tool_calls
+                ],
+            }
+            self.memory.append(assistant_msg)
+            for tc in assistant_msg["tool_calls"]:
+                self.memory.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": json.dumps({"status": "已执行"}, ensure_ascii=False),
+                })
+        else:
+            self.memory.append({"role": "assistant", "content": response.content or ""})
+            self.memory.append({
+                "role": "user",
+                "content": "[系统] 你没有调用任何工具。请务必使用 submit_action 或 request_action 表达行动。",
+            })
 
 
 class OfficialAgent(BaseAgent):
@@ -99,8 +134,7 @@ class OfficialAgent(BaseAgent):
             )
 
         action = parse_agent_fc_response(response, self.agent_id)
-        # 记录自己的行动到记忆
-        self.add_memory("assistant", f"我决定：{action.action} - {action.content}")
+        self._record_response_to_memory(response)
         return action
 
 
@@ -128,5 +162,5 @@ class InstitutionAgent(BaseAgent):
             )
 
         action = parse_agent_fc_response(response, self.agent_id)
-        self.add_memory("assistant", f"机构决定：{action.action}")
+        self._record_response_to_memory(response)
         return action

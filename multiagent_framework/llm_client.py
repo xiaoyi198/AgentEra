@@ -315,12 +315,17 @@ class LLMClient:
 
     def _log_debug(self, request: dict, response: dict, latency_ms: float) -> None:
         """记录 LLM 调试日志."""
+        msg = response.get("choices", [{}])[0].get("message", {})
         entry = {
             "timestamp": time.time(),
             "model": self._config.model,
             "latency_ms": round(latency_ms, 1),
             "request_messages_count": len(request.get("messages", [])),
-            "response_content_length": len(str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))),
+            "response_content": msg.get("content", ""),
+            "tool_calls": [
+                {"name": tc.get("function", {}).get("name"), "arguments": tc.get("function", {}).get("arguments")}
+                for tc in msg.get("tool_calls", [])
+            ],
             "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
             "output_tokens": response.get("usage", {}).get("completion_tokens", 0),
         }
