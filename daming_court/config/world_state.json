@@ -36,10 +36,45 @@
       "current_status": "正常"
     },
     {
+      "id": "吏部",
+      "type": "institution",
+      "name": "吏部",
+      "description": "掌管全国文官选授、封勋、考课、黜陟。六部之首。",
+      "current_status": "正常运转"
+    },
+    {
       "id": "户部",
       "type": "institution",
       "name": "户部",
       "description": "掌管全国土地、赋税、户口、漕粮、财政。六部之一。",
+      "current_status": "正常运转"
+    },
+    {
+      "id": "礼部",
+      "type": "institution",
+      "name": "礼部",
+      "description": "掌管礼仪、祭祀、科举、学校、外交事务。六部之一。",
+      "current_status": "正常运转"
+    },
+    {
+      "id": "兵部",
+      "type": "institution",
+      "name": "兵部",
+      "description": "掌管武官选授、军令、军政、马政、驿站。六部之一。",
+      "current_status": "正常运转"
+    },
+    {
+      "id": "刑部",
+      "type": "institution",
+      "name": "刑部",
+      "description": "掌管全国刑法、诉讼、监狱、赦免。六部之一。",
+      "current_status": "正常运转"
+    },
+    {
+      "id": "工部",
+      "type": "institution",
+      "name": "工部",
+      "description": "掌管全国工程建设、水利、屯田、工匠。六部之一。",
       "current_status": "正常运转"
     }
   ],
@@ -51,6 +86,13 @@
     {"entity_id": "苏州", "category": "粮食", "item_name": "稻米", "quantity": 25000, "description": "石"},
     {"entity_id": "苏州", "category": "货币", "item_name": "白银", "quantity": 15000, "description": "两"},
     {"entity_id": "户部", "category": "货币", "item_name": "国库白银", "quantity": 500000, "description": "两"},
-    {"entity_id": "户部", "category": "粮食", "item_name": "漕粮", "quantity": 200000, "description": "石"}
+    {"entity_id": "户部", "category": "粮食", "item_name": "漕粮", "quantity": 200000, "description": "石"},
+    {"entity_id": "吏部", "category": "货币", "item_name": "白银", "quantity": 5000, "description": "两"},
+    {"entity_id": "礼部", "category": "货币", "item_name": "白银", "quantity": 3000, "description": "两"},
+    {"entity_id": "兵部", "category": "兵力", "item_name": "京营兵", "quantity": 50000, "description": "人"},
+    {"entity_id": "兵部", "category": "货币", "item_name": "军饷白银", "quantity": 80000, "description": "两"},
+    {"entity_id": "刑部", "category": "货币", "item_name": "白银", "quantity": 2000, "description": "两"},
+    {"entity_id": "工部", "category": "物资", "item_name": "木材", "quantity": 10000, "description": "方"},
+    {"entity_id": "工部", "category": "货币", "item_name": "白银", "quantity": 4000, "description": "两"}
   ]
 }

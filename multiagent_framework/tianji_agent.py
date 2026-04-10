@@ -355,24 +355,46 @@ class TianJiAgent:
 
     # ── Agent 双 FC ──
 
-    def _do_submit_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _do_submit_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         action = args.get("action", "do_nothing")
         content = args.get("content", "")
         original_intent = args.get("original_intent", "")
         is_distorting = args.get("is_distorting", False)
         urgency = args.get("urgency", "normal")
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "parsed": {
-                "action": action,
-                "content": content,
-                "original_intent": original_intent,
-                "is_distorting": is_distorting,
-                "urgency": urgency,
-            },
-            "note": "天玑模式：submit_action 不进入 Router，意图已记录到 chain_log",
-        }
+        agent_id = args.get("agent_id", "tianji_test")
+
+        if self.router is None:
+            return {
+                "ok": False,
+                "error": "Router 未挂载，无法路由行动",
+            }
+
+        from .types import AgentAction
+        agent_action = AgentAction(
+            agent_id=agent_id,
+            action=action,
+            content=content,
+            original_intent=original_intent,
+            is_distorting=is_distorting,
+            urgency=urgency,
+        )
+        try:
+            commands = await self.router.process_batch([agent_action])
+            return {
+                "ok": True,
+                "routed": True,
+                "commands": [
+                    {
+                        "type": c.command_type.value if hasattr(c.command_type, "value") else str(c.command_type),
+                        "target": c.target_agent,
+                        "message": c.message,
+                    }
+                    for c in commands
+                ],
+                "note": f"已真实进入 Router，生成 {len(commands)} 条路由指令",
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     async def _do_request_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         action_type = args.get("action_type", "unknown")

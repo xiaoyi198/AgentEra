@@ -575,6 +575,16 @@ async def debug_router_log(after: int = 0):
     return {"total": total, "entries": log[after:]}
 
 
+@app.get("/api/debug/action-log")
+async def debug_action_log(after: int = 0):
+    """ActionAgent 执行日志（含多轮 FC trace），增量拉取."""
+    if not orchestrator:
+        return {"error": "not initialized"}
+    log = orchestrator.action_log
+    total = len(log)
+    return {"total": total, "entries": log[after:]}
+
+
 @app.get("/api/world-state")
 async def get_world_state():
     """返回所有实体 + 库存."""

@@ -81,6 +81,9 @@ class Orchestrator:
         # Router 决策日志（调试用）
         self.router_log: list[dict[str, Any]] = []
 
+        # ActionAgent 执行日志（调试用：含多轮 FC trace）
+        self.action_log: list[dict[str, Any]] = []
+
         # 已触发定时器历史（调试用）
         self.fired_timers: list[dict[str, Any]] = []
 
@@ -288,33 +291,62 @@ class Orchestrator:
 
         # 2. 处理待唤醒 — 拆分出皇帝奏折 vs Agent 调用
         if self._pending_wakeups:
-            agent_wakeups = []
+            # 先做模糊匹配，统一 target_id
             for wakeup in self._pending_wakeups:
                 target_id = wakeup["target"]
                 agent = self.agents.get(target_id)
                 official = self.court.get_official(target_id)
-
-                # 模糊匹配：Router 可能返回 "昆山" 而非 "昆山知县_李四"
                 if not agent and not official:
                     agent, official = self._fuzzy_find_agent(target_id)
                     if agent:
                         logger.info("Fuzzy matched '%s' → '%s'", target_id, agent.agent_id)
                         wakeup["target"] = agent.agent_id
 
+            # 合并同目标的多条 Agent 消息（节省链路；玩家奏折保持独立）
+            merged_agent_wakeups: dict[str, dict] = {}
+            player_wakeups: list[dict] = []
+            unresolved: list[str] = []
+
+            for wakeup in self._pending_wakeups:
+                target_id = wakeup["target"]
+                official = self.court.get_official(target_id)
                 if official and official.role == "player":
-                    result.new_memorials.append({
-                        "memorial_id": f"mem_{uuid.uuid4().hex[:8]}",
-                        "from": wakeup.get("payload", {}).get("from", "unknown"),
-                        "content": wakeup.get("payload", {}).get("message", ""),
-                        "chain_id": wakeup.get("chain_id", ""),
-                        "event_id": wakeup.get("payload", {}).get("event_id", ""),
-                        "received_at": self._sim_time,
-                    })
-                elif agent:
-                    agent_wakeups.append((agent, wakeup))
+                    player_wakeups.append(wakeup)
+                elif self.agents.get(target_id):
+                    if target_id not in merged_agent_wakeups:
+                        merged_agent_wakeups[target_id] = {
+                            "target": target_id,
+                            "payload": dict(wakeup.get("payload", {})),
+                            "chain_id": wakeup.get("chain_id", ""),
+                        }
+                    else:
+                        # 合并消息内容
+                        base = merged_agent_wakeups[target_id]["payload"]
+                        new_msg = wakeup.get("payload", {}).get("message", "")
+                        if new_msg:
+                            base["message"] = f"{base.get('message', '')}\n\n---\n{new_msg}"
+                        new_from = wakeup.get("payload", {}).get("from", "")
+                        if new_from and new_from not in base.get("from", ""):
+                            base["from"] = f"{base.get('from', '')}, {new_from}".strip(", ")
                 else:
-                    logger.warning("Agent not found: %s", target_id)
-                    result.agent_errors.append({"agent_id": target_id, "error": "not_found"})
+                    unresolved.append(target_id)
+
+            agent_wakeups = []
+            for wakeup in player_wakeups:
+                result.new_memorials.append({
+                    "memorial_id": f"mem_{uuid.uuid4().hex[:8]}",
+                    "from": wakeup.get("payload", {}).get("from", "unknown"),
+                    "content": wakeup.get("payload", {}).get("message", ""),
+                    "chain_id": wakeup.get("chain_id", ""),
+                    "event_id": wakeup.get("payload", {}).get("event_id", ""),
+                    "received_at": self._sim_time,
+                })
+            for target_id, wakeup in merged_agent_wakeups.items():
+                agent = self.agents[target_id]
+                agent_wakeups.append((agent, wakeup))
+            for target_id in unresolved:
+                logger.warning("Agent not found: %s", target_id)
+                result.agent_errors.append({"agent_id": target_id, "error": "not_found"})
 
             self._pending_wakeups.clear()
 
@@ -510,6 +542,20 @@ class Orchestrator:
                 transmitted_text=f"行动失败：{e}",
                 status="delivered",
             ))
+            self.action_log.append({
+                "sim_time": self._sim_time,
+                "chain_id": chain_id,
+                "action_type": payload.get("action_type", ""),
+                "executor_id": payload.get("executor_id", ""),
+                "target_location": payload.get("target_location", ""),
+                "success": False,
+                "duration_days": 0.0,
+                "result_description": f"行动失败：{e}",
+                "error": str(e),
+                "changes_made": [],
+                "fc_trace": [],
+                "fc_rounds": 0,
+            })
             return
 
         # chain log：记录 ActionAgent 产出
@@ -523,6 +569,22 @@ class Orchestrator:
             routed_to=source_agent_id,
             status="delivered",
         ))
+
+        # action log：记录 ActionAgent 内部 FC 轨迹（上帝视角展示用）
+        self.action_log.append({
+            "sim_time": self._sim_time,
+            "chain_id": chain_id,
+            "action_type": result.action_type,
+            "executor_id": result.executor_id,
+            "target_location": result.target_location,
+            "success": result.success,
+            "duration_days": result.duration_days,
+            "result_description": result.result_description,
+            "error": result.error,
+            "changes_made": result.changes_made,
+            "fc_trace": result.fc_trace,
+            "fc_rounds": len(result.fc_trace),
+        })
 
         # 若无接收方，直接结束
         if not source_agent_id:

@@ -30,24 +30,24 @@ function timeLabel(simTime) {
 export default function GodView() {
   const [timeline, setTimeline] = useState([])
   const [routerLog, setRouterLog] = useState([])
+  const [actionLog, setActionLog] = useState([])
   const [timers, setTimers] = useState({ pending: [], fired: [] })
-  const [prompts, setPrompts] = useState({})
-  const [editingPrompt, setEditingPrompt] = useState(null)
-  const [promptDraft, setPromptDraft] = useState('')
-  const [promptMsg, setPromptMsg] = useState('')
+  const [expandedActions, setExpandedActions] = useState({})
   const timelineRef = useRef(null)
   const pollRef = useRef(null)
   const tlOffsetRef = useRef(0)
   const rlOffsetRef = useRef(0)
+  const alOffsetRef = useRef(0)
   const fetchingRef = useRef(false)
 
   const fetchIncremental = async () => {
     if (fetchingRef.current) return
     fetchingRef.current = true
     try {
-      const [tl, rl, tm] = await Promise.all([
+      const [tl, rl, al, tm] = await Promise.all([
         fetch(`${API_BASE}/debug/timeline?after=${tlOffsetRef.current}&limit=50`).then(r => r.json()),
         fetch(`${API_BASE}/debug/router-log?after=${rlOffsetRef.current}`).then(r => r.json()),
+        fetch(`${API_BASE}/debug/action-log?after=${alOffsetRef.current}`).then(r => r.json()),
         fetch(`${API_BASE}/debug/timers`).then(r => r.json()),
       ])
       if (tl.entries?.length > 0) {
@@ -58,24 +58,48 @@ export default function GodView() {
         setRouterLog(prev => [...prev, ...rl.entries])
         rlOffsetRef.current += rl.entries.length
       }
+      if (al.entries?.length > 0) {
+        setActionLog(prev => [...prev, ...al.entries])
+        alOffsetRef.current += al.entries.length
+      }
       setTimers(tm || { pending: [], fired: [] })
     } catch (e) { console.error('God view fetch failed:', e) }
     fetchingRef.current = false
   }
 
-  const fetchPrompts = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/prompts`)
-      setPrompts(await res.json())
-    } catch (e) { console.error('Prompts fetch failed:', e) }
-  }
-
   useEffect(() => {
     fetchIncremental()
-    fetchPrompts()
     pollRef.current = setInterval(fetchIncremental, 2000)
     return () => clearInterval(pollRef.current)
   }, [])
+
+  const toggleAction = (i) => setExpandedActions(p => ({ ...p, [i]: !p[i] }))
+
+  const fmtArgs = (args) => {
+    if (!args || typeof args !== 'object') return ''
+    const parts = Object.entries(args).map(([k, v]) => {
+      const s = typeof v === 'string' ? v : JSON.stringify(v)
+      return `${k}=${s.length > 40 ? s.slice(0, 40) + '…' : s}`
+    })
+    return parts.join(', ')
+  }
+
+  const fmtResult = (result) => {
+    if (!result || typeof result !== 'object') return ''
+    if (result.found === false) return '未找到'
+    if (result.ok === false) return `失败: ${result.error || ''}`
+    if (result.ok === true) {
+      if ('new_quantity' in result) return `ok (qty=${result.new_quantity})`
+      return 'ok'
+    }
+    if (result.found === true) {
+      return `${result.name || result.id}${result.current_status ? ' · ' + result.current_status : ''}`
+    }
+    if (Array.isArray(result.items)) {
+      return `${result.items.length} 条库存`
+    }
+    return JSON.stringify(result).slice(0, 80)
+  }
 
   const prevCountRef = useRef(0)
   useEffect(() => {
@@ -86,31 +110,6 @@ export default function GodView() {
     }
     prevCountRef.current = timeline.length
   }, [timeline])
-
-  const savePrompt = async () => {
-    if (!editingPrompt) return
-    try {
-      const res = await fetch(`${API_BASE}/prompts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: editingPrompt, content: promptDraft }),
-      })
-      const data = await res.json()
-      if (data.status === 'ok') {
-        setPromptMsg('saved')
-        setPrompts(p => ({ ...p, [editingPrompt]: promptDraft }))
-        setTimeout(() => setPromptMsg(''), 1500)
-      } else {
-        setPromptMsg(data.error || 'failed')
-      }
-    } catch (e) { setPromptMsg('error') }
-  }
-
-  const PROMPT_NAMES = {
-    official_template: '官员模板',
-    router: 'Router (世界运行法则)',
-    personas: '人格配置 (JSON)',
-  }
 
   return (
     <div className="god-layout">
@@ -145,66 +144,107 @@ export default function GodView() {
         ))}
       </div>
 
-      {/* 中：Router 决策 + Prompt 编辑 */}
+      {/* 中：系统 Agent 日志（Router + ActionAgent）*/}
       <div className="god-panel god-router">
-        <h2>Router 决策日志</h2>
-        <div className="god-router-list">
-          {routerLog.length === 0 && <div className="empty">暂无决策</div>}
-          {routerLog.map((r, i) => (
-            <div key={i} className="router-entry">
-              <div className="router-time">{timeLabel(r.sim_time)}</div>
-              <div className="router-section">
-                <label>输入 ({r.input_actions?.length || 0} 个行动)</label>
-                {r.input_actions?.map((a, j) => (
-                  <div key={j} className="router-action">
-                    <span className="ra-agent">{a.agent}</span>
-                    <span className="ra-act">{ACTION_LABELS[a.action] || a.action}</span>
-                    <span className="ra-content">{a.content}</span>
-                  </div>
-                ))}
+        <h2>系统 Agent 日志</h2>
+
+        <div className="sys-log-section">
+          <h3>Router 决策 ({routerLog.length})</h3>
+          <div className="god-router-list">
+            {routerLog.length === 0 && <div className="empty">暂无决策</div>}
+            {routerLog.map((r, i) => (
+              <div key={i} className="router-entry">
+                <div className="router-time">{timeLabel(r.sim_time)}</div>
+                <div className="router-section">
+                  <label>输入 ({r.input_actions?.length || 0} 个行动)</label>
+                  {r.input_actions?.map((a, j) => (
+                    <div key={j} className="router-action">
+                      <span className="ra-agent">{a.agent}</span>
+                      <span className="ra-act">{ACTION_LABELS[a.action] || a.action}</span>
+                      <span className="ra-content">{a.content}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="router-section">
+                  <label>输出 ({r.command_count} 条指令)</label>
+                  {r.output_commands?.map((c, j) => (
+                    <div key={j} className="router-cmd">
+                      <span className="rc-type">{c.type}</span>
+                      <span className="rc-target">→ {c.target}</span>
+                      {c.delay > 0 && <span className="rc-delay">{Math.round(c.delay)}s</span>}
+                    </div>
+                  ))}
+                </div>
+                {r.router_text && (
+                  <div className="router-text">{r.router_text}</div>
+                )}
               </div>
-              <div className="router-section">
-                <label>输出 ({r.command_count} 条指令)</label>
-                {r.output_commands?.map((c, j) => (
-                  <div key={j} className="router-cmd">
-                    <span className="rc-type">{c.type}</span>
-                    <span className="rc-target">→ {c.target}</span>
-                    {c.delay > 0 && <span className="rc-delay">{Math.round(c.delay)}s</span>}
-                  </div>
-                ))}
-              </div>
-              {r.router_text && (
-                <div className="router-text">{r.router_text}</div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
-        <h2 style={{marginTop: 16}}>Prompt 管理</h2>
-        <div className="prompt-tabs">
-          {Object.entries(PROMPT_NAMES).map(([key, label]) => (
-            <button key={key}
-              className={`btn ${editingPrompt === key ? 'active' : 'ghost'}`}
-              onClick={() => { setEditingPrompt(key); setPromptDraft(prompts[key] || ''); setPromptMsg('') }}
-            >{label}</button>
-          ))}
-        </div>
-        {editingPrompt && (
-          <div className="prompt-editor">
-            <textarea
-              value={promptDraft}
-              onChange={e => setPromptDraft(e.target.value)}
-              rows={10}
-            />
-            <div className="prompt-actions">
-              <button className="btn primary" onClick={savePrompt}>保存</button>
-              <button className="btn ghost" onClick={() => setEditingPrompt(null)}>关闭</button>
-              {promptMsg && <span className={`prompt-msg ${promptMsg === 'saved' ? 'ok' : 'err'}`}>
-                {promptMsg === 'saved' ? '已保存' : promptMsg}
-              </span>}
-            </div>
+        <div className="sys-log-section">
+          <h3>ActionAgent 执行 ({actionLog.length})</h3>
+          <div className="god-action-list">
+            {actionLog.length === 0 && <div className="empty">暂无行动</div>}
+            {actionLog.map((a, i) => {
+              const expanded = !!expandedActions[i]
+              return (
+                <div key={i} className={`action-entry ${a.success ? 'ok' : 'fail'}`}>
+                  <div className="action-header" onClick={() => toggleAction(i)}>
+                    <span className="router-time">{timeLabel(a.sim_time)}</span>
+                    <span className="action-type">{a.action_type || '(未命名)'}</span>
+                    <span className="action-route">
+                      {a.executor_id || '?'} → {a.target_location || '?'}
+                    </span>
+                    <span className={`action-badge ${a.success ? 'ok' : 'fail'}`}>
+                      {a.success ? '成功' : '失败'}
+                    </span>
+                    <span className="action-meta">{a.fc_rounds}轮 · {a.duration_days}天</span>
+                    <span className="action-toggle">{expanded ? '▾' : '▸'}</span>
+                  </div>
+                  {a.result_description && (
+                    <div className="action-result">{a.result_description}</div>
+                  )}
+                  {expanded && (
+                    <div className="action-trace">
+                      {a.fc_trace?.length === 0 && <div className="empty">无 FC 轨迹</div>}
+                      {a.fc_trace?.map((rd, ri) => (
+                        <div key={ri} className="action-round">
+                          <div className="action-round-hdr">Round {rd.round}</div>
+                          {rd.assistant_content && (
+                            <div className="action-assistant">{rd.assistant_content}</div>
+                          )}
+                          {rd.calls?.map((c, ci) => (
+                            <div key={ci} className="action-fc-call">
+                              <span className="fc-tool">{c.tool}</span>
+                              <span className="fc-args">({fmtArgs(c.args)})</span>
+                              <span className="fc-arrow">→</span>
+                              <span className="fc-result">{fmtResult(c.result)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                      {a.changes_made?.length > 0 && (
+                        <div className="action-changes">
+                          <div className="action-round-hdr">世界变更 ({a.changes_made.length})</div>
+                          {a.changes_made.map((ch, ci) => (
+                            <div key={ci} className="action-change-item">
+                              {ch.type === 'status_update'
+                                ? `[状态] ${ch.entity_id}: ${ch.new_status}`
+                                : `[库存] ${ch.entity_id} ${ch.item_name} ${ch.delta > 0 ? '+' : ''}${ch.delta} → ${ch.new_quantity}`}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {a.error && <div className="action-error">错误: {a.error}</div>}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
-        )}
+        </div>
       </div>
 
       {/* 右：定时器 */}

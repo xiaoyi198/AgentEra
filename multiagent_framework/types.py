@@ -115,6 +115,7 @@ class ActionResult:
     changes_made: list[dict[str, Any]] = field(default_factory=list)  # 世界状态变更记录
     success: bool = True
     error: str | None = None
+    fc_trace: list[dict[str, Any]] = field(default_factory=list)  # 多轮 FC 详情（供上帝视角展示）
 
 
 # ── 轮次结果（推送给前端）──

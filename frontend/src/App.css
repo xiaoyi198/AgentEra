@@ -307,20 +307,81 @@ body {
   font-style: italic; white-space: pre-wrap;
 }
 
-/* Prompt editor */
-.prompt-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
-.prompt-tabs .btn { font-size: 11px; padding: 3px 8px; }
-.prompt-editor textarea {
-  width: 100%; min-height: 120px; padding: 8px; resize: vertical;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-  color: var(--text); font-family: monospace; font-size: 12px; line-height: 1.5;
+/* 系统 Agent 日志 — 中间栏分区 */
+.sys-log-section { margin-bottom: 16px; }
+.sys-log-section h3 {
+  font-size: 12px; color: var(--gold); margin: 8px 0 6px;
+  text-transform: uppercase; letter-spacing: 1px;
+  border-bottom: 1px solid var(--border); padding-bottom: 3px;
 }
-.prompt-actions {
-  display: flex; gap: 6px; margin-top: 6px; align-items: center;
+
+/* ActionAgent 执行列表 */
+.god-action-list { display: flex; flex-direction: column; gap: 6px; }
+.action-entry {
+  padding: 6px 8px; background: var(--bg-panel);
+  border-radius: 4px; border: 1px solid var(--border);
+  border-left: 3px solid #5a7a9a;
 }
-.prompt-msg { font-size: 11px; }
-.prompt-msg.ok { color: #8f8; }
-.prompt-msg.err { color: #f88; }
+.action-entry.ok { border-left-color: #5a9a5a; }
+.action-entry.fail { border-left-color: #9a5a5a; }
+.action-header {
+  display: flex; gap: 6px; align-items: center;
+  cursor: pointer; font-size: 11px; flex-wrap: wrap;
+}
+.action-header:hover { opacity: 0.9; }
+.action-type {
+  background: #4a3a5a; color: #e8dcc8; padding: 0 5px;
+  border-radius: 2px; font-size: 11px; font-weight: bold;
+}
+.action-route { color: var(--text-dim); font-size: 11px; flex: 1; }
+.action-badge {
+  padding: 0 5px; border-radius: 2px; font-size: 10px;
+}
+.action-badge.ok { background: #2a4a2a; color: #8fa; }
+.action-badge.fail { background: #4a2a2a; color: #f88; }
+.action-meta { color: var(--gold); font-size: 10px; }
+.action-toggle { color: var(--text-dim); font-size: 12px; }
+.action-result {
+  margin-top: 4px; padding: 4px 6px; background: var(--bg);
+  border-radius: 3px; font-size: 11px; color: var(--text);
+  white-space: pre-wrap;
+}
+.action-trace {
+  margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.action-round { margin-bottom: 6px; }
+.action-round-hdr {
+  font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+  margin-bottom: 3px; letter-spacing: 0.5px;
+}
+.action-assistant {
+  font-size: 11px; color: var(--text-dim); font-style: italic;
+  padding: 3px 6px; background: var(--bg); border-radius: 3px;
+  margin-bottom: 3px; white-space: pre-wrap;
+}
+.action-fc-call {
+  display: flex; gap: 4px; align-items: baseline;
+  font-size: 11px; font-family: monospace;
+  padding: 2px 4px; flex-wrap: wrap;
+}
+.fc-tool { color: #8af; font-weight: bold; }
+.fc-args { color: var(--text-dim); }
+.fc-arrow { color: var(--gold); }
+.fc-result { color: #8fa; flex: 1; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.action-changes {
+  margin-top: 6px; padding: 4px 6px; background: var(--bg);
+  border-radius: 3px;
+}
+.action-change-item {
+  font-size: 10px; color: var(--text-dim);
+  font-family: monospace; padding: 1px 0;
+}
+.action-error {
+  margin-top: 4px; padding: 3px 6px; background: #4a2a2a;
+  color: #f88; font-size: 11px; border-radius: 3px;
+}
 
 /* Timer panel */
 .timer-item {

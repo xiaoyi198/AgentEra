@@ -132,6 +132,20 @@ WORLD_STATE_TOOLS = [
 ]
 
 
+def _resolve_entity_id(world_state: WorldState, entity_id: str) -> tuple[str, bool]:
+    """精确匹配失败时回退到模糊匹配，返回 (resolved_id, is_fuzzy_matched).
+
+    模糊匹配使用 search_entities（在 id/name/description 中 LIKE 搜索），
+    取第一个结果的 id。若仍找不到，返回原始 entity_id 和 False。
+    """
+    if world_state.get_entity(entity_id):
+        return entity_id, False
+    candidates = world_state.search_entities(entity_id)
+    if candidates:
+        return candidates[0].id, True
+    return entity_id, False
+
+
 def execute_world_state_tool(
     world_state: WorldState,
     name: str,
@@ -143,13 +157,16 @@ def execute_world_state_tool(
     供 ActionAgent 和 TianJiAgent 共用，避免逻辑重复。
     支持的工具：query_entity / query_inventory / update_entity_status / update_inventory.
     `changes_made` 可为 None（天玑调试时不强制记录）。
+    entity_id 参数支持模糊匹配：精确找不到时自动回退到 LIKE 搜索。
     """
     try:
         if name == "query_entity":
-            ent = world_state.get_entity(args.get("entity_id", ""))
+            raw_id = args.get("entity_id", "")
+            resolved_id, fuzzy = _resolve_entity_id(world_state, raw_id)
+            ent = world_state.get_entity(resolved_id)
             if not ent:
                 return {"found": False, "message": "实体不存在"}
-            return {
+            result = {
                 "found": True,
                 "id": ent.id,
                 "type": ent.type,
@@ -157,11 +174,17 @@ def execute_world_state_tool(
                 "description": ent.description,
                 "current_status": ent.current_status,
             }
+            if fuzzy:
+                result["fuzzy_matched"] = True
+                result["original_query"] = raw_id
+            return result
 
         if name == "query_inventory":
-            items = world_state.get_inventory(args.get("entity_id", ""))
-            return {
-                "entity_id": args.get("entity_id", ""),
+            raw_id = args.get("entity_id", "")
+            resolved_id, fuzzy = _resolve_entity_id(world_state, raw_id)
+            items = world_state.get_inventory(resolved_id)
+            result = {
+                "entity_id": resolved_id,
                 "items": [
                     {
                         "category": it.category,
@@ -172,9 +195,14 @@ def execute_world_state_tool(
                     for it in items
                 ],
             }
+            if fuzzy:
+                result["fuzzy_matched"] = True
+                result["original_query"] = raw_id
+            return result
 
         if name == "update_entity_status":
-            entity_id = args.get("entity_id", "")
+            raw_id = args.get("entity_id", "")
+            entity_id, fuzzy = _resolve_entity_id(world_state, raw_id)
             new_status = args.get("new_status", "")
             world_state.update_status(entity_id, new_status, 0.0)
             if changes_made is not None:
@@ -183,10 +211,15 @@ def execute_world_state_tool(
                     "entity_id": entity_id,
                     "new_status": new_status,
                 })
-            return {"ok": True}
+            result = {"ok": True, "entity_id": entity_id}
+            if fuzzy:
+                result["fuzzy_matched"] = True
+                result["original_query"] = raw_id
+            return result
 
         if name == "update_inventory":
-            entity_id = args.get("entity_id", "")
+            raw_id = args.get("entity_id", "")
+            entity_id, fuzzy = _resolve_entity_id(world_state, raw_id)
             category = args.get("category", "")
             item_name = args.get("item_name", "")
             delta = float(args.get("quantity_delta", 0))
@@ -204,7 +237,11 @@ def execute_world_state_tool(
                     "new_quantity": new_qty,
                     "reason": reason,
                 })
-            return {"ok": True, "new_quantity": new_qty}
+            result = {"ok": True, "new_quantity": new_qty, "entity_id": entity_id}
+            if fuzzy:
+                result["fuzzy_matched"] = True
+                result["original_query"] = raw_id
+            return result
 
         return {"ok": False, "error": f"未知世界状态工具：{name}"}
 
@@ -283,6 +320,7 @@ class ActionAgent:
         ]
 
         changes_made: list[dict[str, Any]] = []
+        fc_trace: list[dict[str, Any]] = []
         result_description = ""
         duration_days = 1.0
         success = True
@@ -307,6 +345,11 @@ class ActionAgent:
                 logger.warning("ActionAgent round %d: no tool call, content=%r",
                                round_idx, response.content[:200])
                 result_description = response.content or "行动未产生明确结果"
+                fc_trace.append({
+                    "round": round_idx,
+                    "assistant_content": response.content or "",
+                    "calls": [],
+                })
                 break
 
             # 追加 assistant 消息（含 tool_calls）
@@ -323,6 +366,7 @@ class ActionAgent:
                 ],
             })
 
+            round_calls: list[dict[str, Any]] = []
             complete_called = False
             for tc in response.tool_calls:
                 fn = tc.get("function", {})
@@ -339,11 +383,23 @@ class ActionAgent:
                     "content": json.dumps(tool_result, ensure_ascii=False),
                 })
 
+                round_calls.append({
+                    "tool": name,
+                    "args": args,
+                    "result": tool_result,
+                })
+
                 if name == "complete_action":
                     result_description = args.get("result_description", "")
                     duration_days = float(args.get("duration_days", 1.0))
                     success = bool(args.get("success", True))
                     complete_called = True
+
+            fc_trace.append({
+                "round": round_idx,
+                "assistant_content": response.content or "",
+                "calls": round_calls,
+            })
 
             if complete_called:
                 break
@@ -363,6 +419,7 @@ class ActionAgent:
             changes_made=changes_made,
             success=success,
             error=error,
+            fc_trace=fc_trace,
         )
 
     # ── 内部：工具调度 ──
