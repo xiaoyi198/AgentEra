@@ -149,6 +149,7 @@ EXECUTE_POLICY_TOOL = {
                 "policy": {"type": "string", "description": "政策描述"},
                 "location": {"type": "string", "description": "执行地点"},
                 "executor": {"type": "string", "description": "执行者 Agent ID"},
+                "from_agent": {"type": "string", "description": "发起此行动的官员 Agent ID（行动结果将送回给他）"},
             },
             "required": ["policy", "location"],
         },

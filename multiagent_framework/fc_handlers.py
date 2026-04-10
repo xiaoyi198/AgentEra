@@ -273,7 +273,7 @@ async def handle_execute_policy(ctx: FCContext, args: dict[str, Any]) -> dict[st
     location = args.get("location", "") or args.get("target_location", "")
     source_id = (
         ctx.source_action.agent_id if ctx.source_action else ""
-    ) or ctx.caller_id
+    ) or args.get("from_agent", "") or ""
     executor = args.get("executor") or source_id
 
     payload = {

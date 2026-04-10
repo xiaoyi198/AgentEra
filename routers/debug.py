@@ -43,7 +43,7 @@ async def debug_timers():
         }
         for t in state.orchestrator.timers.get_in_transit()
     ]
-    return {"pending": pending, "fired": state.orchestrator.fired_timers[-20:]}
+    return {"pending": pending, "fired": list(state.orchestrator.fired_timers)[-20:]}
 
 
 @router.get("/router-log")
@@ -51,7 +51,7 @@ async def debug_router_log(after: int = 0):
     """Router 决策日志，增量拉取."""
     if not state.orchestrator:
         return {"error": "not initialized"}
-    log = state.orchestrator.router_log
+    log = list(state.orchestrator.router_log)
     total = len(log)
     return {"total": total, "entries": log[after:]}
 
@@ -61,6 +61,6 @@ async def debug_action_log(after: int = 0):
     """ActionAgent 执行日志（含多轮 FC trace），增量拉取."""
     if not state.orchestrator:
         return {"error": "not initialized"}
-    log = state.orchestrator.action_log
+    log = list(state.orchestrator.action_log)
     total = len(log)
     return {"total": total, "entries": log[after:]}
