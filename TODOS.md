@@ -11,12 +11,7 @@
 
 ### 优先完成agent孵化，完善agent数量
 
-### main.py 拆分为 FastAPI Router 模块（已批准）
 
-**什么：** 将 1149 行 55 个 endpoint 的 main.py 拆分为多个 APIRouter 模块（routers/simulation.py / editor.py / worldstate.py / debug.py / saves.py）。
-**为什么：** 单文件过大，局部改动难以定位，无法为单独功能写独立测试。
-**来源：** eng review 2026-04-10
-**添加时间：** 2026-04-10
 
 ### 补全核心模块单元测试（已批准）
 
@@ -25,12 +20,6 @@
 **来源：** eng review 2026-04-10
 **添加时间：** 2026-04-10
 
-### 修复消息合并丢失 chain_id（已批准）
-
-**什么：** `orchestrator.py _tick()` 的 `merged_agent_wakeups` 合并同目标消息时只保留首个 chain_id，后续链路 ID 丢失。修复方向：保留各条消息各自的 chain_id；或改为不合并，分别调用 agent。
-**为什么：** 上帝视角的信息失真追踪依赖完整链路 ID，合并后调试能力受损。
-**来源：** eng review outside voice 2026-04-10
-**添加时间：** 2026-04-10
 
 ### SQLite WAL 模式（已批准）
 
@@ -39,12 +28,7 @@
 **来源：** eng review outside voice 2026-04-10
 **添加时间：** 2026-04-10
 
-### chain_log + 调试日志 maxlen 限制（已批准）
 
-**什么：** `orchestrator.router_log / action_log / fired_timers` 和 `chain_log._entries` 改用 `collections.deque(maxlen=N)` 替换普通 list。
-**为什么：** 长时间运行高频交互后内存常驻增长，最终 OOM。
-**来源：** eng review 2026-04-10
-**添加时间：** 2026-04-10
 
 ## v1.1+
 

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .types import ChainLogEntry
+
+_ENTRIES_MAXLEN = 5000
 
 
 class ChainLog:
@@ -15,7 +18,7 @@ class ChainLog:
 
     def __init__(self, log_path: str = "chain_log.jsonl") -> None:
         self._path = Path(log_path)
-        self._entries: list[ChainLogEntry] = []
+        self._entries: deque[ChainLogEntry] = deque(maxlen=_ENTRIES_MAXLEN)
         self._by_chain: dict[str, list[ChainLogEntry]] = {}
         self._by_event: dict[str, list[ChainLogEntry]] = {}
 

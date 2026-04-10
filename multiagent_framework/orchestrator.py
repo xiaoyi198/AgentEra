@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
@@ -84,14 +85,14 @@ class Orchestrator:
         # 待处理的 Agent 唤醒（下次 tick 处理）
         self._pending_wakeups: list[dict[str, Any]] = []
 
-        # Router 决策日志（调试用）
-        self.router_log: list[dict[str, Any]] = []
+        # Router 决策日志（调试用，限长防 OOM）
+        self.router_log: deque[dict[str, Any]] = deque(maxlen=2000)
 
         # ActionAgent 执行日志（调试用：含多轮 FC trace）
-        self.action_log: list[dict[str, Any]] = []
+        self.action_log: deque[dict[str, Any]] = deque(maxlen=2000)
 
         # 已触发定时器历史（调试用）
-        self.fired_timers: list[dict[str, Any]] = []
+        self.fired_timers: deque[dict[str, Any]] = deque(maxlen=2000)
 
     @property
     def sim_time(self) -> float:
@@ -269,6 +270,29 @@ class Orchestrator:
     def stop(self) -> None:
         self._running = False
 
+    async def drain_agent_tasks(self, timeout: float = 30.0) -> None:
+        """等待所有后台 Agent 任务完成，确保不再有写文件操作.
+
+        必须在覆盖 chain_log.jsonl / DB 之前调用，否则旧任务完成后会
+        向已替换的文件追加条目，导致读档后出现幽灵对话时间线。
+        超时后才强制 cancel，作为最后兜底。
+        """
+        if not self._agent_tasks:
+            return
+        logger.info("Waiting for %d agent tasks to finish before load...", len(self._agent_tasks))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._agent_tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Agent tasks did not finish within %.1fs, force-cancelling.", timeout)
+            for task in self._agent_tasks:
+                task.cancel()
+            await asyncio.gather(*self._agent_tasks, return_exceptions=True)
+        self._agent_tasks.clear()
+        logger.info("All agent tasks drained.")
+
     async def _tick(self) -> TickResult:
         """一次 tick — 检查定时器、派发唤醒、处理玩家操作、收集状态."""
         result = TickResult(sim_time=self._sim_time)
@@ -323,17 +347,19 @@ class Orchestrator:
                         merged_agent_wakeups[target_id] = {
                             "target": target_id,
                             "payload": dict(wakeup.get("payload", {})),
-                            "chain_id": wakeup.get("chain_id", ""),
+                            "chain_ids": [wakeup.get("chain_id", "")],
                         }
                     else:
-                        # 合并消息内容
-                        base = merged_agent_wakeups[target_id]["payload"]
+                        # 合并消息内容，收集所有 chain_id
+                        base = merged_agent_wakeups[target_id]
+                        base["chain_ids"].append(wakeup.get("chain_id", ""))
+                        base_payload = base["payload"]
                         new_msg = wakeup.get("payload", {}).get("message", "")
                         if new_msg:
-                            base["message"] = f"{base.get('message', '')}\n\n---\n{new_msg}"
+                            base_payload["message"] = f"{base_payload.get('message', '')}\n\n---\n{new_msg}"
                         new_from = wakeup.get("payload", {}).get("from", "")
-                        if new_from and new_from not in base.get("from", ""):
-                            base["from"] = f"{base.get('from', '')}, {new_from}".strip(", ")
+                        if new_from and new_from not in base_payload.get("from", ""):
+                            base_payload["from"] = f"{base_payload.get('from', '')}, {new_from}".strip(", ")
                 else:
                     unresolved.append(target_id)
 
@@ -452,28 +478,31 @@ class Orchestrator:
                     is_distorting=False,
                 )
 
-            chain_id = wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")
+            # 合并 wakeup 携带 chain_ids 列表；未合并的旧格式兼容 chain_id 字段
+            chain_ids = wakeup.get("chain_ids") or [wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")]
+            chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
             event_id = wakeup.get("payload", {}).get("event_id", "")
 
             # 官员直接触发行动：绕过 Router，直接分发给 ActionAgent
             if action.metadata.get("fc_type") == "request_action":
-                self.chain_log.append(ChainLogEntry(
-                    chain_id=chain_id, event_id=event_id,
-                    sim_time=self._sim_time, caller=agent.agent_id,
-                    caller_agent_type=agent.agent_type,
-                    fc_called="request_action",
-                    original_text=action.original_intent,
-                    transmitted_text=action.content,
-                    is_distorted=False,
-                    routed_to="action_agent",
-                    status="delivered",
-                ))
+                for chain_id in chain_ids:
+                    self.chain_log.append(ChainLogEntry(
+                        chain_id=chain_id, event_id=event_id,
+                        sim_time=self._sim_time, caller=agent.agent_id,
+                        caller_agent_type=agent.agent_type,
+                        fc_called="request_action",
+                        original_text=action.original_intent,
+                        transmitted_text=action.content,
+                        is_distorted=False,
+                        routed_to="action_agent",
+                        status="delivered",
+                    ))
                 if self.action_agent is not None:
                     task = asyncio.create_task(
                         self._run_action(
                             payload=action.metadata,
                             source_agent_id=agent.agent_id,
-                            chain_id=chain_id,
+                            chain_id=chain_ids[0],
                             event_id=event_id,
                         )
                     )
@@ -485,10 +514,25 @@ class Orchestrator:
                     )
                 return None  # 不进入 Router 批处理
 
-            existing_hops = self.chain_log.get_max_hop(chain_id)
-            hop_count = existing_hops + 1
+            # 取所有链路中最大 hop，统一判断是否超限
+            max_existing = max(self.chain_log.get_max_hop(c) for c in chain_ids)
+            hop_count = max_existing + 1
 
             if hop_count > MAX_HOPS:
+                for chain_id in chain_ids:
+                    self.chain_log.append(ChainLogEntry(
+                        chain_id=chain_id, event_id=event_id,
+                        sim_time=self._sim_time, caller=agent.agent_id,
+                        caller_agent_type=agent.agent_type, fc_called="submit_action",
+                        original_text=action.original_intent,
+                        transmitted_text=action.content,
+                        is_distorted=action.is_distorting,
+                        hop_count=hop_count, status="loop_detected",
+                    ))
+                logger.warning("Loop detected chains %s hop %d", chain_ids, hop_count)
+                return None
+
+            for chain_id in chain_ids:
                 self.chain_log.append(ChainLogEntry(
                     chain_id=chain_id, event_id=event_id,
                     sim_time=self._sim_time, caller=agent.agent_id,
@@ -496,23 +540,11 @@ class Orchestrator:
                     original_text=action.original_intent,
                     transmitted_text=action.content,
                     is_distorted=action.is_distorting,
-                    hop_count=hop_count, status="loop_detected",
+                    hop_count=hop_count,
+                    timer_id=wakeup.get("timer_id"),
+                    wakeup_type="timer" if wakeup.get("timer_id") else "direct",
+                    status="delivered",
                 ))
-                logger.warning("Loop detected chain %s hop %d", chain_id, hop_count)
-                return None
-
-            self.chain_log.append(ChainLogEntry(
-                chain_id=chain_id, event_id=event_id,
-                sim_time=self._sim_time, caller=agent.agent_id,
-                caller_agent_type=agent.agent_type, fc_called="submit_action",
-                original_text=action.original_intent,
-                transmitted_text=action.content,
-                is_distorted=action.is_distorting,
-                hop_count=hop_count,
-                timer_id=wakeup.get("timer_id"),
-                wakeup_type="timer" if wakeup.get("timer_id") else "direct",
-                status="delivered",
-            ))
             return action
 
         except Exception as e:

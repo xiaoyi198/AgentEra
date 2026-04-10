@@ -153,6 +153,10 @@ async def load_game(req: LoadRequest):
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
 
     # 停止当前模拟
+    if state.orchestrator:
+        # 必须先 drain 后台 agent 任务，否则它们在文件覆盖后仍会写 chain_log.jsonl，
+        # 导致读档后出现不属于存档的幽灵对话时间线。
+        await state.orchestrator.drain_agent_tasks()
     if state._orch_task and not state._orch_task.done():
         state._orch_task.cancel()
         try:
