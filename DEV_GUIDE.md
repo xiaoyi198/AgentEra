@@ -1,69 +1,6 @@
 # 开发指南 — 大明王朝·朝堂风云
 
-## 项目结构
-
-```
-世界模拟器/
-├── multiagent_framework/        # 框架层（通用，可复用于其他 DLC）
-│   ├── types.py                 # 所有数据结构：TimerEntry, ChainLogEntry, AgentAction, RouterCommand, TickResult, PlayerAction, ActionResult
-│   ├── timer_system.py          # 定时器：heapq + SQLite 持久化
-│   ├── chain_log.py             # 调用链日志：JSONL 追加写入 + 内存索引
-│   ├── court_graph.py           # 层级图：SQLite 存储官员/地理，查询上下级/距离
-│   ├── llm_client.py            # LLM 客户端：OpenAI-compatible，自动重试，token 计数，debug 日志
-│   ├── fc_tools.py              # FC 工具定义中央注册表（所有工具 schema，按 Agent 分组）
-│   ├── fc_handlers.py           # FC 处理函数中央注册表（每工具一个 handler，统一分发）
-│   ├── agent_runtime.py         # Agent 基类 + OfficialAgent + InstitutionAgent（含记忆序列化）
-│   ├── action_agent.py          # 行动模拟 Agent：读写世界状态，多轮 FC 循环
-│   ├── tianji_agent.py          # 天玑调试 Agent：注入全工具集，独立于 Orchestrator
-│   ├── world_state.py           # 世界状态数据库：实体（地点/人物/机构）+ 库存管理
-│   ├── router.py                # 世界运行法则（Router）：LLM 驱动，解析意图→路由→定时器
-│   └── orchestrator.py          # 主循环：实时推进，后台 Agent 调用，暂停/存档/读档
-│
-├── daming_court/                # 大明朝廷 DLC
-│   ├── loader.py                # 数据加载：JSON→官员/Agent/事件/世界状态
-│   ├── config/
-│   │   ├── officials.json       # 官员数据（ID/品级/位置/上级/人格/启用状态）
-│   │   ├── personas.json        # 人格模板（贪腐/忠直/圆滑）
-│   │   ├── events.json          # 初始事件（蝗灾）
-│   │   └── world_state.json     # 初始世界状态（地点描述/库存）
-│   └── prompts/
-│       ├── official_template.txt # 官员通用 prompt 模板
-│       ├── router.txt           # Router system prompt
-│       ├── action_agent.txt     # 行动 Agent prompt 模板
-│       ├── tianji.txt           # 天玑 AI system prompt（可选，缺失时使用内置默认）
-│       └── {官员ID}.txt         # 某官员的专用 prompt（可选，优先级最高）
-│
-├── config/
-│   ├── llm.json                 # LLM API 配置（base_url, api_key, model）
-│   └── time.json                # 时间倍率（seconds_per_day）
-│
-├── frontend/                    # React + Vite 前端
-│   └── src/
-│       ├── main.jsx             # 前端入口（皇帝视角）
-│       ├── App.jsx              # 皇帝视角主界面（奏折/批复/在途公文/设置）
-│       ├── GodView.jsx          # 上帝视角调试界面（时间线/Router日志/定时器/Prompt编辑）
-│       ├── WorldStateView.jsx   # 世界状态管理（实体/库存 CRUD + 地点坐标编辑）
-│       ├── AgentEditor.jsx      # Agent 编辑器（官员/地点/人格的可视化编辑）
-│       ├── TianJiView.jsx       # 天玑 AI 调试页（三栏：工具列表/对话/世界状态）
-│       ├── editor-main.jsx      # 编辑器独立入口（editor.html）
-│       ├── tianji-main.jsx      # 天玑独立入口（tianji.html）
-│       ├── App.css / editor.css / tianji.css  # 样式
-│       ├── index.css            # 全局样式
-│       └── hooks/useWebSocket.js
-│
-├── tests/
-│   ├── unit/                    # pytest 单元测试
-│   └── integration/             # 集成测试
-│
-├── saves/
-│   └── save.json                # 存档文件（单存档槽位：sim_time/agent_memories/pending_memorials）
-├── daming_court.db              # SQLite 数据库（官员/地点/定时器/实体/库存）
-├── chain_log.jsonl              # 调用链日志文件
-├── debug_llm.jsonl              # LLM 调用调试日志
-├── main.py                      # FastAPI 后端入口
-├── start.bat / start.sh         # 一键启动
-└── requirements.txt
-```
+> 项目目录结构、数据库 schema、API 接口、前端组件详见 [PROJECT_DOC.md](PROJECT_DOC.md)。
 
 ## 架构核心概念
 
@@ -211,8 +148,8 @@ FC 处理函数的中央注册表：
 - `_execute_commands(commands)` — 遍历 RouterCommand 列表，调用 `dispatch_fc` 统一执行；不再有 if/elif 分支
 - `_handle_player_action()` — 确定性逻辑，皇帝→太监→逐级传达
 - `_fuzzy_find_agent()` — Router 返回模糊 ID 时的容错匹配（ID包含关键词 → 地点匹配 → 名字匹配）
-- `save_state()` — 存档：需先暂停，调用 `timers.save_all()`，序列化所有 Agent 记忆，返回含 sim_time / seconds_per_day / agent_memories / timer_count 的 dict
-- `load_state(state)` — 读档：恢复 sim_time + 速度倍率，从 SQLite 加载定时器，从 JSONL 加载 chain log，逐 Agent 恢复记忆
+- `save_state()` — 将内存定时器刷到 SQLite（`timers.save_all()`）；存档的数据库热备份、chain log 拷贝、runtime.json 写入由 `main.py` 的 `/api/save` 完成
+- `load_state(state)` — 恢复 Agent 记忆（从 runtime.json 传入的 `agent_memories`）；SQLite 和 chain log 的文件替换由 `main.py` 的 `/api/load` 完成
 
 ### multiagent_framework/router.py
 
@@ -346,124 +283,14 @@ FastAPI 后端入口：
   - `load_from_save=True`：读档模式，跳过世界状态 JSON 覆盖和初始事件注入，仅重建 Agent 对象（记忆由 `load_state()` 恢复）
   - 官员加载后会调用 `load_locations()` 将 `officials.json` 中的坐标同步写入 `CourtGraph.locations`，保证 WorldStateView 坐标面板数据源一致
 - `broadcast_tick()` — WebSocket 广播 tick 结果
-- REST API 见下方 API 一览
+- REST API 见 [PROJECT_DOC.md](PROJECT_DOC.md) 第五节
 - WebSocket `/ws` — 实时 tick 推送 + 接收玩家操作
 
-### frontend/src/App.jsx
-
-皇帝视角主界面：
-- 奏折列表（new_memorials）
-- 批复操作（approve/reject/hold/issue_decree）
-- 在途公文列表（in_transit，显示剩余时间）
-- 模拟时间显示（天/时辰/刻）
-- 控制面板（启动/暂停/设置/存档/读档）
-  - 未运行时：显示"开始模拟" + "读档（第N天）"（有存档时）
-  - 暂停时：显示"继续" + "存档" + "读档"（有存档时）
-- `saveInfo` 状态：启动时从 `/api/save-info` 查询，存档成功后更新
-- `handleSave` — 将当前 `memorials` 一起 POST 给 `/api/save`
-- `handleLoad` — 调用 `/api/load`，恢复 simTime/memorials/inTransit/running 状态
-
-### frontend/src/GodView.jsx
-
-上帝视角调试界面：
-- 时间线（chain log 增量拉取，自动滚动）
-- 天玑 AI 的工具调用日志也会出现在此时间线（`tianji` 类型，青色高亮）
-- Router 决策日志
-- 定时器状态（pending + fired）
-- Prompt 编辑器（official_template / router / personas，支持热更新）
-
-### frontend/src/TianJiView.jsx
-
-天玑 AI 调试页面（`tianji.html`）：
-- 三栏布局：工具列表（按类别折叠）| 对话区 | 世界状态面板
-- SSE 解析：工具调用块按 gid 幂等合并，防止 React 批量更新导致重复渲染
-- `assistantText` 快照机制：在调用 `setDisplayMsgs` 前捕获当前值，防止 React 批量 updater 闭包读到已重置的空字符串
-- 工具调用块可折叠，展示参数和返回值
-
-### frontend/src/AgentEditor.jsx
-
-Agent 编辑器（独立页面 editor.html）：
-- 官员树形结构（按层级展示，支持拖拽调整上下级）
-- 官员属性编辑（品级/驻地自由填写/上级/性格/启用状态/附加提示词）
-- 启用/禁用切换（树上圆点一键操作）
-- "活跃"标签：有 extra_prompt 的官员
-- 人格种子编辑（CRUD，保存后立即热重载）
-- 系统 Agent 配置占位（开发中）
-- 导入/导出 JSON
-- Prompt 预览（实时渲染）
-
-### frontend/src/WorldStateView.jsx
-
-世界状态管理（独立在主前端路由中）：
-- 实体列表（按类型筛选 + 搜索）
-- 5 种实体类型：地点/人物/机构/组织/物品
-- 实体 CRUD（新建、编辑、删除，删除级联删库存）
-- 库存行内编辑（点击单元格直接修改，回车/失焦保存）
-- 新增库存行（类目自动补全：粮食/货币/兵力/物资/人口/税收）
-- 地点坐标编辑（仅 location 类型显示，可编辑 X/Y/区域）
+> 前端组件（App.jsx、GodView.jsx、TianJiView.jsx、AgentEditor.jsx、WorldStateView.jsx）的详细说明见 [PROJECT_DOC.md](PROJECT_DOC.md) 第八节。
 
 ## 数据库结构
 
-### SQLite 表结构（daming_court.db）
-
-```sql
--- 官员表（CourtGraph 管理）
-CREATE TABLE officials (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    location_id TEXT,
-    role TEXT NOT NULL DEFAULT 'official',      -- official / eunuch / player
-    agent_type TEXT NOT NULL DEFAULT 'official', -- official / institution
-    superior_id TEXT,
-    personality_seed TEXT DEFAULT '忠直',
-    enabled INTEGER DEFAULT 1,                  -- 是否参与模拟
-    extra_prompt TEXT DEFAULT ''                 -- 附加个性化提示词
-);
-
--- 地点表（CourtGraph 管理，平面直角坐标系，单位：里）
-CREATE TABLE locations (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    region TEXT,
-    x REAL DEFAULT 0,                           -- 东正西负（里）
-    y REAL DEFAULT 0                            -- 北正南负（里）
-);
-
--- 定时器表（TimerSystem 管理）
-CREATE TABLE pending_timers (
-    timer_id TEXT PRIMARY KEY,
-    fire_at REAL NOT NULL,
-    target_agent TEXT NOT NULL,
-    payload TEXT NOT NULL,           -- JSON
-    chain_id TEXT,
-    parent_timer_id TEXT,
-    created_at REAL,
-    cancelled INTEGER DEFAULT 0
-);
-
--- 实体表（WorldState 管理）
-CREATE TABLE entities (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL,              -- location / person / institution / organization / object
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    current_status TEXT DEFAULT '',
-    updated_at REAL DEFAULT 0,
-    metadata TEXT DEFAULT '{}'       -- JSON
-);
-
--- 库存表（WorldState 管理）
-CREATE TABLE inventory (
-    entity_id TEXT NOT NULL,
-    category TEXT NOT NULL,          -- 粮食 / 货币 / 兵力 / 物资
-    item_name TEXT NOT NULL,
-    quantity REAL DEFAULT 0,
-    description TEXT DEFAULT '',
-    PRIMARY KEY (entity_id, category, item_name),
-    FOREIGN KEY (entity_id) REFERENCES entities(id)
-);
-```
+> SQLite 表结构和字段说明详见 [PROJECT_DOC.md](PROJECT_DOC.md) 第六节。
 
 ## 如何添加新官员
 
@@ -578,86 +405,7 @@ python -m pytest tests/unit/ -v
 
 ## API 一览
 
-### 模拟控制
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/start` | POST | 启动模拟 |
-| `/api/pause` | POST | 暂停（等 Agent 完成） |
-| `/api/resume` | POST | 继续 |
-| `/api/save` | POST | 存档（需先暂停，body: `{memorials:[...]}`，写入 `saves/save.json`） |
-| `/api/load` | POST | 读档（重建 Orchestrator + 恢复状态，返回 sim_time/pending_memorials） |
-| `/api/save-info` | GET | 查询是否有存档（返回 `{exists, sim_day, saved_at}`） |
-
-### 玩家操作
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/player-action` | POST | 皇帝操作（approve/reject/hold/issue_decree） |
-
-### 设置与配置
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/settings` | GET/POST | LLM + 时间配置（热更新） |
-| `/api/time-scale` | GET/POST | 时间倍率（需暂停） |
-| `/api/prompts` | GET/POST | Prompt 文件读写 |
-
-### 调试接口
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/debug/timeline?after=N&limit=50` | GET | chain log 增量拉取 |
-| `/api/debug/timers` | GET | 定时器状态（pending + fired） |
-| `/api/debug/router-log?after=N` | GET | Router 决策日志增量拉取 |
-| `/api/chain-log/{chain_id}` | GET | 单条链的上帝视角 |
-| `/api/token-usage` | GET | Token 用量统计 |
-| `/api/in-transit` | GET | 在途公文列表 |
-
-### 世界状态
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/world-state` | GET | 返回所有实体 + 库存 |
-| `/api/world-state/{entity_id}` | GET | 返回单个实体详情 + 库存 |
-| `/api/world-state/{entity_id}` | PUT | 创建或更新实体 |
-| `/api/world-state/{entity_id}` | DELETE | 删除实体（级联删除库存） |
-| `/api/world-state/{entity_id}/status` | POST | 手动修改实体 current_status（调试用） |
-| `/api/world-state/{entity_id}/inventory` | PUT | 新增或覆盖单条库存 |
-| `/api/world-state/{entity_id}/inventory/{category}/{item_name}` | DELETE | 删除单条库存 |
-
-### 天玑 AI
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/tianji/chat` | POST | SSE 流式对话（body: `{message: str}`） |
-| `/api/tianji/reset` | POST | 清空对话历史，重新注入 system prompt |
-| `/api/tianji/history` | GET | 返回当前 messages（供刷新后恢复展示） |
-| `/api/tianji/tools` | GET | 返回工具 schema，按类别分组（前端工具面板用） |
-
-### Agent 编辑器
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/editor/officials` | GET | 返回完整的 officials + locations 配置 |
-| `/api/editor/officials/{id}` | PUT | 更新或新增一个官员 |
-| `/api/editor/officials/{id}` | DELETE | 删除一个官员 |
-| `/api/editor/officials/batch` | POST | 批量保存官员（覆盖全部） |
-| `/api/editor/locations/batch` | POST | 批量保存地点（同步写入 officials.json 和 CourtGraph） |
-| `/api/editor/locations/{location_id}` | GET | 获取单个地点详情（含坐标） |
-| `/api/editor/locations/{location_id}` | PUT | 更新单个地点（同步写入 DB 和 JSON） |
-| `/api/editor/prompt-preview` | POST | 预览官员 system prompt 渲染结果 |
-| `/api/editor/personas` | GET | 返回所有人格种子 |
-| `/api/editor/personas/{name}` | PUT | 新增或更新人格种子 |
-| `/api/editor/personas/{name}` | DELETE | 删除人格种子 |
-| `/api/editor/personas/batch` | POST | 批量保存人格种子（覆盖） |
-
-### WebSocket
-
-| 端点 | 方向 | 说明 |
-|------|------|------|
-| `/ws` | S→C | 实时 tick 推送（TickResult） |
-| `/ws` | C→S | 发送玩家操作（player_action） |
+> 完整 API 接口列表详见 [PROJECT_DOC.md](PROJECT_DOC.md) 第五节。
 
 ## 核心流程详解
 
@@ -728,22 +476,4 @@ Orchestrator._handle_player_action(action)
 
 ## 当前数据配置
 
-### 官员层级
-
-```
-皇帝 (rank=15, player)
-  ├─ 司礼监太监_王振 (rank=13, eunuch, 圆滑)
-  │    └─ 内阁_杨士奇 (rank=10, 忠直)
-  │         └─ 通政司 (rank=9, institution)
-  │              └─ 江南布政使_周忱 (rank=8, 忠直)
-  │                   └─ 苏州知府_况钟 (rank=5, 忠直)
-  │                        ├─ 吴县知县_张三 (rank=1, 贪腐)
-  │                        └─ 昆山知县_李四 (rank=1, 忠直)
-  └─ 户部 (rank=12, institution, 圆滑)
-```
-
-### 人格模板（personas.json）
-
-- **贪腐**：倾向于隐瞒灾情以避免追责，偶尔索取好处，上报时淡化问题严重性，优先考虑自己的仕途和钱袋
-- **忠直**：如实上报，不夸大不隐瞒，为百姓着想。哪怕可能得罪上级，也要把真实情况传递出去
-- **圆滑**：善于揣摩上意，措辞委婉，优先保护自己。根据接收者的喜好调整措辞，既不完全说谎也不完全说实话
+> 官员层级、地点配置、人格模板详见 [PROJECT_DOC.md](PROJECT_DOC.md) 第七节。

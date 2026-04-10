@@ -22,7 +22,11 @@
 ├── requirements.txt                 # Python 依赖（fastapi, uvicorn, httpx, websockets, pydantic）
 ├── start.bat / start.sh             # 一键启动脚本
 ├── saves/
-│   └── save.json                # 存档文件（单存档槽位，JSON 格式）
+│   └── {存档名}/                    # 每个存档一个子目录（用户命名或自动生成）
+│       ├── meta.json                # 元信息（save_name/saved_at/sim_day/agent_count等）
+│       ├── runtime.json             # 运行时（agent_memories/pending_memorials/seconds_per_day）
+│       ├── daming_court.db          # SQLite 数据库快照（热备份）
+│       └── chain_log.jsonl          # 调用链日志快照
 ├── daming_court.db              # SQLite 数据库（官员表、地点表、定时器表、世界状态表）
 ├── chain_log.jsonl                  # 调用链日志（JSONL 格式，记录所有消息传递过程）
 ├── debug_llm.jsonl                  # LLM 调用调试日志
@@ -141,8 +145,8 @@ run() 主循环（0.25s 间隔）
 | `_handle_player_action()` | 处理皇帝操作：找太监 → 唤醒太监传达旨意 |
 | `_fuzzy_find_agent()` | 模糊匹配 Agent（Router 返回地名/简称时容错） |
 | `inject_event()` | 注入事件，为每个 target_agent 创建唤醒 |
-| `save_state()` | 存档（需先暂停）：序列化 sim_time + Agent 记忆 + 定时器，返回 dict |
-| `load_state(state)` | 读档：恢复 sim_time、速度、定时器（SQLite）、chain_log（JSONL）、所有 Agent 记忆 |
+| `save_state()` | 将内存定时器刷到 SQLite；数据库热备份/chain_log 拷贝/runtime.json 写入由 `/api/save` 完成 |
+| `load_state(state)` | 从 runtime.json 的 `agent_memories` 恢复所有 Agent 记忆；SQLite/chain_log 文件替换由 `/api/load` 完成 |
 
 **时间系统**：
 - `sim_time`：游戏世界时间，单位游戏秒，1 游戏天 = 86400 游戏秒
@@ -477,12 +481,11 @@ chain_abc123:
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/start` | POST | 启动模拟 |
-| `/api/pause` | POST | 暂停（等 Agent 完成） |
-| `/api/resume` | POST | 继续 |
-| `/api/save` | POST | 存档（需先暂停，body: `{memorials:[...]}`，写 `saves/save.json`） |
-| `/api/load` | POST | 读档（停止当前模拟，重建 Orchestrator，恢复全部状态） |
-| `/api/save-info` | GET | 查询存档信息（`{exists, sim_day, saved_at}`，前端启动时调用） |
+| `/api/saves` | GET | 列出所有存档（按 saved_at 倒序） |
+| `/api/save` | POST | 存档（需先暂停，body: `{save_name, memorials:[...]}`，写入 `saves/{name}/`） |
+| `/api/load` | POST | 读档（body: `{save_name}`，恢复 SQLite/chain_log/Agent 记忆） |
+| `/api/saves/rename` | POST | 重命名存档（body: `{old_name, new_name}`） |
+| `/api/saves/{name}` | DELETE | 删除存档 |
 
 ### 5.2 玩家操作
 
@@ -707,76 +710,13 @@ CREATE TABLE inventory (
 
 ---
 
-## 九、如何添加新官员
+## 九、如何添加新内容
 
-1. 编辑 `daming_court/config/officials.json`，添加条目：
-```json
-{
-  "id": "松江知府_陈五",
-  "name": "陈五",
-  "rank": 5,
-  "location_id": "松江",
-  "role": "official",
-  "agent_type": "official",
-  "superior_id": "江南布政使_周忱",
-  "personality_seed": "忠直",
-  "enabled": true,
-  "extra_prompt": "你特别关注水利问题"
-}
-```
-
-字段说明：
-- `id` — 唯一标识，建议格式：`职位_姓名`
-- `rank` — 品级（1=知县, 5=知府, 8=布政使, 10=内阁, 12=六部, 15=皇帝）
-- `role` — `official`（官员）/ `eunuch`（太监）/ `player`（皇帝）
-- `agent_type` — `official`（个人）/ `institution`（机构，模拟多人）
-- `superior_id` — 直属上级 ID（null 表示最高级）
-- `personality_seed` — 人格种子（对应 personas.json 的 key）
-- `enabled` — 是否参与模拟（false 则不创建 Agent）
-- `extra_prompt` — 附加个性化提示词（有则标记为"活跃"）
-
-2. 如果是新地点，还需在 `locations` 数组添加：
-```json
-{
-  "id": "松江",
-  "name": "松江府",
-  "region": "江南",
-  "x": 350,
-  "y": -1600
-}
-```
-
-> 地点用平面直角坐标，以京城 (0,0) 为原点，单位：里。
-
-2. （可选）如需自定义 prompt，创建 `daming_court/prompts/松江知府_陈五.txt`
-
-3. 重启后端，自动加载
+> 添加新官员、新事件、世界状态实体、自定义 Prompt 的详细操作指南见 [DEV_GUIDE.md](DEV_GUIDE.md)。
 
 ---
 
-## 十、如何添加新事件
-
-编辑 `daming_court/config/events.json`：
-```json
-{
-  "initial_events": [
-    {
-      "event_id": "evt_002",
-      "event_type": "drought",
-      "severity": 6,
-      "target_agents": ["松江知府_陈五"],
-      "initial_payload": {
-        "area": "松江府",
-        "description": "松江府大旱，农田绝收。"
-      }
-    }
-  ]
-}
-```
-
----
-
-## 十一、待完成功能（TODOS）
+## 十、待完成功能（TODOS）
 
 ### v1 未完成
 - **Agent 编辑器**：优化
@@ -794,7 +734,7 @@ CREATE TABLE inventory (
 
 ---
 
-## 十二、关键设计原则
+## 十一、关键设计原则
 
 1. **Agent 只表达意图，不直接执行**：所有行动由 Router（世界运行法则）仲裁
 2. **信息失真由 Agent 自主产生**：`original_intent` vs `content`，`is_distorting` 由 Agent 声明
