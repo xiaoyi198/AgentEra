@@ -87,6 +87,9 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
     world_state = WorldState(db_path)
     action_agent = ActionAgent(llm_client, world_state)
 
+    from multiagent_framework.memory_compressor import LLMMemoryCompressor
+    memory_compressor = LLMMemoryCompressor(llm_client)
+
     orch = Orchestrator(
         court_graph=court,
         timer_system=timers,
@@ -95,6 +98,7 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
         seconds_per_day=seconds_per_day,
         on_tick=broadcast_tick,
         action_agent=action_agent,
+        memory_compressor=memory_compressor,
     )
     orch.world_state = world_state  # type: ignore[attr-defined]
 

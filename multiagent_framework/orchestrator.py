@@ -13,6 +13,7 @@ from .action_agent import ActionAgent
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
+from .memory_compressor import MemoryCompressor
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -58,6 +59,7 @@ class Orchestrator:
         seconds_per_day: float = 600.0,
         on_tick: Callable[[TickResult], Awaitable[None]] | None = None,
         action_agent: ActionAgent | None = None,
+        memory_compressor: MemoryCompressor | None = None,
     ) -> None:
         self.court = court_graph
         self.timers = timer_system
@@ -66,6 +68,7 @@ class Orchestrator:
         self.action_agent = action_agent
 
         self.agents: dict[str, BaseAgent] = {}
+        self._memory_compressor = memory_compressor
         self._seconds_per_day = seconds_per_day
         self._on_tick = on_tick
 
@@ -113,6 +116,8 @@ class Orchestrator:
     # ── Agent 注册 ──
 
     def register_agent(self, agent: BaseAgent) -> None:
+        if self._memory_compressor is not None:
+            agent.set_compressor(self._memory_compressor)
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
 
@@ -185,8 +190,8 @@ class Orchestrator:
         if not self._paused:
             raise RuntimeError("只能在暂停状态下存档")
         timer_count = self.timers.save_all()
-        # 序列化所有 Agent 记忆
-        agent_memories: dict[str, list] = {}
+        # 序列化所有 Agent 记忆（v2 格式：含 summary + messages）
+        agent_memories: dict[str, Any] = {}
         for agent_id, agent in self.agents.items():
             agent_memories[agent_id] = agent.serialize_memory()
         return {
