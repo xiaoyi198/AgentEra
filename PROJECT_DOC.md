@@ -40,8 +40,8 @@
 ├── debug_llm.jsonl                  # LLM 调用调试日志
 │
 ├── config/                          # 全局配置
-│   ├── llm.json                     # LLM API 配置（base_url, api_key, model）
-│   └── time.json                    # 时间倍率配置（seconds_per_day）
+│   ├── llm.json                     # LLM API 配置（base_url, api_key, model, timeout_s, max_concurrent）
+│   └── time.json                    # 时间倍率配置（seconds_per_day；注意：tick_interval 字段存在但后端未使用）
 │
 ├── multiagent_framework/            # 【框架层】通用多 Agent 框架，可复用于其他 DLC
 │   ├── __init__.py
@@ -57,7 +57,8 @@
 │   ├── court_graph.py               # 朝廷层级图（官员/地点查询）
 │   ├── timer_system.py              # 定时器系统（heapq + SQLite 持久化）
 │   ├── chain_log.py                 # 调用链日志（JSONL 追加写入）
-│   └── world_state.py               # 世界状态数据库（实体/库存管理）
+│   ├── world_state.py               # 世界状态数据库（实体/库存管理）
+│   └── memory_compressor.py         # 【核心】LLM 记忆压缩（Agent 记忆超阈值时自动摘要）
 │
 ├── daming_court/                    # 【DLC 层】大明朝廷内容包
 │   ├── __init__.py
@@ -106,18 +107,21 @@
 
 | 数据结构 | 用途 |
 |---------|------|
-| `TimerEntry` | 定时器条目（fire_at/target_agent/payload/chain_id） |
-| `ChainLogEntry` | 调用链记录（原始意图 vs 实际传递，追踪信息失真） |
-| `AgentAction` | Agent 输出的行动意图（action/content/original_intent/is_distorting） |
-| `EventObject` | 系统事件（蝗灾/旱灾等） |
-| `RouterCommand` | Router 输出的指令（WAKE_AGENT/CREATE_TIMER/EXECUTE_POLICY 等） |
-| `ActionResult` | ActionAgent 完成行动后的结果 |
-| `TickResult` | 一次 tick 推送给前端的数据 |
-| `PlayerAction` | 皇帝的操作（approve/reject/hold/issue_decree） |
+| `TimerEntry` | 定时器条目（timer_id/fire_at/target_agent/payload/chain_id/parent_timer_id/created_at/cancelled） |
+| `ChainLogEntry` | 调用链记录（entry_id/event_id/sim_time/caller_agent_type/fc_called/distortion_note/hop_count/routed_to/timer_id/trigger_at/wakeup_type/status）；追踪信息失真与消息传递 |
+| `AgentAction` | Agent 输出的行动意图（agent_id/action/content/original_intent/is_distorting/urgency/metadata） |
+| `EventObject` | 系统事件（蝗灾/旱灾等）；含 generated_at 字段 |
+| `RouterCommand` | Router 输出的指令（command_type/target/targets/payload/delay_seconds/chain_id/source_action） |
+| `ActionResult` | ActionAgent 完成行动后的结果（含 error 和 fc_trace 字段） |
+| `TickResult` | 一次 tick 推送给前端的数据；有 `to_dict()` 方法 |
+| `PlayerAction` | 皇帝的操作（approve/reject/hold/issue_decree）；含 note 字段 |
+| `LLMResponse` | LLM 响应数据类（content/tool_calls/input_tokens/output_tokens/latency_ms/raw） |
 
 **关键枚举**：
 - `RouterCommandType`: WAKE_AGENT, CREATE_TIMER, EXECUTE_POLICY, RELAY_DECREE, BROADCAST, NO_OP
 - `PlayerActionType`: APPROVE, REJECT, HOLD, ISSUE_DECREE
+
+> **注意**：`BROADCAST` 和 `NO_OP` 目前没有对应的 FC handler，如果 Router 返回这两种类型，`dispatch_fc` 会返回错误。
 
 ---
 
@@ -155,6 +159,12 @@ run() 主循环（0.25s 间隔）
 | `inject_event()` | 注入事件，为每个 target_agent 创建唤醒 |
 | `save_state()` | 将内存定时器刷到 SQLite；数据库热备份/chain_log 拷贝/runtime.json 写入由 `/api/save` 完成 |
 | `load_state(state)` | 从 runtime.json 的 `agent_memories` 恢复所有 Agent 记忆；SQLite/chain_log 文件替换由 `/api/load` 完成 |
+| `register_agent(agent)` | 注册 Agent |
+| `get_agent(agent_id)` | 按 ID 查询 Agent |
+| `inject_player_action(action)` | async，注入玩家操作到队列 |
+| `set_time_scale(seconds_per_day)` | 设置时间倍率（需暂停） |
+| `pause()` / `resume()` / `stop()` | 模拟控制 |
+| `drain_agent_tasks(timeout)` | async，等待所有后台 Agent 任务完成 |
 
 **时间系统**：
 - `sim_time`：游戏世界时间，单位游戏秒，1 游戏天 = 86400 游戏秒
@@ -171,9 +181,11 @@ run() 主循环（0.25s 间隔）
 | 工具 | 作用 |
 |-----|------|
 | `wake_agent(target, message)` | 直接唤醒目标 Agent，投递消息（0 延迟） |
-| `create_timer(target, delay_days, message)` | 创建延迟定时器，N 天后送达 |
-| `execute_policy(policy, location, executor)` | 调用世界模拟 Agent 执行政策效果 |
-| `relay_decree(decree, targets)` | 传递皇帝圣旨给指定官员 |
+| `create_timer(target, delay_days, message, from_agent, urgency?)` | 创建延迟定时器，N 天后送达；`urgency` 为可选传递系数 |
+| `execute_policy(policy, location, executor, from_agent?, description?)` | 调用世界模拟 Agent 执行政策效果；可选 `from_agent` 和 `description` |
+| `relay_decree(decree, targets, urgency?)` | 传递皇帝圣旨给指定官员；`urgency` 为可选传递系数 |
+
+> FC 工具参数中的 `?` 后缀表示可选参数。上述完整参数列表与 DEV_GUIDE 中 Agent/Router 工具表一致。
 
 **重要方法**：
 | 方法 | 作用 |
@@ -181,6 +193,9 @@ run() 主循环（0.25s 间隔）
 | `process_batch(actions)` | 批量处理 AgentAction，返回 RouterCommand 列表 |
 | `_build_batch_description()` | 构建给 LLM 的描述（含官员 ID 列表、层级关系、直属下级、距离天数） |
 | `_parse_commands()` | 解析 LLM 的 function call 响应为 RouterCommand 列表 |
+| `_fc_to_command()` | 将单个 FC 调用转换为 RouterCommand |
+| `update_time_scale(seconds_per_day)` | 更新时间倍率（影响距离计算中的时间缩放） |
+| `_default_prompt()` | 默认 Router system prompt |
 
 ---
 
@@ -209,7 +224,7 @@ run() 主循环（0.25s 间隔）
 `FCContext` 数据类打包所有依赖：
 - `world_state`, `court`, `timers`, `chain_log`, `action_agent`
 - `pending_wakeups`, `run_action`, `agent_tasks` — Orchestrator 共享引用（可选）
-- `sim_time`, `seconds_per_day`, `caller_id`, `chain_id`, `source_action`
+- `sim_time`, `seconds_per_day`（**始终为 86400 游戏秒/天常数，非速度倍率**）, `caller_id`, `chain_id`, `source_action`
 - `changes_made` — ActionAgent 收集世界状态变更列表
 
 **关键函数**：
@@ -218,8 +233,9 @@ run() 主循环（0.25s 间隔）
 | `dispatch_fc(name, ctx, args)` | 统一分发入口，async-aware |
 | `command_type_to_fc_name(cmd_type)` | RouterCommandType → FC 工具名 |
 | `command_to_fc_args(cmd)` | RouterCommand → FC 参数 dict |
-| `parse_agent_fc_response(response, agent_id)` | LLM 响应 → AgentAction |
+| `parse_agent_fc_response(response, agent_id)` | LLM 响应 → `list[AgentAction]`（支持双 FC 同时返回） |
 | `parse_submit_action / parse_request_action` | FC args → AgentAction |
+| `_resolve_entity_id(query, world_state)` | 模糊实体 ID 匹配（ID 精确匹配 → 名称包含 → 类型包含） |
 
 **扩展规则**：新增工具只需写一个 handler 函数，加入 `FC_HANDLERS` 字典即可。
 
@@ -239,13 +255,29 @@ BaseAgent (抽象基类)
 **FC 工具集**（Agent 可调用的工具，二选一）：
 | 工具 | 作用 |
 |-----|------|
-| `submit_action(action, content, original_intent, is_distorting, urgency)` | 表达意图：do_nothing / report_message / do_something |
+| `submit_action(action, content, original_intent, is_distorting, urgency, metadata?)` | 表达意图：do_nothing / report_message / do_something；`metadata` 为可选字典 |
 | `request_action(action_type, target_location, description, resources)` | 触发实际行动（调查/赈灾/抓捕等），绕过 Router 直接给 ActionAgent |
 
 **关键设计**：
 - Agent 只能**表达意图**，不直接执行
 - `original_intent`（真实想法）vs `content`（实际传递）支持信息失真模拟
 - `is_distorting` 由 Agent 自己声明是否故意歪曲信息
+- `process()` 返回 `list[AgentAction]`，支持双 FC（submit_action + request_action 同时发出）
+
+**AgentConfig 字段**：
+- `llm_client` — LLM 客户端实例
+- `system_prompt` — 系统 prompt
+- `tools` — FC 工具列表
+- `personality_seed` — 人格种子
+- `compress_threshold` — 记忆压缩阈值（默认 40 条）
+- `keep_recent` — 压缩时保留最近 N 条（默认 20）
+
+**BaseAgent 方法**：
+- `add_memory(role, content)` — 添加一条记忆
+- `get_messages()` — 构建消息列表（含摘要压缩）
+- `set_compressor(compressor)` — 注入记忆压缩器
+- `_maybe_compress()` — 记忆超阈值时自动压缩
+- `_record_response_to_memory()` — 格式化 LLM 响应写入记忆
 
 ---
 
@@ -256,6 +288,7 @@ BaseAgent (抽象基类)
 **设计特点**：
 - 维护独立的 `messages` 对话历史，不进入 Orchestrator 的任何路径
 - `attach_orchestrator(orch)` 反向注入后共享 `sim_time / pending_wakeups`，所有工具产生与主模拟一致的真实副作用
+- **当前限制**：`main.py` 创建 TianJiAgent 时未传入 orchestrator，也未调用 `attach_orchestrator()`，因此 `wake_agent` 和 `relay_decree` 无法正常工作；`create_timer` 和 `execute_policy` 仍可正常使用
 - 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见，不污染主模拟 chain_id
 - 统一走 `dispatch_fc(name, FCContext, args)` 执行，与 Orchestrator 共用同一份 handler 代码
 
@@ -270,10 +303,12 @@ BaseAgent (抽象基类)
 | 方法 | 作用 |
 |------|------|
 | `reset()` | 清空对话历史，重新注入 system prompt |
-| `chat(user_text)` | 主入口，async generator，yield SSE 事件（assistant_delta / tool_call / tool_result / done） |
+| `chat(user_text)` | 主入口，async generator，yield SSE 事件（assistant_delta / tool_call / tool_result / tool_round_start / error / done） |
 | `_build_ctx()` | 组装 FCContext，挂载 Orchestrator 时共享其运行时引用 |
 | `_dispatch_tool(name, args)` | 统一分发，执行后写 chain_log |
 | `_build_tools()` | 返回 ALL_TOOLS schema 列表 |
+| `_summarize_result(result)` | 工具结果摘要辅助函数，用于 chain_log 展示 |
+| `_load_system_prompt()` | 加载 system prompt，缺失时使用 `_DEFAULT_SYSTEM_PROMPT` |
 
 ---
 
@@ -324,6 +359,12 @@ BaseAgent (抽象基类)
 | `get_distance(from_id, to_id, mode)` | 获取两名官员之间的通信耗时（天），mode 可选 TravelCoeff |
 | `get_officials_at_location(location_id)` | 获取某地的所有官员 |
 | `get_all_locations()` | 获取所有地点 |
+| `get_all_officials()` | 获取所有官员 |
+| `get_officials_by_rank(rank)` | 按品级查询官员 |
+| `get_location(location_id)` | 获取单个地点 |
+| `add_official(official)` | 添加官员 |
+| `add_location(location)` | 添加地点 |
+| `bulk_load_officials(officials)` | 批量加载官员 |
 
 ---
 
@@ -338,7 +379,10 @@ BaseAgent (抽象基类)
 | `cancel(timer_id)` | 取消定时器（懒删除） |
 | `pop_due(current_time)` | 弹出所有到期的定时器 |
 | `get_in_transit()` | 获取所有在途定时器 |
+| `peek_next_time()` | 查看下一个定时器的触发时间 |
+| `count()` | 活跃定时器数量 |
 | `save_all()` / `load_from_db()` | 持久化/恢复 |
+| `export_all()` / `import_all(timers)` | 导出/导入（存档用） |
 
 **实现**：heapq 最小堆 + SQLite 持久化
 
@@ -353,9 +397,14 @@ BaseAgent (抽象基类)
 |-----|------|
 | `append(entry)` | 追加日志（同时写内存 + JSONL 文件） |
 | `get_chain(chain_id)` | 按 chain_id 查询整条调用链 |
-| `get_distortions()` | 查询所有失真记录 |
+| `get_distortions(chain_id=None)` | 查询失真记录（可选按 chain_id 过滤） |
 | `get_withheld()` | 查询所有被压下的消息 |
+| `get_event_chains(event_id)` | 按事件 ID 查询相关链路 |
+| `get_max_hop(chain_id)` | 获取某条链的最大跳数（用于循环检测） |
+| `all_entries()` | 获取所有条目（调试 API 用） |
 | `to_god_view(chain_id)` | 上帝视角：显示原始信息 vs 传递版本 |
+| `clear()` | 清空所有日志 |
+| `load_from_file()` | 从 JSONL 文件恢复 |
 
 ---
 
@@ -379,11 +428,17 @@ BaseAgent (抽象基类)
 | `upsert_entity(entity)` | 插入或更新实体 |
 | `update_status(id, new_status, sim_time)` | 更新实体状况 |
 | `delete_entity(id)` | 删除实体（级联删除库存） |
+| `get_entities_by_type(entity_type)` | 按类型筛选实体 |
+| `get_all_entities()` | 获取所有实体 |
+| `search_entities(keyword)` | 模糊搜索实体（ID/名称包含关键词） |
 | `get_inventory(id)` | 获取库存 |
 | `update_inventory(id, category, item_name, delta, reason)` | 相对增减库存 |
 | `set_inventory(id, category, item_name, quantity, desc)` | 绝对赋值库存 |
 | `delete_inventory_item(id, category, item_name)` | 删除单条库存记录 |
 | `get_context_for_action(location_id, executor_id)` | 为 ActionAgent 构建上下文 |
+| `export_all()` | 导出全部数据（供 API 使用） |
+| `bulk_load(entities, inventory)` | 批量导入实体和库存 |
+| `restore_all(data)` | 从导出数据完整恢复 |
 
 ---
 
@@ -400,9 +455,45 @@ BaseAgent (抽象基类)
 - 配置热更新
 - `chat_stream()` — 流式调用，yield delta/tool_call_delta/done 事件；出错自动退化为非流式
 
+**核心类型**：
+- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent）
+  - `from_file(path)` — 从 JSON 文件加载
+  - `save_to_file(path)` — 保存到文件
+  - `to_display_dict()` — 返回脱敏字典（api_key 打码）
+- `LLMResponse` — LLM 响应数据类（content, tool_calls, input_tokens, output_tokens, latency_ms, raw）
+- `LLMClient` 方法：
+  - `chat()` — 异步调用（非流式）
+  - `chat_stream()` — 流式调用
+  - `close()` — 关闭 HTTP 客户端
+  - `config` — 属性，当前配置
+
 ---
 
-### 3.15 daming_court/loader.py — DLC 数据加载器
+### 3.141 memory_compressor.py — 记忆压缩器
+
+**作用**：当 Agent 记忆超过阈值时，用 LLM 自动生成长摘要，避免上下文溢出。
+
+**核心功能**：
+- `LLMMemoryCompressor` — 接收 LLM 客户端实例
+- `compress(messages, keep_recent=20)` — 保留最近 N 条消息，对更早部分生成摘要
+- 压缩后的格式由 `BaseAgent.serialize_memory()` 以 v2 dict 保存：`{version: 2, summary: "...", messages: [...]}`
+- 阈值由 `AgentConfig.compress_threshold` 控制（默认 40 条）
+
+**核心类型**：
+- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent）
+  - `from_file(path)` — 从 JSON 文件加载
+  - `save_to_file(path)` — 保存到文件
+  - `to_display_dict()` — 返回脱敏字典（api_key 打码）
+- `LLMResponse` — LLM 响应数据类（content, tool_calls, input_tokens, output_tokens, latency_ms, raw）
+- `LLMClient` 方法：
+  - `chat()` — 异步调用（非流式）
+  - `chat_stream()` — 流式调用
+  - `close()` — 关闭 HTTP 客户端
+  - `config` — 属性，当前配置
+
+---
+
+### 3.15 loader.py — DLC 数据加载器
 
 **作用**：从 JSON 配置加载官员、地点、事件、世界状态，创建 Agent 实例。
 
@@ -417,6 +508,8 @@ BaseAgent (抽象基类)
 1. 专用文件 `daming_court/prompts/{官员ID}.txt`（最高）
 2. 通用模板 `official_template.txt`
 3. 默认模板
+
+**记忆压缩注入**：`create_agents()` 创建 Agent 后，Orchestrator 会为每个 Agent 注入 `LLMMemoryCompressor`，使 `_maybe_compress()` 在记忆超阈值时自动触发 LLM 摘要。
 
 ---
 
@@ -489,6 +582,9 @@ chain_abc123:
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
+| `/api/start` | POST | 启动模拟 |
+| `/api/pause` | POST | 暂停模拟 |
+| `/api/resume` | POST | 恢复模拟 |
 | `/api/saves` | GET | 列出所有存档（按 saved_at 倒序） |
 | `/api/save` | POST | 存档（需先暂停，body: `{save_name, memorials:[...]}`，写入 `saves/{name}/`） |
 | `/api/load` | POST | 读档（body: `{save_name}`，恢复 SQLite/chain_log/Agent 记忆） |
@@ -525,6 +621,7 @@ chain_abc123:
 | `/api/debug/timeline?after=N&limit=50` | GET | chain log 增量拉取 |
 | `/api/debug/timers` | GET | 定时器状态（pending + fired） |
 | `/api/debug/router-log?after=N` | GET | Router 决策日志增量拉取 |
+| `/api/debug/action-log?after=N` | GET | ActionAgent 执行日志增量拉取 |
 | `/api/chain-log/{chain_id}` | GET | 单条链的上帝视角 |
 | `/api/token-usage` | GET | Token 用量统计 |
 | `/api/in-transit` | GET | 在途公文列表 |
@@ -567,6 +664,8 @@ chain_abc123:
 ## 六、数据库结构
 
 ### SQLite 表结构（daming_court.db）
+
+> CourtGraph（官员表、地点表）、TimerSystem（定时器表）、WorldState（实体表、库存表）共用同一个 `daming_court.db` SQLite 文件。
 
 ```sql
 -- 官员表
@@ -686,8 +785,8 @@ CREATE TABLE inventory (
 
 - 时间线（chain log 增量拉取，自动滚动，天玑 AI 调用以青色高亮）
 - Router 决策日志
+- ActionAgent 执行日志（`/api/debug/action-log` 增量拉取）
 - 定时器状态（pending + fired）
-- Prompt 编辑器（可热更新 router prompt）
 
 ### 8.5 TianJiView.jsx — 天玑 AI（`/tianji.html`）
 
@@ -734,6 +833,7 @@ CREATE TABLE inventory (
 
 ### v1 已完成（本期新增）
 - **天玑 AI**：全工具注入的调试对话 Agent，独立前端页面，SSE 流式回复，工具调用可视化
+- **记忆压缩**：LLM 记忆压缩器，Agent 记忆超阈值时自动摘要，v2 格式存档
 
 ### v1.1+
 - **Agent 孵化机制**：机构 Agent 在某些条件下自动孵化出独立的官员 Agent
@@ -751,3 +851,5 @@ CREATE TABLE inventory (
 5. **DLC 分离**：框架层（multiagent_framework）可复用于其他场景
 6. **FC 工具单点定义**：工具 schema 在 `fc_tools.py`，handler 在 `fc_handlers.py`，每个工具只有一份代码；添加新工具只需改这两个文件
 7. **FCContext 模式**：调用方组装上下文，handler 消费上下文；Orchestrator 和天玑用同一个 handler，靠 context 字段决定执行路径（有 `run_action` → 异步调度；无则直接 await）
+8. **共享数据库**：CourtGraph、TimerSystem、WorldState 共用 `daming_court.db`，各自管理独立的表
+9. **记忆压缩**：Agent 记忆超阈值时自动触发 LLM 摘要，序列化格式为 v2 dict（`{version, summary, messages}`），兼容 v1 list 反序列化

@@ -41,7 +41,7 @@ class ActionAgent:
         llm_client: LLMClient,
         world_state: WorldState,
         prompt_template_path: str = "daming_court/prompts/action_agent.txt",
-        max_rounds: int = 5,
+        max_rounds: int = 7,
     ) -> None:
         self.llm = llm_client
         self.world_state = world_state

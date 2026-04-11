@@ -221,10 +221,12 @@ REQUEST_ACTION_TOOL = {
     "function": {
         "name": "request_action",
         "description": (
-            "执行一个需要时间和资源的实际行动（调查、赈灾、抓捕、建设、巡查等）。"
-            "行动会由世界模拟器推演结果，完成后把结果送回给你。"
-            "注意：如果你只是想把信息传递给别人（汇报/私信/传话），请用 submit_action。"
-            "只有要实际做事时才用本工具。本轮只能调用 submit_action 或 request_action 其中之一。"
+            "亲自执行一个需要时间和资源的行动（调查、赈灾、抓捕、建设、巡查等）。"
+            "行动由世界模拟器直接推演结果，完成后把结果送回给你。"
+            "与 submit_action(do_something) 的区别：本工具绕过世界法则直接执行，"
+            "你需要自己指定行动类型、地点和资源；"
+            "而 do_something 交由世界法则理解你的意图并安排执行。"
+            "两个工具可以同时调用。"
         ),
         "parameters": {
             "type": "object",
@@ -255,7 +257,7 @@ SUBMIT_ACTION_TOOL = {
     "type": "function",
     "function": {
         "name": "submit_action",
-        "description": "表达你这一轮的行动。必须三选一：do_nothing（什么也不做）、report_message（传递信息）、do_something（触发实际行动，可同时附带通知）。",
+        "description": "表达你这一轮的意图。三选一：do_nothing（按兵不动）、report_message（向他人传递信息）、do_something（声明行动意图，由世界法则理解并安排执行，可同时通知相关方）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -265,8 +267,9 @@ SUBMIT_ACTION_TOOL = {
                     "description": (
                         "do_nothing：本轮不行动，其余字段会被忽略。\n"
                         "report_message：向他人传递信息（汇报/通报/私信/传令等），世界法则决定路径。\n"
-                        "do_something：触发需要时间和资源的实际行动（调查/赈灾/建设/抓捕/巡查等）；"
-                        "如需同时通知他人，在 content 中一并说明。"
+                        "do_something：声明行动意图（调查/赈灾/建设/抓捕/巡查等），"
+                        "世界法则会理解你的意图、安排执行、并自动协调相关方（如通知上级、调度下属）。"
+                        "把你想做的事写在 content 里。"
                     ),
                 },
                 "content": {

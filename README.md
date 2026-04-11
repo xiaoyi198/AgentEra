@@ -1,6 +1,6 @@
 # 世界模拟器
 
-基于 `FastAPI + React + SQLite + LLM Function Calling` 的多智能体朝堂模拟器。玩家扮演皇帝，基层官员接收灾情后逐级上报、隐瞒、越级、执行行动，Router 决定信息如何在朝廷体系中流转，ActionAgent 把行动落到世界状态上。
+基于 `FastAPI + React + SQLite + LLM Function Calling` 的多智能体朝堂模拟器。玩家扮演皇帝，基层官员接收灾情后逐级上报、隐瞒、越级、执行行动，Router 决定信息如何在朝廷体系中流转，ActionAgent 把行动落到世界状态上。Agent 记忆超阈值时自动 LLM 摘要压缩。
 
 ## 核心链路
 
