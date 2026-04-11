@@ -102,6 +102,16 @@ class WorldState:
             ).fetchone()
         return self._row_to_entity(row) if row else None
 
+    def get_coordinates(self, entity_id: str) -> tuple[float, float, str] | None:
+        """从实体 metadata 提取坐标 (x, y, region)，不存在则返回 None."""
+        entity = self.get_entity(entity_id)
+        if not entity:
+            return None
+        meta = entity.metadata
+        if "x" not in meta and "y" not in meta:
+            return None
+        return (float(meta.get("x", 0.0)), float(meta.get("y", 0.0)), str(meta.get("region", "")))
+
     def get_entities_by_type(self, entity_type: str) -> list[Entity]:
         with self._conn() as conn:
             rows = conn.execute(

@@ -7,10 +7,10 @@ import tempfile
 import pytest
 
 from multiagent_framework.court_graph import (
-    CourtGraph, Official, Location,
+    CourtGraph, Official,
     TRAVEL_SPEED_LI_PER_DAY, MIN_TRAVEL_DAYS, TravelCoeff,
-    distance_li,
 )
+from multiagent_framework.world_state import WorldState, Entity
 
 
 class TestCourtGraph:
@@ -37,10 +37,21 @@ class TestCourtGraph:
         ]
         self.court.bulk_load_officials(officials)
 
-        # 京城(0,0)，苏州≈6天，吴县≈同苏州
-        self.court.add_location(Location("京城", "京城",   "直隶", 0.0,   0.0))
-        self.court.add_location(Location("苏州", "苏州府", "江南", 450.0, -1730.0))
-        self.court.add_location(Location("吴县", "吴县",   "江南", 448.0, -1732.0))
+        # 通过 WorldState 提供坐标
+        self.world_state = WorldState(self.tmp.name)
+        self.world_state.upsert_entity(Entity(
+            id="京城", type="location", name="京城",
+            metadata={"x": 0.0, "y": 0.0, "region": "直隶"},
+        ))
+        self.world_state.upsert_entity(Entity(
+            id="苏州", type="location", name="苏州府",
+            metadata={"x": 450.0, "y": -1730.0, "region": "江南"},
+        ))
+        self.world_state.upsert_entity(Entity(
+            id="吴县", type="location", name="吴县",
+            metadata={"x": 448.0, "y": -1732.0, "region": "江南"},
+        ))
+        self.court.set_world_state(self.world_state)
 
     def test_get_official(self):
         o = self.court.get_official("皇帝")
@@ -78,11 +89,6 @@ class TestCourtGraph:
         assert len(rank1) == 1
         assert rank1[0].id == "吴县知县"
 
-    def test_distance_li_helper(self):
-        loc_a = Location("a", "A", "", 0.0, 0.0)
-        loc_b = Location("b", "B", "", 300.0, 400.0)
-        assert distance_li(loc_a, loc_b) == pytest.approx(500.0)
-
     def test_distance_same_city(self):
         # 吴县和苏州同城，应使用最短时间
         dist = self.court.get_distance("吴县知县", "苏州知府")
@@ -107,4 +113,14 @@ class TestCourtGraph:
 
     def test_distance_unknown_official(self):
         dist = self.court.get_distance("不存在A", "不存在B")
+        assert dist == pytest.approx(5.0)
+
+    def test_distance_no_world_state(self):
+        """没有注入 WorldState 时，get_distance 应返回默认值."""
+        court_no_ws = CourtGraph(self.tmp.name)
+        court_no_ws.bulk_load_officials([
+            Official("A", "A", 1, "loc1", "official", "official", None, "忠直"),
+            Official("B", "B", 1, "loc2", "official", "official", None, "忠直"),
+        ])
+        dist = court_no_ws.get_distance("A", "B")
         assert dist == pytest.approx(5.0)

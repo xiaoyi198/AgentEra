@@ -1,10 +1,11 @@
-"""朝廷层级图 — SQLite 存储官员和地理数据."""
+"""朝廷层级图 — SQLite 存储官员层级，坐标数据统一由 WorldState 管理."""
 
 from __future__ import annotations
 
 import math
 import sqlite3
 from dataclasses import dataclass
+from typing import Any
 
 # ── 距离常量 ──
 
@@ -25,7 +26,6 @@ _OFFICIAL_SEL = (
     "id, name, rank, location_id, role, agent_type, "
     "superior_id, personality_seed, enabled, extra_prompt"
 )
-_LOCATION_SEL = "id, name, region, x, y"
 
 
 @dataclass
@@ -43,27 +43,18 @@ class Official:
     extra_prompt: str = ""        # 附加个性化提示词（有则标记为"活跃"）
 
 
-@dataclass
-class Location:
-    """地理位置（以京城为原点的平面直角坐标系，单位：里）."""
-    id: str
-    name: str
-    region: str
-    x: float = 0.0   # 东正西负
-    y: float = 0.0   # 北正南负
-
-
-def distance_li(loc1: Location, loc2: Location) -> float:
-    """计算两地点间的直线距离（里）."""
-    return math.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2)
-
 
 class CourtGraph:
     """基于 SQLite 的朝廷层级查询."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
+        self._world_state: Any | None = None
         self._init_db()
+
+    def set_world_state(self, world_state: Any) -> None:
+        """注入 WorldState 引用，用于坐标查询."""
+        self._world_state = world_state
 
     def _init_db(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
@@ -81,26 +72,12 @@ class CourtGraph:
                     extra_prompt TEXT DEFAULT ''
                 )
             """)
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS locations (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    region TEXT,
-                    x REAL DEFAULT 0,
-                    y REAL DEFAULT 0
-                )
-            """)
             # ── 迁移：为旧数据库补充缺失列 ──
             off_cols = {row[1] for row in conn.execute("PRAGMA table_info(officials)")}
             if "enabled" not in off_cols:
                 conn.execute("ALTER TABLE officials ADD COLUMN enabled INTEGER DEFAULT 1")
             if "extra_prompt" not in off_cols:
                 conn.execute("ALTER TABLE officials ADD COLUMN extra_prompt TEXT DEFAULT ''")
-            loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
-            if "x" not in loc_cols:
-                conn.execute("ALTER TABLE locations ADD COLUMN x REAL DEFAULT 0")
-            if "y" not in loc_cols:
-                conn.execute("ALTER TABLE locations ADD COLUMN y REAL DEFAULT 0")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -166,22 +143,6 @@ class CourtGraph:
             rows = conn.execute(f"SELECT {_OFFICIAL_SEL} FROM officials").fetchall()
         return [Official(**dict(r)) for r in rows]
 
-    # ── 地理查询 ──
-
-    def get_location(self, location_id: str) -> Location | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                f"SELECT {_LOCATION_SEL} FROM locations WHERE id = ?", (location_id,)
-            ).fetchone()
-        if not row:
-            return None
-        return Location(**dict(row))
-
-    def get_all_locations(self) -> list[Location]:
-        with self._conn() as conn:
-            rows = conn.execute(f"SELECT {_LOCATION_SEL} FROM locations").fetchall()
-        return [Location(**dict(r)) for r in rows]
-
     def get_distance(
         self,
         from_id: str,
@@ -189,6 +150,8 @@ class CourtGraph:
         mode: float = TravelCoeff.NORMAL,
     ) -> float:
         """获取两名官员之间的通信耗时（天）.
+
+        坐标数据从 WorldState entity metadata 获取。
 
         Args:
             from_id: 发送方官员 ID
@@ -198,15 +161,16 @@ class CourtGraph:
             通信天数（浮点），最少 MIN_TRAVEL_DAYS
         """
         from_official = self.get_official(from_id)
-        to_official   = self.get_official(to_id)
+        to_official = self.get_official(to_id)
         if not from_official or not to_official:
             return 5.0 * mode
-        from_loc = self.get_location(from_official.location_id) if from_official.location_id else None
-        to_loc   = self.get_location(to_official.location_id)   if to_official.location_id   else None
-        if from_loc and to_loc:
-            dist = distance_li(from_loc, to_loc)
-            days = dist / TRAVEL_SPEED_LI_PER_DAY * mode
-            return max(days, MIN_TRAVEL_DAYS)
+        if self._world_state and from_official.location_id and to_official.location_id:
+            from_c = self._world_state.get_coordinates(from_official.location_id)
+            to_c = self._world_state.get_coordinates(to_official.location_id)
+            if from_c and to_c:
+                dist = math.sqrt((from_c[0] - to_c[0]) ** 2 + (from_c[1] - to_c[1]) ** 2)
+                days = dist / TRAVEL_SPEED_LI_PER_DAY * mode
+                return max(days, MIN_TRAVEL_DAYS)
         return 5.0 * mode
 
     # ── 数据写入 ──
@@ -224,16 +188,6 @@ class CourtGraph:
                     official.superior_id, official.personality_seed,
                     int(official.enabled), official.extra_prompt,
                 ),
-            )
-
-    def add_location(self, location: Location) -> None:
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                f"""INSERT OR REPLACE INTO locations
-                   (id, name, region, x, y)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (location.id, location.name, location.region,
-                 location.x, location.y),
             )
 
     def bulk_load_officials(self, officials: list[Official]) -> int:

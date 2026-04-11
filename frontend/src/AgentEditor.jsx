@@ -25,6 +25,52 @@ const batchSave = (officials) => api('/api/editor/officials/batch', { method: 'P
 const previewPrompt = (data) => api('/api/editor/prompt-preview', { method: 'POST', body: JSON.stringify(data) })
 const upsertPersona = (name, data) => api(`/api/editor/personas/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(data) })
 const deletePersonaApi = (name) => api(`/api/editor/personas/${encodeURIComponent(name)}`, { method: 'DELETE' })
+const fetchSystemPrompts = () => api('/api/prompts')
+const saveSystemPrompt = (name, content) => api('/api/prompts', { method: 'POST', body: JSON.stringify({ name, content }) })
+const fetchWorldEntities = () => api('/api/world-state')
+
+// ── System Agent definitions ──
+
+const SYSTEM_AGENTS = [
+  {
+    key: 'router',
+    name: 'Router（世界运行法则）',
+    desc: '解读官员行动意图，执行消息传递、时间流逝、政策效果等世界规则',
+    vars: null,
+    hotReload: true,
+  },
+  {
+    key: 'action_agent',
+    name: 'ActionAgent（行动模拟器）',
+    desc: '模拟官员具体行动的过程和结果',
+    vars: [
+      { name: 'executor_name', hint: '执行者姓名' },
+      { name: 'action_type', hint: '行动类型' },
+      { name: 'target_location', hint: '目标地点' },
+      { name: 'action_description', hint: '行动描述' },
+      { name: 'resources', hint: '投入资源' },
+      { name: 'world_context', hint: '地点与执行者当前状况' },
+    ],
+  },
+  {
+    key: 'official_template',
+    name: '官员模板',
+    desc: '所有官员 Agent 的基础 system prompt 模板',
+    vars: [
+      { name: 'name', hint: '官员姓名' },
+      { name: 'location', hint: '驻地' },
+      { name: 'rank_title', hint: '品级头衔' },
+      { name: 'personality', hint: '人格描述' },
+      { name: 'superior', hint: '直属上级' },
+    ],
+  },
+  {
+    key: 'tianji',
+    name: '天玑（调试助手）',
+    desc: '全权限调试 AI，用于测试模拟器全流程',
+    vars: null,
+  },
+]
 
 // ── Hierarchy tree builder ──
 
@@ -153,7 +199,9 @@ function rankKey(node) { return `collapse_${node.id}` }
 
 // ── Detail Editor Panel ──
 
-function DetailPanel({ official, personas, allOfficials, onChange, onSave, onDelete, promptText, onPreview }) {
+const ENTITY_TYPE_LABELS = { location: '地点', institution: '机构', organization: '组织' }
+
+function DetailPanel({ official, personas, allOfficials, worldEntities, onChange, onSave, onDelete, promptText, onPreview }) {
   if (!official) {
     return <div className="detail-empty">在左侧选择或新建一名官员</div>
   }
@@ -180,7 +228,20 @@ function DetailPanel({ official, personas, allOfficials, onChange, onSave, onDel
         </select>
 
         <label>驻地</label>
-        <input value={official.location_id} onChange={e => onChange({ ...official, location_id: e.target.value })} placeholder="如：吴县" />
+        <select value={official.location_id} onChange={e => onChange({ ...official, location_id: e.target.value })}>
+          <option value="">— 无驻地 —</option>
+          {['location', 'institution', 'organization'].map(type => {
+            const group = worldEntities.filter(e => e.type === type)
+            if (group.length === 0) return null
+            return (
+              <optgroup key={type} label={ENTITY_TYPE_LABELS[type]}>
+                {group.map(ent => (
+                  <option key={ent.id} value={ent.id}>{ent.name}（{ent.id}）</option>
+                ))}
+              </optgroup>
+            )
+          })}
+        </select>
 
         <label>角色</label>
         <select value={official.role} onChange={e => onChange({ ...official, role: e.target.value })}>
@@ -373,15 +434,98 @@ function PersonaEditor({ personas, onUpdate, showToast }) {
   )
 }
 
-// ── Location Editor ──
+// ── System Agent List (left panel) ──
 
-function SystemAgentEditor() {
+function SystemAgentEditor({ selectedKey, onSelect }) {
   return (
     <div className="system-agent-editor">
-      <div className="placeholder-content">
-        <h2>系统 Agent 编辑</h2>
-        <p className="placeholder-text">功能开发中...</p>
-        <p className="placeholder-hint">此处将用于编辑 Router、ActionAgent 等系统级 Agent 的配置</p>
+      <div className="system-agent-header">
+        <h3>系统 Agent</h3>
+        <span className="system-agent-hint">点击编辑 Prompt</span>
+      </div>
+      <div className="system-agent-list">
+        {SYSTEM_AGENTS.map(agent => (
+          <div
+            key={agent.key}
+            className={`system-agent-card ${selectedKey === agent.key ? 'selected' : ''}`}
+            onClick={() => onSelect(agent.key)}
+          >
+            <div className="system-agent-card-header">
+              <span className="system-agent-name">{agent.name}</span>
+              {agent.hotReload && <span className="hot-reload-badge">热重载</span>}
+            </div>
+            <p className="system-agent-desc">{agent.desc}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── System Agent Detail (right panel) ──
+
+function SystemAgentDetail({ agentKey, prompts, onSave, showToast }) {
+  const [draft, setDraft] = useState('')
+  const [saved, setSaved] = useState('')
+
+  const agent = SYSTEM_AGENTS.find(a => a.key === agentKey)
+
+  useEffect(() => {
+    const content = prompts[agentKey] || ''
+    setDraft(content)
+    setSaved(content)
+  }, [agentKey, prompts])
+
+  if (!agent) {
+    return <div className="detail-empty">在左侧选择一个系统 Agent</div>
+  }
+
+  const isDirty = draft !== saved
+
+  const handleSave = async () => {
+    const res = await saveSystemPrompt(agentKey, draft)
+    if (res.status === 'ok') {
+      setSaved(draft)
+      showToast(agent.hotReload ? '已保存（热重载生效）' : '已保存')
+      onSave(agentKey, draft)
+    } else {
+      showToast('保存失败', 'err')
+    }
+  }
+
+  const handleReset = () => {
+    setDraft(saved)
+  }
+
+  return (
+    <div className="system-agent-detail">
+      <h3>{agent.name}</h3>
+      <p className="system-agent-detail-desc">{agent.desc}</p>
+
+      {agent.vars && (
+        <div className="template-vars">
+          <span className="template-vars-title">模板变量：</span>
+          {agent.vars.map(v => (
+            <span key={v.name} className="template-var-tag">{`{${v.name}}`}<span className="var-hint">{v.hint}</span></span>
+          ))}
+        </div>
+      )}
+
+      {agent.hotReload && (
+        <div className="hot-reload-hint">保存后 Router prompt 立即生效，无需重启模拟器</div>
+      )}
+
+      <textarea
+        className="system-prompt-textarea"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        spellCheck={false}
+      />
+
+      <div className="detail-actions">
+        <button className="btn-save" onClick={handleSave} disabled={!isDirty}>保存</button>
+        <button className="btn-preview" onClick={handleReset} disabled={!isDirty}>重置</button>
+        {isDirty && <span className="unsaved-hint">有未保存的修改</span>}
       </div>
     </div>
   )
@@ -389,11 +533,11 @@ function SystemAgentEditor() {
 
 // ── Import/Export ──
 
-function ImportExport({ officials, locations, onImport }) {
+function ImportExport({ officials, onImport }) {
   const fileRef = useRef()
 
   const handleExport = () => {
-    const data = JSON.stringify({ officials, locations }, null, 2)
+    const data = JSON.stringify({ officials }, null, 2)
     const blob = new Blob([data], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -432,6 +576,7 @@ function ImportExport({ officials, locations, onImport }) {
 
 export default function AgentEditor() {
   const [officials, setOfficials] = useState([])
+  const [worldEntities, setWorldEntities] = useState([])
   const [personas, setPersonas] = useState({})
   const [selectedId, setSelectedId] = useState(null)
   const [editForm, setEditForm] = useState(null)
@@ -439,6 +584,8 @@ export default function AgentEditor() {
   const [collapsed, setCollapsed] = useState(new Set())
   const [tab, setTab] = useState('tree') // tree | system_agents | personas
   const [toast, setToast] = useState(null)
+  const [systemAgentKey, setSystemAgentKey] = useState(null)
+  const [systemPrompts, setSystemPrompts] = useState({})
 
   const showToast = useCallback((msg, type = 'ok') => {
     setToast({ msg, type })
@@ -454,18 +601,38 @@ export default function AgentEditor() {
     fetchAll().then(data => {
       setOfficials(data.officials || [])
     })
+    fetchWorldEntities().then(data => {
+      setWorldEntities((data.entities || []).filter(e =>
+        ['location', 'institution', 'organization'].includes(e.type)
+      ))
+    })
     reloadPersonas()
+    fetchSystemPrompts().then(setSystemPrompts)
   }, [reloadPersonas])
 
-  // Select official
+  // Select official (clears system agent selection)
   const handleSelect = useCallback((id) => {
     setSelectedId(id)
+    setSystemAgentKey(null)
     const o = officials.find(o => o.id === id)
     if (o) {
       setEditForm({ ...o })
       setPromptText(null)
     }
   }, [officials])
+
+  // Select system agent (clears official selection)
+  const handleSelectSystemAgent = useCallback((key) => {
+    setSystemAgentKey(key)
+    setSelectedId(null)
+    setEditForm(null)
+    setPromptText(null)
+  }, [])
+
+  // Update local cache after system prompt save
+  const handleSystemPromptSave = useCallback((key, content) => {
+    setSystemPrompts(prev => ({ ...prev, [key]: content }))
+  }, [])
 
   // New official
   const handleNew = () => {
@@ -608,7 +775,7 @@ export default function AgentEditor() {
           <span className="stat">活跃: <strong>{activeCount}</strong></span>
         </div>
         <div className="header-actions">
-          <ImportExport officials={officials} locations={[]} onImport={handleImport} />
+          <ImportExport officials={officials} onImport={handleImport} />
           <a href="/" className="btn-back">返回主界面</a>
         </div>
       </header>
@@ -661,22 +828,35 @@ export default function AgentEditor() {
           )}
 
           {tab === 'system_agents' && (
-            <SystemAgentEditor />
+            <SystemAgentEditor
+              selectedKey={systemAgentKey}
+              onSelect={handleSelectSystemAgent}
+            />
           )}
         </div>
 
-        {/* Right: Detail */}
+        {/* Right: Detail / System Agent Editor */}
         <div className="editor-right">
-          <DetailPanel
-            official={editForm}
-            personas={personas}
-            allOfficials={officials}
-            onChange={setEditForm}
-            onSave={handleSave}
-            onDelete={handleDelete}
-            promptText={promptText}
-            onPreview={handlePreview}
-          />
+          {systemAgentKey ? (
+            <SystemAgentDetail
+              agentKey={systemAgentKey}
+              prompts={systemPrompts}
+              onSave={handleSystemPromptSave}
+              showToast={showToast}
+            />
+          ) : (
+            <DetailPanel
+              official={editForm}
+              personas={personas}
+              allOfficials={officials}
+              worldEntities={worldEntities}
+              onChange={setEditForm}
+              onSave={handleSave}
+              onDelete={handleDelete}
+              promptText={promptText}
+              onPreview={handlePreview}
+            />
+          )}
         </div>
       </div>
     </div>

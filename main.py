@@ -87,6 +87,7 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
     router = RouterAgent(llm_client, court, router_prompt, seconds_per_day)
 
     world_state = WorldState(db_path)
+    court.set_world_state(world_state)
     action_agent = ActionAgent(llm_client, world_state)
 
     from multiagent_framework.memory_compressor import LLMMemoryCompressor
@@ -130,7 +131,6 @@ def _load_dlc(
     from daming_court.loader import (
         create_agents,
         load_events,
-        load_locations,
         load_officials,
         load_world_state,
     )
@@ -150,11 +150,6 @@ def _load_dlc(
     if Path(officials_path).exists():
         officials = load_officials(officials_path)
         court.bulk_load_officials(officials)
-        locations = load_locations(officials_path)
-        for loc in locations:
-            court.add_location(loc)
-        if locations:
-            logger.info("Loaded %d locations into court_graph", len(locations))
         agents = create_agents(officials, prompts_dir, llm)
         for agent in agents:
             orch.register_agent(agent)

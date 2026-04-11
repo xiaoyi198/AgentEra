@@ -1,39 +1,60 @@
 {
   "entities": [
     {
-      "id": "吴县",
+      "id": "京城",
       "type": "location",
-      "name": "吴县",
-      "description": "苏州府下辖县，鱼米之乡，人口稠密。知县张三（贪腐）治下。",
-      "current_status": "遭遇蝗灾，灾情严重，百姓困苦"
-    },
-    {
-      "id": "昆山",
-      "type": "location",
-      "name": "昆山县",
-      "description": "苏州府下辖县，地处水乡，商贸发达。知县李四（忠直）治下。",
-      "current_status": "遭遇蝗灾，知县如实上报"
-    },
-    {
-      "id": "苏州",
-      "type": "location",
-      "name": "苏州府",
-      "description": "江南重镇，辖吴县、昆山等多县。知府况钟（忠直）主政。",
-      "current_status": "正常运转，关注下辖各县蝗灾"
-    },
-    {
-      "id": "南京",
-      "type": "location",
-      "name": "南京",
-      "description": "大明陪都，江南布政使司驻地。",
-      "current_status": "正常"
+      "name": "京城",
+      "description": "大明京师，皇帝及中央六部驻地。",
+      "current_status": "正常",
+      "metadata": {"x": 0.0, "y": 0.0, "region": "直隶"}
     },
     {
       "id": "北京",
       "type": "location",
       "name": "北京",
       "description": "大明京师，皇帝及中央六部驻地。",
-      "current_status": "正常"
+      "current_status": "正常",
+      "metadata": {"x": 0.0, "y": 0.0, "region": "直隶"}
+    },
+    {
+      "id": "江南",
+      "type": "location",
+      "name": "江南布政使司",
+      "description": "江南布政使司辖区。",
+      "current_status": "正常",
+      "metadata": {"x": 200.0, "y": -1490.0, "region": "江南"}
+    },
+    {
+      "id": "苏州",
+      "type": "location",
+      "name": "苏州府",
+      "description": "江南重镇，辖吴县、昆山等多县。知府况钟（忠直）主政。",
+      "current_status": "正常运转，关注下辖各县蝗灾",
+      "metadata": {"x": 450.0, "y": -1730.0, "region": "江南"}
+    },
+    {
+      "id": "吴县",
+      "type": "location",
+      "name": "吴县",
+      "description": "苏州府下辖县，鱼米之乡，人口稠密。知县张三（贪腐）治下。",
+      "current_status": "遭遇蝗灾，灾情严重，百姓困苦",
+      "metadata": {"x": 448.0, "y": -1732.0, "region": "江南"}
+    },
+    {
+      "id": "昆山",
+      "type": "location",
+      "name": "昆山县",
+      "description": "苏州府下辖县，地处水乡，商贸发达。知县李四（忠直）治下。",
+      "current_status": "遭遇蝗灾，知县如实上报",
+      "metadata": {"x": 510.0, "y": -1680.0, "region": "江南"}
+    },
+    {
+      "id": "南京",
+      "type": "location",
+      "name": "南京",
+      "description": "大明陪都，江南布政使司驻地。",
+      "current_status": "正常",
+      "metadata": {"x": 429.0, "y": -1741.0, "region": ""}
     },
     {
       "id": "吏部",

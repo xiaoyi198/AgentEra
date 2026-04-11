@@ -13,7 +13,7 @@ from multiagent_framework.agent_runtime import (
     InstitutionAgent,
     OfficialAgent,
 )
-from multiagent_framework.court_graph import Official, Location
+from multiagent_framework.court_graph import Official
 from multiagent_framework.llm_client import LLMClient
 from multiagent_framework.world_state import Entity, InventoryItem, WorldState
 
@@ -38,23 +38,6 @@ def load_officials(config_path: str) -> list[Official]:
             extra_prompt=item.get("extra_prompt", ""),
         ))
     return officials
-
-
-def load_locations(config_path: str) -> list[Location]:
-    """从 JSON 加载地理位置."""
-    with open(config_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    locations = []
-    for item in data.get("locations", []):
-        locations.append(Location(
-            id=item["id"],
-            name=item["name"],
-            region=item.get("region", ""),
-            x=float(item.get("x", 0)),
-            y=float(item.get("y", 0)),
-        ))
-    return locations
 
 
 def load_personas(config_path: str = "daming_court/config/personas.json") -> dict[str, str]:

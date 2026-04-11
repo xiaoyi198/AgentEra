@@ -108,7 +108,7 @@ async def editor_batch_save(officials: list[OfficialUpsertRequest]):
     return {"status": "ok", "count": len(officials)}
 
 
-# ── 地点 CRUD ──
+# ── 地点坐标（读写 WorldState entity metadata）──
 
 
 class LocationUpsertRequest(BaseModel):
@@ -119,52 +119,43 @@ class LocationUpsertRequest(BaseModel):
     y: float = 0.0
 
 
-@router.post("/editor/locations/batch")
-async def editor_batch_save_locations(locations: list[LocationUpsertRequest]):
-    """批量保存地点（同步写入 officials.json 和 CourtGraph）."""
-    data = _read_officials_json()
-    data["locations"] = [loc.model_dump() for loc in locations]
-    _write_officials_json(data)
-    if state.orchestrator:
-        from multiagent_framework.court_graph import Location
-        for loc in locations:
-            state.orchestrator.court.add_location(
-                Location(id=loc.id, name=loc.name, region=loc.region, x=loc.x, y=loc.y)
-            )
-    return {"status": "ok", "count": len(locations)}
-
-
 @router.get("/editor/locations/{location_id}")
 async def editor_get_location(location_id: str):
-    """获取单个地点坐标."""
+    """获取单个地点坐标（从 WorldState metadata 读取）."""
     if not state.orchestrator:
         return {"error": "not initialized"}
-    loc = state.orchestrator.court.get_location(location_id)
-    if not loc:
+    ws = getattr(state.orchestrator, "world_state", None)
+    if not ws:
+        return {"error": "world_state not initialized"}
+    entity = ws.get_entity(location_id)
+    if not entity:
         return {"error": "not found", "location_id": location_id}
-    return {"id": loc.id, "name": loc.name, "region": loc.region, "x": loc.x, "y": loc.y}
+    meta = entity.metadata
+    return {
+        "id": entity.id,
+        "name": entity.name,
+        "region": meta.get("region", ""),
+        "x": float(meta.get("x", 0)),
+        "y": float(meta.get("y", 0)),
+    }
 
 
 @router.put("/editor/locations/{location_id}")
 async def editor_update_location(location_id: str, req: LocationUpsertRequest):
-    """更新单个地点坐标，同步写入 DB 和 officials.json."""
+    """更新单个地点坐标（写入 WorldState metadata）."""
     if not state.orchestrator:
         return {"error": "not initialized"}
-    from multiagent_framework.court_graph import Location
-    loc = Location(id=location_id, name=req.name, region=req.region, x=req.x, y=req.y)
-    state.orchestrator.court.add_location(loc)
-    data = _read_officials_json()
-    locations = data.get("locations", [])
-    found = False
-    for i, l in enumerate(locations):
-        if l["id"] == location_id:
-            locations[i] = {"id": location_id, "name": req.name, "region": req.region, "x": req.x, "y": req.y}
-            found = True
-            break
-    if not found:
-        locations.append({"id": location_id, "name": req.name, "region": req.region, "x": req.x, "y": req.y})
-    data["locations"] = locations
-    _write_officials_json(data)
+    ws = getattr(state.orchestrator, "world_state", None)
+    if not ws:
+        return {"error": "world_state not initialized"}
+    entity = ws.get_entity(location_id)
+    if not entity:
+        return {"error": "not found", "location_id": location_id}
+    entity.metadata["x"] = req.x
+    entity.metadata["y"] = req.y
+    entity.metadata["region"] = req.region
+    entity.name = req.name
+    ws.upsert_entity(entity)
     return {"status": "ok", "location_id": location_id}
 
 
@@ -251,6 +242,8 @@ async def get_prompts():
     for name, path in [
         ("official_template", "daming_court/prompts/official_template.txt"),
         ("router", "daming_court/prompts/router.txt"),
+        ("action_agent", "daming_court/prompts/action_agent.txt"),
+        ("tianji", "daming_court/prompts/tianji.txt"),
         ("personas", "daming_court/config/personas.json"),
     ]:
         p = Path(path)
@@ -272,6 +265,8 @@ async def save_prompt(req: PromptSaveRequest):
     paths = {
         "official_template": "daming_court/prompts/official_template.txt",
         "router": "daming_court/prompts/router.txt",
+        "action_agent": "daming_court/prompts/action_agent.txt",
+        "tianji": "daming_court/prompts/tianji.txt",
         "personas": "daming_court/config/personas.json",
     }
     path = paths.get(req.name)
