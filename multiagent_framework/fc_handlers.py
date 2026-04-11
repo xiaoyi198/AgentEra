@@ -131,6 +131,23 @@ def handle_query_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, An
         return {"ok": False, "error": str(e)}
 
 
+def handle_list_entities(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """列出实体 ID/类型/名称。筛选参数暂为占位，返回全量."""
+    try:
+        # TODO: entity_type 筛选待 agent↔entity 关联实现后启用
+        entities = ctx.world_state.get_all_entities()
+        return {
+            "entities": [
+                {"id": e.id, "type": e.type, "name": e.name}
+                for e in entities
+            ],
+            "count": len(entities),
+        }
+    except Exception as e:
+        logger.exception("handle_list_entities failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 def handle_update_entity_status(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
     try:
         raw_id = args.get("entity_id", "")
@@ -345,15 +362,41 @@ async def handle_relay_decree(ctx: FCContext, args: dict[str, Any]) -> dict[str,
     return {"ok": True, "delivered_to": list(targets), "count": len(targets)}
 
 
+def handle_list_agents(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """列出可唤醒 Agent。筛选参数暂为占位，返回全量."""
+    try:
+        # TODO: location_id 筛选待 agent↔entity 关联实现后启用
+        officials = ctx.court.get_all_officials()
+        return {
+            "agents": [
+                {
+                    "id": o.id,
+                    "name": o.name,
+                    "rank": o.rank,
+                    "location_id": o.location_id,
+                    "role": o.role,
+                    "enabled": o.enabled,
+                }
+                for o in officials
+            ],
+            "count": len(officials),
+        }
+    except Exception as e:
+        logger.exception("handle_list_agents failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 # ── 分发注册表 ────────────────────────────────────────────────────────────────
 
 FC_HANDLERS: dict[str, tuple[Callable, bool]] = {
     # (handler, is_async)
+    "list_entities":        (handle_list_entities, False),
     "query_entity":         (handle_query_entity, False),
     "query_inventory":      (handle_query_inventory, False),
     "update_entity_status": (handle_update_entity_status, False),
     "update_inventory":     (handle_update_inventory, False),
     "complete_action":      (handle_complete_action, False),
+    "list_agents":          (handle_list_agents, False),
     "wake_agent":           (handle_wake_agent, True),
     "create_timer":         (handle_create_timer, True),
     "execute_policy":       (handle_execute_policy, True),

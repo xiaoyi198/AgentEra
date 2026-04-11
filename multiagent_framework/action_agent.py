@@ -33,6 +33,7 @@ class ActionAgent:
 
     独立于 BaseAgent 类层次 —— ActionAgent 不是官员/机构，而是"世界法则"的执行者。
     每次 process() 都是独立的多轮 FC 会话，无跨会话记忆。
+    max_rounds 参数限制每次行动的最大 FC 轮数，防止过度模拟导致资源耗尽推荐7轮就成最好别超过10轮。
     """
 
     def __init__(

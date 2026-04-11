@@ -42,6 +42,12 @@
 **添加时间：** 2026-04-10
 
 
+### 将 Agent 关联到实体（list_entities / list_agents 筛选前置）
+
+**什么：** 建立 agent↔entity 的映射关系，使 `list_entities` 的 `entity_type` 筛选和 `list_agents` 的 `location_id` 筛选真正生效。当前两个工具的可选筛选参数已在 schema 中定义，但 handler 忽略筛选参数直接返回全量数据。
+**依赖：** `fc_tools.py` 和 `fc_handlers.py` 中的 `list_entities` / `list_agents` 工具已就绪。
+**添加时间：** 2026-04-11
+
 ## v1.1+
 
 ### WorldState 模糊匹配误命中 description 字段

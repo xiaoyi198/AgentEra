@@ -9,6 +9,25 @@
 
 # ── 世界状态工具 ─────────────────────────────────────────────────────────────
 
+LIST_ENTITIES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_entities",
+        "description": "列出当前世界中所有实体的 ID、类型和名称。可按类型筛选。用于在操作实体前确认合法 ID。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_type": {
+                    "type": "string",
+                    "enum": ["location", "person", "institution", "organization", "object"],
+                    "description": "（可选）按类型筛选",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 QUERY_ENTITY_TOOL = {
     "type": "function",
     "function": {
@@ -177,6 +196,24 @@ RELAY_DECREE_TOOL = {
     },
 }
 
+LIST_AGENTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_agents",
+        "description": "列出当前所有可唤醒的 Agent（官员/机构）的 ID 和基本信息。可按所在地筛选。用于在唤醒 Agent 前确认合法目标。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location_id": {
+                    "type": "string",
+                    "description": "（可选）按所在地点 ID 筛选",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 # ── Agent 行为工具 ────────────────────────────────────────────────────────────
 
 REQUEST_ACTION_TOOL = {
@@ -263,17 +300,19 @@ SUBMIT_ACTION_TOOL = {
 
 # 世界状态工具子集（不含 complete_action），供其他 Agent 复用
 WORLD_STATE_TOOLS = [
+    LIST_ENTITIES_TOOL,
     QUERY_ENTITY_TOOL,
     QUERY_INVENTORY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
     UPDATE_INVENTORY_TOOL,
 ]
 
-# ActionAgent 使用：世界状态读写 + 结束行动
-ACTION_AGENT_TOOLS = WORLD_STATE_TOOLS + [COMPLETE_ACTION_TOOL]
+# ActionAgent 使用：世界状态读写 + Agent 列表查询 + 结束行动
+ACTION_AGENT_TOOLS = WORLD_STATE_TOOLS + [LIST_AGENTS_TOOL, COMPLETE_ACTION_TOOL]
 
 # Router 使用
 ROUTER_TOOLS = [
+    LIST_AGENTS_TOOL,
     WAKE_AGENT_TOOL,
     CREATE_TIMER_TOOL,
     EXECUTE_POLICY_TOOL,
