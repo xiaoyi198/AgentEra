@@ -22,6 +22,14 @@ class ChainLog:
         self._by_chain: dict[str, list[ChainLogEntry]] = {}
         self._by_event: dict[str, list[ChainLogEntry]] = {}
 
+    def clear(self) -> None:
+        """清空内存索引和磁盘文件."""
+        self._entries.clear()
+        self._by_chain.clear()
+        self._by_event.clear()
+        if self._path.exists():
+            self._path.write_text("", encoding="utf-8")
+
     def append(self, entry: ChainLogEntry) -> None:
         """追加一条日志."""
         self._entries.append(entry)

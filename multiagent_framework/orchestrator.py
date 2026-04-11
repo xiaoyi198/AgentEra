@@ -437,7 +437,12 @@ class Orchestrator:
         ]
         results = await asyncio.gather(*tasks)
 
-        actions = [a for a in results if a is not None and a.action != "do_nothing"]
+        # 每个 result 是 list[AgentAction]，展平后过滤
+        actions: list[AgentAction] = []
+        for action_list in results:
+            for a in action_list:
+                if a.action != "do_nothing":
+                    actions.append(a)
 
         # Router 批量处理
         if actions:
@@ -470,60 +475,91 @@ class Orchestrator:
         self,
         agent: BaseAgent,
         wakeup: dict[str, Any],
-    ) -> AgentAction | None:
-        """调用单个 Agent，记录 chain log，异常安全."""
+    ) -> list[AgentAction]:
+        """调用单个 Agent，记录 chain log，异常安全.
+
+        返回需要进入 Router 批处理的 action 列表（request_action 已在此处直接分发）。
+        """
         try:
-            action = await agent.process(wakeup.get("payload", {}))
-            if not isinstance(action, AgentAction):
-                action = AgentAction(
+            result = await agent.process(wakeup.get("payload", {}))
+            # 兼容旧式单返回值
+            if isinstance(result, AgentAction):
+                actions = [result]
+            elif isinstance(result, list):
+                actions = result
+            else:
+                actions = [AgentAction(
                     agent_id=agent.agent_id,
                     action="do_nothing",
-                    content=str(action),
+                    content=str(result),
                     original_intent="非标准返回",
                     is_distorting=False,
-                )
+                )]
 
             # 合并 wakeup 携带 chain_ids 列表；未合并的旧格式兼容 chain_id 字段
             chain_ids = wakeup.get("chain_ids") or [wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")]
             chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
             event_id = wakeup.get("payload", {}).get("event_id", "")
 
-            # 官员直接触发行动：绕过 Router，直接分发给 ActionAgent
-            if action.metadata.get("fc_type") == "request_action":
-                for chain_id in chain_ids:
-                    self.chain_log.append(ChainLogEntry(
-                        chain_id=chain_id, event_id=event_id,
-                        sim_time=self._sim_time, caller=agent.agent_id,
-                        caller_agent_type=agent.agent_type,
-                        fc_called="request_action",
-                        original_text=action.original_intent,
-                        transmitted_text=action.content,
-                        is_distorted=False,
-                        routed_to="action_agent",
-                        status="delivered",
-                    ))
-                if self.action_agent is not None:
-                    task = asyncio.create_task(
-                        self._run_action(
-                            payload=action.metadata,
-                            source_agent_id=agent.agent_id,
-                            chain_id=chain_ids[0],
-                            event_id=event_id,
+            router_actions: list[AgentAction] = []
+            for action in actions:
+                # request_action：绕过 Router，直接分发给 ActionAgent
+                if action.metadata.get("fc_type") == "request_action":
+                    for chain_id in chain_ids:
+                        self.chain_log.append(ChainLogEntry(
+                            chain_id=chain_id, event_id=event_id,
+                            sim_time=self._sim_time, caller=agent.agent_id,
+                            caller_agent_type=agent.agent_type,
+                            fc_called="request_action",
+                            original_text=action.original_intent,
+                            transmitted_text=action.content,
+                            is_distorted=False,
+                            routed_to="action_agent",
+                            status="delivered",
+                        ))
+                    if self.action_agent is not None:
+                        task = asyncio.create_task(
+                            self._run_action(
+                                payload=action.metadata,
+                                source_agent_id=agent.agent_id,
+                                chain_id=chain_ids[0],
+                                event_id=event_id,
+                            )
                         )
-                    )
-                    self._agent_tasks.add(task)
-                else:
-                    logger.warning(
-                        "request_action from %s but no ActionAgent registered",
-                        agent.agent_id,
-                    )
-                return None  # 不进入 Router 批处理
+                        self._agent_tasks.add(task)
+                        task.add_done_callback(self._agent_tasks.discard)
+                    else:
+                        logger.warning(
+                            "request_action from %s but no ActionAgent registered",
+                            agent.agent_id,
+                        )
+                    continue  # 不进入 Router 批处理
 
-            # 取所有链路中最大 hop，统一判断是否超限
+                router_actions.append(action)
+
+            if not router_actions:
+                return []
+
+            # 对进入 Router 的 action 做 hop 检查
             max_existing = max(self.chain_log.get_max_hop(c) for c in chain_ids)
             hop_count = max_existing + 1
 
             if hop_count > MAX_HOPS:
+                for action in router_actions:
+                    for chain_id in chain_ids:
+                        self.chain_log.append(ChainLogEntry(
+                            chain_id=chain_id, event_id=event_id,
+                            sim_time=self._sim_time, caller=agent.agent_id,
+                            caller_agent_type=agent.agent_type, fc_called="submit_action",
+                            original_text=action.original_intent,
+                            transmitted_text=action.content,
+                            is_distorted=action.is_distorting,
+                            hop_count=hop_count, status="loop_detected",
+                        ))
+                logger.warning("Loop detected chains %s hop %d", chain_ids, hop_count)
+                return []
+
+            for action in router_actions:
                 for chain_id in chain_ids:
                     self.chain_log.append(ChainLogEntry(
                         chain_id=chain_id, event_id=event_id,
@@ -532,29 +568,16 @@ class Orchestrator:
                         original_text=action.original_intent,
                         transmitted_text=action.content,
                         is_distorted=action.is_distorting,
-                        hop_count=hop_count, status="loop_detected",
+                        hop_count=hop_count,
+                        timer_id=wakeup.get("timer_id"),
+                        wakeup_type="timer" if wakeup.get("timer_id") else "direct",
+                        status="delivered",
                     ))
-                logger.warning("Loop detected chains %s hop %d", chain_ids, hop_count)
-                return None
-
-            for chain_id in chain_ids:
-                self.chain_log.append(ChainLogEntry(
-                    chain_id=chain_id, event_id=event_id,
-                    sim_time=self._sim_time, caller=agent.agent_id,
-                    caller_agent_type=agent.agent_type, fc_called="submit_action",
-                    original_text=action.original_intent,
-                    transmitted_text=action.content,
-                    is_distorted=action.is_distorting,
-                    hop_count=hop_count,
-                    timer_id=wakeup.get("timer_id"),
-                    wakeup_type="timer" if wakeup.get("timer_id") else "direct",
-                    status="delivered",
-                ))
-            return action
+            return router_actions
 
         except Exception as e:
             logger.error("Agent %s failed: %s", agent.agent_id, e)
-            return None
+            return []
 
     async def _run_action(
         self,

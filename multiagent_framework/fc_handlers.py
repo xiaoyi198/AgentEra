@@ -464,12 +464,13 @@ def parse_request_action(agent_id: str, args: dict[str, Any]) -> AgentAction:
 def parse_agent_fc_response(
     response: LLMResponse,
     agent_id: str,
-) -> AgentAction:
-    """解析 LLM 响应 — 支持 submit_action / request_action 双 FC.
+) -> list[AgentAction]:
+    """解析 LLM 响应 — 支持同时调用 submit_action + request_action.
 
-    规则：一次只接受一个 FC（取第一个识别到的）。
-    回退：没有合法 FC 调用 → 产生 do_nothing AgentAction。
+    返回所有识别到的 AgentAction 列表。
+    回退：没有合法 FC 调用 → 返回单个 do_nothing AgentAction。
     """
+    actions: list[AgentAction] = []
     if response.tool_calls:
         for tc in response.tool_calls:
             fn = tc.get("function", {})
@@ -481,14 +482,17 @@ def parse_agent_fc_response(
                 continue
 
             if name == "submit_action":
-                return parse_submit_action(agent_id, args)
-            if name == "request_action":
-                return parse_request_action(agent_id, args)
+                actions.append(parse_submit_action(agent_id, args))
+            elif name == "request_action":
+                actions.append(parse_request_action(agent_id, args))
 
-    return AgentAction(
-        agent_id=agent_id,
-        action="do_nothing",
-        content=response.content,
-        original_intent="未使用FC",
-        is_distorting=False,
-    )
+    if not actions:
+        actions.append(AgentAction(
+            agent_id=agent_id,
+            action="do_nothing",
+            content=response.content,
+            original_intent="未使用FC",
+            is_distorting=False,
+        ))
+
+    return actions

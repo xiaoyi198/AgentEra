@@ -30,6 +30,18 @@
 
 
 
+### Agent 双工具调用与 submit_action(do_something) 的关系需重新设计
+
+**什么：** 当前改动让 Agent 可以同时调用 submit_action + request_action，但实际上改之前 Router 已经能把 `submit_action(do_something)` 解析为 `execute_policy` + `create_timer` 两条指令（截图证据：户部用 do_something 触发了 execute_policy→户部 + create_timer→苏州知府况钟）。需要重新思考工具配置：
+- `do_something` 本身经 Router 就能触发行动，不一定需要 request_action
+- `request_action` 绕过 Router 直接走 ActionAgent，适合官员自主行动
+- 两者的定位、分工、提示词引导需要统一设计，避免重复或冲突
+- 核心问题：Agent 不是没有行动能力，而是倾向于只用 report_message 传话而不用 do_something / request_action
+
+**当前状态：** 已完成代码改动（parse_agent_fc_response 返回 list、process() 返回 list、orchestrator 处理 list、提示词允许同时调用两个工具），但需要回头审视这些改动是否是正确的方向。
+**添加时间：** 2026-04-10
+
+
 ## v1.1+
 
 ### WorldState 模糊匹配误命中 description 字段

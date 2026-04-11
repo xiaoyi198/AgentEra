@@ -76,6 +76,8 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
     court = CourtGraph(db_path)
     timers = TimerSystem(db_path)
     chain_log = ChainLog("chain_log.jsonl")
+    # 每次初始化时清空旧的 chain_log，避免跨会话/跨存档的日志累积
+    chain_log.clear()
 
     router_prompt = ""
     router_prompt_path = "daming_court/prompts/router.txt"

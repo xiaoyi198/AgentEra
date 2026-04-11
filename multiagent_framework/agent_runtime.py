@@ -57,8 +57,8 @@ class BaseAgent(ABC):
         self._compressor = compressor
 
     @abstractmethod
-    async def process(self, payload: dict[str, Any]) -> AgentAction | dict[str, Any]:
-        """处理输入，返回行动."""
+    async def process(self, payload: dict[str, Any]) -> list[AgentAction] | dict[str, Any]:
+        """处理输入，返回行动列表（支持同时 submit_action + request_action）."""
         ...
 
     def add_memory(self, role: str, content: str) -> None:
@@ -179,9 +179,9 @@ class BaseAgent(ABC):
 
 
 class OfficialAgent(BaseAgent):
-    """官员 Agent — 支持 submit_action + request_action 双 FC（一次只能选一个）."""
+    """官员 Agent — 支持 submit_action + request_action 双 FC（可同时调用）."""
 
-    async def process(self, payload: dict[str, Any]) -> AgentAction:
+    async def process(self, payload: dict[str, Any]) -> list[AgentAction]:
         # 将事件/消息加入记忆
         event_desc = payload.get("description", "")
         if event_desc:
@@ -200,23 +200,23 @@ class OfficialAgent(BaseAgent):
             response = await self.llm.chat(messages=messages, tools=tools)
         except Exception as e:
             logger.error("Agent %s LLM call failed: %s", self.agent_id, e)
-            return AgentAction(
+            return [AgentAction(
                 agent_id=self.agent_id,
                 action="do_nothing",
                 content="",
                 original_intent=f"LLM调用失败: {e}",
                 is_distorting=False,
-            )
+            )]
 
-        action = parse_agent_fc_response(response, self.agent_id)
+        actions = parse_agent_fc_response(response, self.agent_id)
         self._record_response_to_memory(response)
-        return action
+        return actions
 
 
 class InstitutionAgent(BaseAgent):
     """政府机构 Agent — 模拟机构中除一把手外的所有员工，同样支持双 FC."""
 
-    async def process(self, payload: dict[str, Any]) -> AgentAction:
+    async def process(self, payload: dict[str, Any]) -> list[AgentAction]:
         incoming = payload.get("message", "")
         if incoming:
             self.add_memory("user", f"机构收到指令：{incoming}")
@@ -229,14 +229,14 @@ class InstitutionAgent(BaseAgent):
             response = await self.llm.chat(messages=messages, tools=tools)
         except Exception as e:
             logger.error("Institution %s LLM failed: %s", self.agent_id, e)
-            return AgentAction(
+            return [AgentAction(
                 agent_id=self.agent_id,
                 action="do_nothing",
                 content="",
                 original_intent=f"LLM调用失败: {e}",
                 is_distorting=False,
-            )
+            )]
 
-        action = parse_agent_fc_response(response, self.agent_id)
+        actions = parse_agent_fc_response(response, self.agent_id)
         self._record_response_to_memory(response)
-        return action
+        return actions
