@@ -776,7 +776,6 @@ export default function AgentEditor() {
         </div>
         <div className="header-actions">
           <ImportExport officials={officials} onImport={handleImport} />
-          <a href="/" className="btn-back">返回主界面</a>
         </div>
       </header>
 

@@ -1,0 +1,154 @@
+import { useEffect, useRef, useState } from 'react'
+import './AppNav.css'
+
+const PAGES = [
+  { href: '/', label: '朝堂', match: (p) => p === '/' || p === '' || p.endsWith('/index.html') },
+  { href: '/editor.html', label: '编修', match: (p) => p.includes('editor') },
+  { href: '/tianji.html', label: '天玑', match: (p) => p.includes('tianji') },
+]
+
+const STORAGE_KEY = 'appNav.position.v1'
+const MARGIN = 8
+const DRAG_THRESHOLD = 4
+
+function loadPosition() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') return parsed
+  } catch {}
+  return null
+}
+
+function clampToViewport(x, y, w, h) {
+  const maxX = Math.max(MARGIN, window.innerWidth - w - MARGIN)
+  const maxY = Math.max(MARGIN, window.innerHeight - h - MARGIN)
+  return {
+    x: Math.min(Math.max(MARGIN, x), maxX),
+    y: Math.min(Math.max(MARGIN, y), maxY),
+  }
+}
+
+export default function AppNav() {
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '/'
+  const navRef = useRef(null)
+  const dragStateRef = useRef(null)
+  const [position, setPosition] = useState(() => loadPosition())
+  const [dragging, setDragging] = useState(false)
+  const suppressClickRef = useRef(false)
+
+  // 初始化默认位置（右上角），并在窗口尺寸改变后保持在视口内
+  useEffect(() => {
+    const applyDefault = () => {
+      const el = navRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      setPosition((prev) => {
+        if (prev) return clampToViewport(prev.x, prev.y, rect.width, rect.height)
+        return { x: window.innerWidth - rect.width - 16, y: 12 }
+      })
+    }
+    applyDefault()
+    window.addEventListener('resize', applyDefault)
+    return () => window.removeEventListener('resize', applyDefault)
+  }, [])
+
+  // 持久化
+  useEffect(() => {
+    if (!position) return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(position))
+    } catch {}
+  }, [position])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const s = dragStateRef.current
+      if (!s) return
+      const dx = e.clientX - s.startX
+      const dy = e.clientY - s.startY
+      if (!s.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+      if (!s.moved) {
+        s.moved = true
+        setDragging(true)
+      }
+      e.preventDefault()
+      setPosition(
+        clampToViewport(e.clientX - s.offsetX, e.clientY - s.offsetY, s.width, s.height)
+      )
+    }
+    const onUp = () => {
+      const s = dragStateRef.current
+      if (!s) return
+      if (s.moved) {
+        suppressClickRef.current = true
+        setTimeout(() => { suppressClickRef.current = false }, 0)
+      }
+      dragStateRef.current = null
+      setDragging(false)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [])
+
+  const onPointerDown = (e) => {
+    if (e.button !== 0) return
+    const el = navRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    dragStateRef.current = {
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+    }
+  }
+
+  const onLinkClick = (e) => {
+    if (suppressClickRef.current) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+  }
+
+  const style = position
+    ? { left: `${position.x}px`, top: `${position.y}px`, right: 'auto' }
+    : { visibility: 'hidden' }
+
+  return (
+    <nav
+      ref={navRef}
+      className={`app-nav${dragging ? ' app-nav-dragging' : ''}`}
+      style={style}
+      aria-label="页面导航"
+      onPointerDown={onPointerDown}
+    >
+      <span className="app-nav-handle" title="拖动以移动" aria-hidden="true">⋮⋮</span>
+      {PAGES.map((page) => {
+        const active = page.match(pathname)
+        return (
+          <a
+            key={page.href}
+            href={page.href}
+            className={active ? 'app-nav-active' : ''}
+            aria-current={active ? 'page' : undefined}
+            onClick={onLinkClick}
+            draggable={false}
+          >
+            {page.label}
+          </a>
+        )
+      })}
+    </nav>
+  )
+}

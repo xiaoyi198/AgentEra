@@ -343,8 +343,6 @@ export default function TianJiView() {
         <div className="tj-header-actions">
           <button className="tj-btn" onClick={refreshWorldState}>刷新世界</button>
           <button className="tj-btn danger" onClick={handleReset}>重置会话</button>
-          <a href="/" className="tj-btn">← 皇帝视角</a>
-          <a href="/editor.html" className="tj-btn">Agent 编辑器</a>
         </div>
       </div>
 
