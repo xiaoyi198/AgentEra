@@ -19,6 +19,28 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── 动画 keyframes ── */
+@keyframes app-fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes app-fade-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes app-pulse-gold {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 168, 76, 0); }
+  50% { box-shadow: 0 0 10px 1px rgba(201, 168, 76, 0.4); }
+}
+@keyframes app-pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(90, 154, 90, 0); }
+  50% { box-shadow: 0 0 10px 1px rgba(90, 154, 90, 0.4); }
+}
+@keyframes app-pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(199, 74, 74, 0); }
+  50% { box-shadow: 0 0 10px 1px rgba(199, 74, 74, 0.4); }
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -119,6 +141,7 @@ body {
 .tj-tool-item {
   padding: 5px 16px 5px 24px;
   cursor: pointer;
+  animation: app-fade-in-up 0.15s ease-out both;
 }
 
 .tj-tool-item:hover {
@@ -178,6 +201,7 @@ body {
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+  animation: app-fade-in-up 0.25s ease-out both;
 }
 
 .tj-message.user .tj-bubble {
@@ -212,6 +236,7 @@ body {
   border-radius: 4px;
   margin-bottom: 4px;
   overflow: hidden;
+  animation: app-fade-in-up 0.25s ease-out both;
 }
 
 .tj-tool-call-header {
@@ -254,10 +279,16 @@ body {
   border-left: 3px solid var(--green);
   border-radius: 4px;
   margin-bottom: 4px;
+  animation:
+    app-fade-in-up 0.25s ease-out both,
+    app-pulse-green 1s ease-out 0.2s 1;
 }
 
 .tj-tool-result-block.error {
   border-left-color: var(--red);
+  animation:
+    app-fade-in-up 0.25s ease-out both,
+    app-pulse-red 1s ease-out 0.2s 1;
 }
 
 .tj-tool-result-header {
@@ -322,6 +353,7 @@ body {
 
 .tj-input:focus {
   border-color: var(--gold-dim);
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
 }
 
 .tj-input::placeholder {
@@ -355,6 +387,7 @@ body {
 .tj-state-item {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
+  animation: app-fade-in-up 0.2s ease-out both;
 }
 
 .tj-state-item:last-child {
@@ -454,6 +487,7 @@ body {
   height: 100%;
   gap: 12px;
   color: var(--text-dim);
+  animation: app-fade-scale-in 0.4s ease-out both;
 }
 
 .tj-empty .tj-empty-title {

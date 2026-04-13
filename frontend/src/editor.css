@@ -17,6 +17,20 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── 动画 keyframes ── */
+@keyframes app-fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes app-fade-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes app-pulse-gold {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 168, 76, 0); }
+  50% { box-shadow: 0 0 8px 1px rgba(201, 168, 76, 0.35); }
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -162,6 +176,7 @@ body {
   transition: background 0.12s;
   border-left: 3px solid transparent;
   user-select: none;
+  animation: app-fade-in-up 0.2s ease-out both;
 }
 
 .tree-node:hover { background: var(--bg-hover); }
@@ -286,6 +301,10 @@ body {
   font-size: 15px;
 }
 
+.detail-panel {
+  animation: app-fade-scale-in 0.2s ease-out both;
+}
+
 .detail-panel h3 {
   color: var(--gold);
   font-size: 16px;
@@ -323,6 +342,7 @@ body {
 .form-grid input:focus,
 .form-grid select:focus {
   border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
 }
 
 /* ── Active toggle row ── */
@@ -396,6 +416,7 @@ body {
 
 .extra-prompt-section textarea:focus {
   border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
 }
 
 /* ── Buttons ── */
@@ -520,6 +541,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
+  animation: app-fade-in-up 0.2s ease-out both;
 }
 
 .prompt-preview h4 {
@@ -578,7 +600,8 @@ button {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  animation: app-fade-in-up 0.25s ease-out both;
 }
 
 .persona-card:hover { border-color: var(--gold-dim); }
@@ -740,12 +763,15 @@ button {
   border-radius: 6px;
   padding: 12px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s, box-shadow 0.15s;
+  animation: app-fade-in-up 0.25s ease-out both;
 }
 
 .system-agent-card:hover {
   border-color: var(--gold-dim);
   background: var(--bg-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(201, 168, 76, 0.12);
 }
 
 .system-agent-card.selected {
@@ -867,6 +893,12 @@ button {
 
 .system-prompt-textarea:focus {
   border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
+}
+
+.persona-name-input:focus,
+.persona-desc-input:focus {
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
 }
 
 .unsaved-hint {

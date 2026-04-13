@@ -16,6 +16,24 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── 动画 keyframes ── */
+@keyframes app-fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes app-fade-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes app-pulse-gold {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 168, 76, 0); }
+  50% { box-shadow: 0 0 8px 1px rgba(201, 168, 76, 0.35); }
+}
+@keyframes app-overlay-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 body {
   font-family: 'Noto Serif SC', 'Songti SC', serif;
   background: var(--bg);
@@ -92,6 +110,7 @@ body {
   padding: 10px 12px; margin-bottom: 6px; border-radius: 4px;
   border: 1px solid var(--border); cursor: pointer;
   transition: all 0.15s; position: relative;
+  animation: app-fade-in-up 0.25s ease-out both;
 }
 .item:hover { background: var(--bg-hover); border-color: var(--gold-dim); }
 .item.selected { background: var(--bg-hover); border-color: var(--gold); }
@@ -101,6 +120,8 @@ body {
 .badge {
   position: absolute; top: 8px; right: 8px;
   font-size: 11px; padding: 2px 6px; border-radius: 3px;
+  transition: all 0.2s;
+  animation: app-pulse-gold 1.2s ease-out 1;
 }
 .badge.approve { background: #2a5a2a; color: #8f8; }
 .badge.reject { background: #5a2a2a; color: #f88; }
@@ -142,6 +163,9 @@ body {
 .transit-item {
   padding: 8px 10px; margin-bottom: 6px;
   border: 1px solid var(--border); border-radius: 4px;
+  animation:
+    app-fade-in-up 0.25s ease-out both,
+    app-pulse-gold 3s ease-in-out 0.25s infinite;
 }
 .transit-route { font-size: 13px; margin-bottom: 4px; }
 .transit-eta { font-size: 12px; color: var(--gold); }
@@ -175,11 +199,13 @@ body {
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: flex; align-items: center; justify-content: center; z-index: 100;
+  animation: app-overlay-fade 0.2s ease-out both;
 }
 .modal {
   background: var(--bg-panel); border: 1px solid var(--gold-dim);
   border-radius: 8px; width: 420px; max-height: 80vh;
   display: flex; flex-direction: column; overflow: hidden;
+  animation: app-fade-scale-in 0.25s ease-out both;
 }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -212,6 +238,16 @@ body {
 }
 .setting-group input:focus, .setting-group select:focus {
   border-color: var(--gold-dim); outline: none;
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
+}
+.actions input:focus, .decree-section textarea:focus, .ws-search:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
+}
+.ws-label input:focus,
+.ws-label select:focus,
+.ws-label textarea:focus {
+  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.18);
 }
 .setting-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .masked { font-size: 11px; color: var(--text-dim); }
