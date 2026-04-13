@@ -43,3 +43,12 @@ saves/*
 # skill
 .agents/
 
+# runtime
+runtime/*
+
+# png
+*.png
+
+# old
+*.old
+

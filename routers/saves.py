@@ -14,6 +14,8 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from multiagent_framework.runtime_paths import RUNTIME_DIR, WORLD_DB, CHAIN_LOG
+
 from . import _state as state
 
 logger = logging.getLogger(__name__)
@@ -21,8 +23,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["saves"])
 
 _SAVE_DIR = Path("saves")
-_DB_PATH = "daming_court.db"
-_CHAIN_LOG_PATH = "chain_log.jsonl"
 _BAD_CHARS = r'\/:*?"<>|'
 
 
@@ -38,6 +38,17 @@ def _backup_sqlite(src: str, dest: Path) -> None:
     with sqlite3.connect(src) as src_conn:
         with sqlite3.connect(str(dest)) as dst_conn:
             src_conn.backup(dst_conn)
+
+
+def _restore_sqlite(src: Path, dest: Path) -> None:
+    """用 SQLite backup API 将存档 DB 覆盖到 runtime，绕过 Windows 文件锁."""
+    src_conn = sqlite3.connect(str(src))
+    dst_conn = sqlite3.connect(str(dest))
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
 
 
 def _read_meta(save_dir: Path) -> dict | None:
@@ -98,17 +109,20 @@ async def save_game(req: SaveRequest):
     save_path.mkdir(parents=True)
 
     state.orchestrator.save_state()
-    _backup_sqlite(_DB_PATH, save_path / "daming_court.db")
+    _backup_sqlite(str(WORLD_DB), save_path / "daming_court.db")
 
-    if Path(_CHAIN_LOG_PATH).exists():
-        shutil.copy2(_CHAIN_LOG_PATH, save_path / "chain_log.jsonl")
+    if CHAIN_LOG.exists():
+        shutil.copy2(str(CHAIN_LOG), save_path / "chain_log.jsonl")
+
+    # memorials 优先从 orch 取（后端持久化），前端传的当 fallback
+    memorials = state.orchestrator.memorials if state.orchestrator.memorials else req.memorials
 
     runtime = {
         "agent_memories": {
             aid: agent.serialize_memory()
             for aid, agent in state.orchestrator.agents.items()
         },
-        "pending_memorials": req.memorials,
+        "pending_memorials": memorials,
         "seconds_per_day": state.orchestrator._seconds_per_day,
     }
     (save_path / "runtime.json").write_text(
@@ -124,7 +138,7 @@ async def save_game(req: SaveRequest):
         "seconds_per_day": state.orchestrator._seconds_per_day,
         "agent_count": len(state.orchestrator.agents),
         "timer_count": state.orchestrator.timers.count(),
-        "memorial_count": len(req.memorials),
+        "memorial_count": len(memorials),
     }
     (save_path / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -167,24 +181,57 @@ async def load_game(req: LoadRequest):
     if state.orchestrator:
         state.orchestrator.stop()
 
-    # 覆盖工作目录的 SQLite 和 chain log
-    shutil.copy2(save_path / "daming_court.db", _DB_PATH)
+    # 覆盖 runtime/ 目录
+    import gc
+    gc.collect()
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNTIME_DIR / "agents").mkdir(exist_ok=True)
+
+    # 用 SQLite backup API 覆盖 world.db，避免 Windows 文件锁
+    _restore_sqlite(save_path / "daming_court.db", WORLD_DB)
+
+    # 清理 runtime/ 中不属于存档的残留文件
+    _keep = {"world.db", "agents", "chain_log.jsonl", "state.json"}
+    for item in RUNTIME_DIR.iterdir():
+        if item.name not in _keep:
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            except OSError:
+                pass
+
     chain_src = save_path / "chain_log.jsonl"
     if chain_src.exists():
-        shutil.copy2(chain_src, _CHAIN_LOG_PATH)
-    elif Path(_CHAIN_LOG_PATH).exists():
-        Path(_CHAIN_LOG_PATH).unlink()
+        shutil.copy2(chain_src, str(CHAIN_LOG))
+    elif CHAIN_LOG.exists():
+        CHAIN_LOG.unlink()
 
-    # 重新初始化
-    state.orchestrator = init_orchestrator(load_from_save=True)
-
-    # 恢复运行时状态
-    s = {
+    # 写入 state.json（sim_time / seconds_per_day / memorials）
+    from multiagent_framework.runtime_paths import STATE_FILE, AGENTS_DIR
+    state_data = {
         "sim_time": meta["sim_time"],
         "seconds_per_day": runtime.get("seconds_per_day", meta.get("seconds_per_day", 600.0)),
-        "agent_memories": runtime.get("agent_memories", {}),
+        "memorials": runtime.get("pending_memorials", []),
     }
-    state.orchestrator.load_state(s)
+    STATE_FILE.write_text(
+        json.dumps(state_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # 清空旧 agent 数据再写入
+    for old_agent_file in AGENTS_DIR.glob("*.json"):
+        old_agent_file.unlink()
+    agent_memories = runtime.get("agent_memories", {})
+    for agent_id, mem_data in agent_memories.items():
+        if mem_data:
+            mem_path = AGENTS_DIR / f"{agent_id}.json"
+            mem_path.write_text(
+                json.dumps(mem_data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+    # 重新初始化（load_from_save=True → _load_runtime_state 会从 runtime/ 恢复全部状态）
+    state.orchestrator = init_orchestrator(load_from_save=True)
 
     logger.info("Game loaded from saves/%s: sim_time=%.1f, %d memorials",
                 name, meta["sim_time"], len(runtime.get("pending_memorials", [])))
@@ -192,7 +239,7 @@ async def load_game(req: LoadRequest):
         "status": "loaded",
         "save_name": name,
         "sim_time": meta["sim_time"],
-        "seconds_per_day": s["seconds_per_day"],
+        "seconds_per_day": state_data["seconds_per_day"],
         "pending_memorials": runtime.get("pending_memorials", []),
         "saved_at": meta.get("saved_at"),
     }

@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from multiagent_framework.llm_client import LLMConfig
+from multiagent_framework.runtime_paths import RUNTIME_DIR
 from multiagent_framework.types import PlayerAction, PlayerActionType
 
 from . import _state as state
@@ -132,6 +134,46 @@ async def get_in_transit():
         }
         for t in timers
     ]
+
+
+# ── 奏折列表（持久化） ──
+
+
+@router.get("/memorials")
+async def get_memorials():
+    """返回当前所有待处理奏折（后端持久化，刷新不丢）."""
+    if not state.orchestrator:
+        return {"error": "not initialized"}
+    return state.orchestrator.memorials
+
+
+# ── 新游戏 ──
+
+
+@router.post("/new-game")
+async def new_game():
+    """清空 runtime/ 目录，从 seed 重新初始化."""
+    from main import init_orchestrator
+
+    if state.orchestrator:
+        await state.orchestrator.pause()
+        await state.orchestrator.drain_agent_tasks()
+        state.orchestrator.stop()
+    if state._orch_task and not state._orch_task.done():
+        state._orch_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(state._orch_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        state._orch_task = None
+
+    # 清空 runtime/ 目录
+    if RUNTIME_DIR.exists():
+        shutil.rmtree(RUNTIME_DIR)
+
+    # 重新初始化（is_fresh=True 会触发 seed）
+    state.orchestrator = init_orchestrator()
+    return {"status": "new_game_started"}
 
 
 # ── 设置 ──

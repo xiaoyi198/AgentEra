@@ -21,6 +21,7 @@ from .fc_handlers import (
     dispatch_fc,
 )
 from .router import RouterAgent, MAX_HOPS
+from .runtime_persistor import RuntimePersistor
 from .timer_system import TimerSystem
 from .types import (
     ActionResult,
@@ -87,6 +88,12 @@ class Orchestrator:
 
         # 待处理的 Agent 唤醒（下次 tick 处理）
         self._pending_wakeups: list[dict[str, Any]] = []
+
+        # 奏折列表（持久化到 runtime/state.json）
+        self.memorials: list[dict[str, Any]] = []
+
+        # 运行时持久化器（由 main.py 注入）
+        self.persistor: RuntimePersistor | None = None
 
         # Router 决策日志（调试用，限长防 OOM）
         self.router_log: deque[dict[str, Any]] = deque(maxlen=2000)
@@ -233,6 +240,10 @@ class Orchestrator:
         self._last_real_time = time.monotonic()
         logger.info("Orchestrator started, %.0f seconds/day", self._seconds_per_day)
 
+        # 启动 runtime 持久化后台任务
+        if self.persistor:
+            self.persistor.start()
+
         try:
             while self._running:
                 if self._paused:
@@ -247,6 +258,10 @@ class Orchestrator:
                 # speed = 86400 / seconds_per_day 游戏秒/真实秒
                 speed = GAME_SECONDS_PER_DAY / self._seconds_per_day
                 self._sim_time += elapsed * speed
+
+                # 标记 state 需要持久化
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
 
                 # 构建本次 tick 结果
                 tick_result = await self._tick()
@@ -274,6 +289,9 @@ class Orchestrator:
 
     def stop(self) -> None:
         self._running = False
+        # 停止 flush loop 并做最后一次落盘
+        if self.persistor:
+            self.persistor.stop()
 
     async def drain_agent_tasks(self, timeout: float = 30.0) -> None:
         """等待所有后台 Agent 任务完成，确保不再有写文件操作.
@@ -297,6 +315,9 @@ class Orchestrator:
             await asyncio.gather(*self._agent_tasks, return_exceptions=True)
         self._agent_tasks.clear()
         logger.info("All agent tasks drained.")
+        # drain 后同步落盘一次
+        if self.persistor:
+            await self.persistor.flush()
 
     async def _tick(self) -> TickResult:
         """一次 tick — 检查定时器、派发唤醒、处理玩家操作、收集状态."""
@@ -370,14 +391,18 @@ class Orchestrator:
 
             agent_wakeups = []
             for wakeup in player_wakeups:
-                result.new_memorials.append({
+                memorial = {
                     "memorial_id": f"mem_{uuid.uuid4().hex[:8]}",
                     "from": wakeup.get("payload", {}).get("from", "unknown"),
                     "content": wakeup.get("payload", {}).get("message", ""),
                     "chain_id": wakeup.get("chain_id", ""),
                     "event_id": wakeup.get("payload", {}).get("event_id", ""),
                     "received_at": self._sim_time,
-                })
+                }
+                result.new_memorials.append(memorial)
+                self.memorials.append(memorial)
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
             for target_id, wakeup in merged_agent_wakeups.items():
                 agent = self.agents[target_id]
                 agent_wakeups.append((agent, wakeup))
@@ -573,6 +598,11 @@ class Orchestrator:
                         wakeup_type="timer" if wakeup.get("timer_id") else "direct",
                         status="delivered",
                     ))
+
+            # Agent 处理完毕，标记记忆脏
+            if self.persistor:
+                self.persistor.mark_agent_dirty(agent.agent_id)
+
             return router_actions
 
         except Exception as e:
@@ -733,6 +763,10 @@ class Orchestrator:
                 fc_called="hold", original_text=f"留中奏折{action.memorial_id}",
                 transmitted_text="留中不发", status="delivered",
             ))
+            # 留中也标记 handled，从活跃奏折列表中移除
+            self.memorials = [m for m in self.memorials if m.get("memorial_id") != action.memorial_id]
+            if self.persistor:
+                self.persistor.mark_state_dirty()
             return
 
         # 找太监（皇帝的直属下级中 role=eunuch 的）
@@ -790,6 +824,10 @@ class Orchestrator:
                 original_text=f"{verb}奏折{action.memorial_id}",
                 transmitted_text=response_text, status="delivered",
             ))
+            # 从活跃奏折列表中移除
+            self.memorials = [m for m in self.memorials if m.get("memorial_id") != action.memorial_id]
+            if self.persistor:
+                self.persistor.mark_state_dirty()
             if eunuch and eunuch.id in self.agents:
                 self._pending_wakeups.append({
                     "target": eunuch.id,

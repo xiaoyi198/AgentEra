@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,11 @@ from multiagent_framework.court_graph import CourtGraph
 from multiagent_framework.llm_client import LLMClient, LLMConfig
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.router import RouterAgent
+from multiagent_framework.runtime_paths import (
+    RUNTIME_DIR, WORLD_DB, CHAIN_LOG, STATE_FILE, AGENTS_DIR,
+    ensure_runtime_dir, runtime_exists,
+)
+from multiagent_framework.runtime_persistor import RuntimePersistor
 from multiagent_framework.tianji_agent import TianJiAgent
 from multiagent_framework.timer_system import TimerSystem
 from multiagent_framework.types import TickResult
@@ -55,7 +59,15 @@ async def broadcast_tick(tick: TickResult) -> None:
 # ── 初始化 ──
 
 def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
-    """从配置文件初始化 Orchestrator."""
+    """从配置文件初始化 Orchestrator.
+
+    冷启动逻辑：
+    - runtime/ 不存在 → is_fresh=True，从 daming_court/ seed 初始化
+    - runtime/ 存在 → is_fresh=False，从 runtime/ 恢复状态，不再重新 seed
+    - load_from_save=True → 读档流程，runtime/ 已由调用方替换好，按非 fresh 处理
+    """
+    ensure_runtime_dir()
+
     llm_config_path = "config/llm.json"
     if Path(llm_config_path).exists():
         llm_config = LLMConfig.from_file(llm_config_path)
@@ -72,12 +84,12 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
             tc = json.load(f)
             seconds_per_day = tc.get("seconds_per_day", 600.0)
 
-    db_path = "daming_court.db"
+    db_path = str(WORLD_DB)              # runtime/world.db
+    is_fresh = not runtime_exists() and not load_from_save
+
     court = CourtGraph(db_path)
     timers = TimerSystem(db_path)
-    chain_log = ChainLog("chain_log.jsonl")
-    # 每次初始化时清空旧的 chain_log，避免跨会话/跨存档的日志累积
-    chain_log.clear()
+    chain_log = ChainLog(str(CHAIN_LOG)) # runtime/chain_log.jsonl
 
     router_prompt = ""
     router_prompt_path = "daming_court/prompts/router.txt"
@@ -104,6 +116,7 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
         memory_compressor=memory_compressor,
     )
     orch.world_state = world_state  # type: ignore[attr-defined]
+    orch.persistor = RuntimePersistor(orch)
 
     state.tianji_agent = TianJiAgent(
         llm_client=llm_client,
@@ -115,7 +128,13 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
         router=router,
     )
 
-    _load_dlc(orch, court, llm_client, world_state, load_from_save=load_from_save)
+    _load_dlc(
+        orch, court, llm_client, world_state,
+        load_from_save=not is_fresh,  # 有 runtime → 不再 seed entity/event
+    )
+
+    if not is_fresh:
+        _load_runtime_state(orch)
 
     return orch
 
@@ -163,6 +182,46 @@ def _load_dlc(
             orch.inject_event(event)
         if events:
             logger.info("Injected %d initial events", len(events))
+
+
+def _load_runtime_state(orch: Orchestrator) -> None:
+    """从 runtime/ 目录恢复运行时状态（sim_time / agent 记忆 / chain_log）."""
+    # state.json
+    if STATE_FILE.exists():
+        try:
+            s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            orch._sim_time = s.get("sim_time", 0.0)
+            orch._seconds_per_day = s.get("seconds_per_day", 600.0)
+            orch.memorials = s.get("memorials", [])
+            orch.router.update_time_scale(orch._seconds_per_day)
+            logger.info("Restored state: sim_time=%.1f, %d memorials",
+                        orch._sim_time, len(orch.memorials))
+        except Exception as e:
+            logger.warning("Failed to load state.json: %s", e)
+
+    # 从 DB 恢复定时器
+    timer_count = orch.timers.load_from_db()
+    if timer_count:
+        logger.info("Restored %d timers", timer_count)
+
+    # chain_log 从 JSONL 文件恢复
+    loaded = orch.chain_log.load_from_file()
+    if loaded:
+        logger.info("Restored %d chain log entries", loaded)
+
+    # agent 记忆
+    restored = 0
+    for agent_id, agent in orch.agents.items():
+        mem_path = AGENTS_DIR / f"{agent_id}.json"
+        if mem_path.exists():
+            try:
+                data = json.loads(mem_path.read_text(encoding="utf-8"))
+                agent.deserialize_memory(data)
+                restored += 1
+            except Exception as e:
+                logger.warning("Failed to load memory for %s: %s", agent_id, e)
+    if restored:
+        logger.info("Restored memories for %d/%d agents", restored, len(orch.agents))
 
 
 # ── FastAPI ──

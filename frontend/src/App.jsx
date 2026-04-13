@@ -191,9 +191,25 @@ function App() {
     setInTransit(data.in_transit || [])
     setTokenUsage(data.token_usage || {})
     if (data.new_memorials?.length > 0) {
-      setMemorials(prev => [...data.new_memorials, ...prev])
+      setMemorials(prev => {
+        const existingIds = new Set(prev.map(m => m.memorial_id))
+        const fresh = data.new_memorials.filter(m => !existingIds.has(m.memorial_id))
+        return fresh.length > 0 ? [...fresh, ...prev] : prev
+      })
     }
   }, [lastMessage])
+
+  // 挂载时从后端拉取已有 memorials（刷新不丢）
+  useEffect(() => {
+    fetch(`${API_BASE}/memorials`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setMemorials(data)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const apiPost = async (path, body = {}) => {
     try {
@@ -231,7 +247,7 @@ function App() {
       }
     } catch { /* 检查失败则继续 */ }
 
-    const res = await apiPost('/save', { memorials, save_name: saveName.trim() })
+    const res = await apiPost('/save', { save_name: saveName.trim() })
     if (res.error) {
       alert('存档失败：' + res.error)
     } else {
@@ -353,6 +369,11 @@ function App() {
           >
             世界状态
           </button>
+          <button className="btn danger" onClick={async () => {
+            if (!confirm('确定要开始新游戏？当前运行时状态（含所有 Agent 记忆、世界状态、进度）将被清除。')) return
+            await fetch(`${API_BASE}/new-game`, { method: 'POST' })
+            location.reload()
+          }}>新游戏</button>
           <button className="btn ghost" onClick={openSettings} title="settings">
             &#9881;
           </button>
