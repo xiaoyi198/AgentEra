@@ -100,8 +100,7 @@ FC 工具定义的中央注册表：
 
 - 每个工具以具名常量定义（`WAKE_AGENT_TOOL`, `LIST_ENTITIES_TOOL` 等），共 13 个
 - 预组合工具集：
-  - `WORLD_STATE_TOOLS` — `list_entities` + 世界状态读写（不含 complete_action）
-  - `ACTION_AGENT_TOOLS` — `WORLD_STATE_TOOLS + LIST_AGENTS_TOOL + COMPLETE_ACTION_TOOL`
+  - `ACTION_AGENT_TOOLS` — `list_entities / query_entity / query_inventory / update_entity_status / update_inventory + list_agents + complete_action`（7 个）
   - `ROUTER_TOOLS` — `list_agents / wake_agent / create_timer / execute_policy / relay_decree`
   - `AGENT_TOOLS` — `submit_action / request_action`
   - `ALL_TOOLS` — 天玑用，全量 13 个工具

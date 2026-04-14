@@ -1,9 +1,9 @@
 """所有 FC（Function Call）工具定义的中央注册表.
 
 各 Agent 按需 import 所需工具集：
-  from .fc_tools import WORLD_STATE_TOOLS, ACTION_AGENT_TOOLS
+  from .fc_tools import ACTION_AGENT_TOOLS
   from .fc_tools import ROUTER_TOOLS
-  from .fc_tools import SUBMIT_ACTION_TOOL, REQUEST_ACTION_TOOL, AGENT_TOOLS
+  from .fc_tools import AGENT_TOOLS
   from .fc_tools import ALL_TOOLS   # 天玑 / 调试用
 """
 
@@ -301,17 +301,16 @@ SUBMIT_ACTION_TOOL = {
 
 # ── 预组合工具集（各 Agent 按需取用）────────────────────────────────────────
 
-# 世界状态工具子集（不含 complete_action），供其他 Agent 复用
-WORLD_STATE_TOOLS = [
+# ActionAgent 使用：世界状态读写 + Agent 列表查询 + 结束行动
+ACTION_AGENT_TOOLS = [
     LIST_ENTITIES_TOOL,
     QUERY_ENTITY_TOOL,
     QUERY_INVENTORY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
     UPDATE_INVENTORY_TOOL,
+    LIST_AGENTS_TOOL,
+    COMPLETE_ACTION_TOOL,
 ]
-
-# ActionAgent 使用：世界状态读写 + Agent 列表查询 + 结束行动
-ACTION_AGENT_TOOLS = WORLD_STATE_TOOLS + [LIST_AGENTS_TOOL, COMPLETE_ACTION_TOOL]
 
 # Router 使用
 ROUTER_TOOLS = [
@@ -328,5 +327,22 @@ AGENT_TOOLS = [
     REQUEST_ACTION_TOOL,
 ]
 
-# 天玑 / 调试接口：全量工具
-ALL_TOOLS = ACTION_AGENT_TOOLS + ROUTER_TOOLS + AGENT_TOOLS
+# 天玑 / 调试接口：全量工具（手写去重，避免 + 拼接产生 LIST_AGENTS_TOOL 这类重复）
+ALL_TOOLS = [
+    # 世界状态读写
+    LIST_ENTITIES_TOOL,
+    QUERY_ENTITY_TOOL,
+    QUERY_INVENTORY_TOOL,
+    UPDATE_ENTITY_STATUS_TOOL,
+    UPDATE_INVENTORY_TOOL,
+    # Agent 调度
+    LIST_AGENTS_TOOL,
+    WAKE_AGENT_TOOL,
+    CREATE_TIMER_TOOL,
+    EXECUTE_POLICY_TOOL,
+    RELAY_DECREE_TOOL,
+    # Agent 行动
+    SUBMIT_ACTION_TOOL,
+    REQUEST_ACTION_TOOL,
+    COMPLETE_ACTION_TOOL,
+]

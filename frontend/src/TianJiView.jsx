@@ -153,6 +153,8 @@ export default function TianJiView() {
   const [entities, setEntities] = useState([])
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+  // 跨消息单调递增的 tool-group id，避免不同消息的 gid 撞车覆盖
+  const toolGroupGidRef = useRef(0)
 
   // 滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -213,11 +215,12 @@ export default function TianJiView() {
       // 当前 assistant 文本（增量拼接）
       let assistantText = ''
       // 当前工具调用组（多个 tool_call + tool_result 配对）
-      let currentToolGroup = []    // [{name, args, result}]
-      let pendingToolCall = null   // {name, args}
-      // 每组工具调用分配唯一 gid，用于前端去重：
-      // tool_result 实时更新用 gid 匹配，commitToolGroup 也用 gid 匹配。
-      let toolGroupGid = 0
+      // 每个 entry: {call_id, name, args, result}
+      let currentToolGroup = []
+      // FIFO 队列：未配对的 tool_call。后端串行时长度≤1，但并行/乱序也健壮。
+      let pendingCalls = []
+      // 本轮 tool-group 的 gid：从全局 ref 取，commit 后保持不变，finalize 时递增
+      let currentGid = toolGroupGidRef.current
 
       const flushAssistant = () => {
         if (assistantText.trim()) {
@@ -236,8 +239,8 @@ export default function TianJiView() {
       // 将 currentToolGroup 写入 / 更新到 displayMsgs（幂等：按 gid 去重）
       const commitToolGroup = () => {
         if (currentToolGroup.length === 0) return
-        const group = [...currentToolGroup]
-        const gid = toolGroupGid
+        const group = currentToolGroup.map(c => ({ ...c }))
+        const gid = currentGid
         setDisplayMsgs(prev => {
           const idx = prev.findIndex(m => m.role === 'tool-group' && m._gid === gid)
           if (idx >= 0) {
@@ -252,11 +255,16 @@ export default function TianJiView() {
 
       // 终结当前工具组，为下一轮准备新 gid
       const finalizeToolGroup = () => {
-        if (currentToolGroup.length > 0) {
+        if (currentToolGroup.length > 0 || pendingCalls.length > 0) {
+          // 把未收到 result 的 pending call 也落盘（result=null）
+          for (const pc of pendingCalls) {
+            currentToolGroup.push({ ...pc, result: null })
+          }
+          pendingCalls = []
           commitToolGroup()
           currentToolGroup = []
-          pendingToolCall = null
-          toolGroupGid++
+          toolGroupGidRef.current += 1
+          currentGid = toolGroupGidRef.current
         }
       }
 
@@ -290,19 +298,35 @@ export default function TianJiView() {
             finalizeToolGroup()
           } else if (event.type === 'tool_call') {
             flushAssistant()
-            pendingToolCall = { name: event.name, args: event.arguments }
+            pendingCalls.push({
+              call_id: event.call_id || '',
+              name: event.name,
+              args: event.arguments,
+            })
           } else if (event.type === 'tool_result') {
-            if (pendingToolCall) {
-              currentToolGroup.push({ ...pendingToolCall, result: event.result })
-              pendingToolCall = null
+            // 优先按 call_id 精准匹配，退化到 FIFO
+            let matchIdx = -1
+            if (event.call_id) {
+              matchIdx = pendingCalls.findIndex(c => c.call_id === event.call_id)
+            }
+            if (matchIdx < 0 && pendingCalls.length > 0) {
+              matchIdx = 0
+            }
+            if (matchIdx >= 0) {
+              const [matched] = pendingCalls.splice(matchIdx, 1)
+              currentToolGroup.push({ ...matched, result: event.result })
+            } else {
+              // 没有任何待配对的 call → 兜底：至少把 result 显示出来，不静默丢弃
+              currentToolGroup.push({
+                call_id: event.call_id || '',
+                name: event.name || '(unknown)',
+                args: null,
+                result: event.result,
+              })
             }
             commitToolGroup()
           } else if (event.type === 'done') {
             flushAssistant()
-            if (pendingToolCall) {
-              currentToolGroup.push({ ...pendingToolCall, result: null })
-              pendingToolCall = null
-            }
             finalizeToolGroup()
           } else if (event.type === 'error') {
             flushAssistant()

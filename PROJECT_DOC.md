@@ -205,11 +205,10 @@ run() 主循环（0.25s 间隔）
 
 | 分组常量 | 用途 |
 |---------|------|
-| `WORLD_STATE_TOOLS` | 世界状态读写（4 个，不含 complete_action） |
-| `ACTION_AGENT_TOOLS` | `WORLD_STATE_TOOLS + complete_action` |
-| `ROUTER_TOOLS` | `wake_agent / create_timer / execute_policy / relay_decree` |
+| `ACTION_AGENT_TOOLS` | 世界状态读写 5 个 + `list_agents` + `complete_action`（共 7 个） |
+| `ROUTER_TOOLS` | `list_agents / wake_agent / create_timer / execute_policy / relay_decree` |
 | `AGENT_TOOLS` | `submit_action / request_action` |
-| `ALL_TOOLS` | 天玑用，全量 11 个工具 |
+| `ALL_TOOLS` | 天玑用，全量 13 个工具 |
 
 **扩展规则**：新增工具只需在此文件定义 schema + 加入对应分组，无需改动任何 Agent 文件。
 

@@ -164,20 +164,21 @@ class TianJiAgent:
                 for tc in response.tool_calls:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
+                    call_id = tc.get("id", "") or ""
                     try:
                         args = json.loads(fn.get("arguments", "{}") or "{}")
                     except json.JSONDecodeError:
                         args = {}
 
-                    yield {"type": "tool_call", "name": name, "arguments": args}
+                    yield {"type": "tool_call", "call_id": call_id, "name": name, "arguments": args}
 
                     result = await self._dispatch_tool(name, args)
 
-                    yield {"type": "tool_result", "name": name, "result": result}
+                    yield {"type": "tool_result", "call_id": call_id, "name": name, "result": result}
 
                     self.messages.append({
                         "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
+                        "tool_call_id": call_id,
                         "content": json.dumps(result, ensure_ascii=False),
                     })
 
