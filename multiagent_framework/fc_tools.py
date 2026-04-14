@@ -19,7 +19,7 @@ LIST_ENTITIES_TOOL = {
             "properties": {
                 "entity_type": {
                     "type": "string",
-                    "enum": ["location", "person", "institution", "organization", "object"],
+                    "enum": ["location", "institution", "organization"],
                     "description": "（可选）按类型筛选",
                 },
             },

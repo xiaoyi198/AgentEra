@@ -132,17 +132,23 @@ def handle_query_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, An
 
 
 def handle_list_entities(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
-    """列出实体 ID/类型/名称。筛选参数暂为占位，返回全量."""
+    """列出实体 ID/类型/名称。可按 entity_type 精确筛选."""
     try:
-        # TODO: entity_type 筛选待 agent↔entity 关联实现后启用
-        entities = ctx.world_state.get_all_entities()
-        return {
+        entity_type = (args.get("entity_type") or "").strip()
+        if entity_type:
+            entities = ctx.world_state.get_entities_by_type(entity_type)
+        else:
+            entities = ctx.world_state.get_all_entities()
+        result: dict[str, Any] = {
             "entities": [
                 {"id": e.id, "type": e.type, "name": e.name}
                 for e in entities
             ],
             "count": len(entities),
         }
+        if entity_type:
+            result["filtered_by"] = {"entity_type": entity_type}
+        return result
     except Exception as e:
         logger.exception("handle_list_entities failed: %s", e)
         return {"ok": False, "error": str(e)}
@@ -363,11 +369,14 @@ async def handle_relay_decree(ctx: FCContext, args: dict[str, Any]) -> dict[str,
 
 
 def handle_list_agents(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
-    """列出可唤醒 Agent。筛选参数暂为占位，返回全量."""
+    """列出可唤醒 Agent。可按 location_id 精确筛选所在地."""
     try:
-        # TODO: location_id 筛选待 agent↔entity 关联实现后启用
-        officials = ctx.court.get_all_officials()
-        return {
+        location_id = (args.get("location_id") or "").strip()
+        if location_id:
+            officials = ctx.court.get_officials_at_location(location_id)
+        else:
+            officials = ctx.court.get_all_officials()
+        result: dict[str, Any] = {
             "agents": [
                 {
                     "id": o.id,
@@ -381,6 +390,9 @@ def handle_list_agents(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
             ],
             "count": len(officials),
         }
+        if location_id:
+            result["filtered_by"] = {"location_id": location_id}
+        return result
     except Exception as e:
         logger.exception("handle_list_agents failed: %s", e)
         return {"ok": False, "error": str(e)}
