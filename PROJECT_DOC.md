@@ -118,7 +118,7 @@
 | `LLMResponse` | LLM 响应数据类（content/tool_calls/input_tokens/output_tokens/latency_ms/raw） |
 
 **关键枚举**：
-- `RouterCommandType`: WAKE_AGENT, CREATE_TIMER, EXECUTE_POLICY, RELAY_DECREE, BROADCAST, NO_OP
+- `RouterCommandType`: WAKE_AGENT, EXECUTE_POLICY, RELAY_DECREE, BROADCAST, NO_OP
 - `PlayerActionType`: APPROVE, REJECT, HOLD, ISSUE_DECREE
 
 > **注意**：`BROADCAST` 和 `NO_OP` 目前没有对应的 FC handler，如果 Router 返回这两种类型，`dispatch_fc` 会返回错误。
@@ -180,8 +180,7 @@ run() 主循环（0.25s 间隔）
 **FC 工具集**（Router 可调用的工具）：
 | 工具 | 作用 |
 |-----|------|
-| `wake_agent(target, message)` | 直接唤醒目标 Agent，投递消息（0 延迟） |
-| `create_timer(target, delay_days, message, from_agent, urgency?)` | 创建延迟定时器，N 天后送达；`urgency` 为可选传递系数 |
+| `wake_agent(target, message, from_agent, urgency?)` | 向目标 Agent 投递消息；延迟由代码根据双方坐标与 urgency（urgent/express/normal，对应速度倍率 1.8/1.5/1）自动计算，同城立即送达 |
 | `execute_policy(policy, location, executor, from_agent?, description?)` | 调用世界模拟 Agent 执行政策效果；可选 `from_agent` 和 `description` |
 | `relay_decree(decree, targets, urgency?)` | 传递皇帝圣旨给指定官员；`urgency` 为可选传递系数 |
 
@@ -206,7 +205,7 @@ run() 主循环（0.25s 间隔）
 | 分组常量 | 用途 |
 |---------|------|
 | `ACTION_AGENT_TOOLS` | 世界状态读写 5 个 + `list_agents` + `complete_action`（共 7 个） |
-| `ROUTER_TOOLS` | `list_agents / wake_agent / create_timer / execute_policy / relay_decree` |
+| `ROUTER_TOOLS` | `list_agents / wake_agent / execute_policy / relay_decree` |
 | `AGENT_TOOLS` | `submit_action / request_action` |
 | `ALL_TOOLS` | 天玑用，全量 13 个工具 |
 
@@ -287,7 +286,7 @@ BaseAgent (抽象基类)
 **设计特点**：
 - 维护独立的 `messages` 对话历史，不进入 Orchestrator 的任何路径
 - `attach_orchestrator(orch)` 反向注入后共享 `sim_time / pending_wakeups`，所有工具产生与主模拟一致的真实副作用
-- **当前限制**：`main.py` 创建 TianJiAgent 时未传入 orchestrator，也未调用 `attach_orchestrator()`，因此 `wake_agent` 和 `relay_decree` 无法正常工作；`create_timer` 和 `execute_policy` 仍可正常使用
+- **当前限制**：`main.py` 创建 TianJiAgent 时未传入 orchestrator，也未调用 `attach_orchestrator()`，因此 `wake_agent` 的"立即"分支（pending_wakeups）和 `relay_decree` 无法正常工作；`wake_agent` 的延迟分支（走 timers）和 `execute_policy` 仍可正常使用
 - 所有工具调用以 `tianji_` 前缀写入 chain_log，上帝视角可见，不污染主模拟 chain_id
 - 统一走 `dispatch_fc(name, FCContext, args)` 执行，与 Orchestrator 共用同一份 handler 代码
 
@@ -295,7 +294,7 @@ BaseAgent (抽象基类)
 | 类别 | 工具 |
 |------|------|
 | 世界状态 | `query_entity` / `query_inventory` / `update_entity_status` / `update_inventory` / `complete_action` |
-| Router | `wake_agent` / `create_timer` / `execute_policy` / `relay_decree` |
+| Router | `wake_agent` / `execute_policy` / `relay_decree` |
 | Agent FC | `submit_action` / `request_action` |
 
 **重要方法**：
@@ -343,9 +342,9 @@ BaseAgent (抽象基类)
 **距离计算**：
 - 采用平面直角坐标系，以京城 `(0, 0)` 为原点，单位：里（1 里 ≈ 500 米）
 - 两地点间直线距离：`math.sqrt((x1-x2)² + (y1-y2)²)`
-- 通信天数 = `距离(里) / 传递速度(里/天) * 传递系数`
-- 基准速度：`TRAVEL_SPEED_LI_PER_DAY = 300`（快马急递日夜兼程）
-- 传递系数 `TravelCoeff`：URGENT=0.5（六百里加急），NORMAL=1.0（普通公文），SLOW=2.0（民信）
+- 通信天数 = `距离(里) / (基准速度 × 速度倍率)`
+- 基准速度：`TRAVEL_SPEED_LI_PER_DAY = 300`（普通公文急递）
+- 速度倍率 `TravelCoeff`（越大越快）：URGENT=1.8（急递，约 540 里/天），EXPRESS=1.5（快马），NORMAL=1.0（普通公文）
 - 最短耗时 `MIN_TRAVEL_DAYS = 0.1`（同城传递）
 
 **重要查询方法**：
@@ -355,7 +354,7 @@ BaseAgent (抽象基类)
 | `get_superior(id)` | 获取直属上级 |
 | `get_subordinates(id)` | 获取直属下级列表 |
 | `get_chain_to_emperor(id)` | 从某官员到皇帝的完整上报链 |
-| `get_distance(from_id, to_id, mode)` | 获取两名官员之间的通信耗时（天），mode 可选 TravelCoeff |
+| `get_distance(from_id, to_id, speed_coeff)` | 获取两名官员之间的通信耗时（天），speed_coeff 可选 TravelCoeff（越大越快） |
 | `get_officials_at_location(location_id)` | 获取某地的所有官员 |
 | `get_all_locations()` | 获取所有地点 |
 | `get_all_officials()` | 获取所有官员 |
@@ -527,11 +526,11 @@ BaseAgent (抽象基类)
     │       ▼
     │   Router (LLM) 解析意图
     │       │
-    │       ├─ 查层级：知县 → 知府（直属上级，距离1天）
-    │       ├─ 调用 create_timer(target="知府", delay_days=1)
+    │       ├─ 查层级：知县 → 知府（直属上级）
+    │       ├─ 调用 wake_agent(target="知府", from_agent="知县", urgency="normal")
     │       │
     │       ▼
-    │   TimerSystem 创建定时器（1游戏天后送达）
+    │   handler 根据双方坐标自动算延迟 → 写 TimerSystem（异地）或 pending_wakeups（同城）
     │
     ▼ （1游戏天后定时器触发）
     │
@@ -564,9 +563,9 @@ BaseAgent (抽象基类)
 ```
 chain_abc123:
   [hop=1] 吴县知县_张三 → submit_action → "蝗灾严重，请知府拨粮" (distorted: false)
-  [hop=2] Router → create_timer → 苏州知府_况钟 (delay: 1 day)
+  [hop=2] Router → wake_agent → 苏州知府_况钟 (urgency=normal, delay: 0.1 day)
   [hop=3] 苏州知府_况钟 → submit_action → "江南蝗灾，请求布政使赈灾" (distorted: true)
-  [hop=4] Router → create_timer → 江南布政使_周忱 (delay: 2 days)
+  [hop=4] Router → wake_agent → 江南布政使_周忱 (urgency=express, delay: 1.4 day)
   ...
   [hop=7] 皇帝 → approve → "准奏，拨粮三千石"
 ```

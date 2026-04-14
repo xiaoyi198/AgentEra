@@ -104,12 +104,12 @@ class TestCourtGraph:
     def test_distance_urgent(self):
         dist_normal = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.NORMAL)
         dist_urgent = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.URGENT)
-        assert dist_urgent == pytest.approx(dist_normal * TravelCoeff.URGENT)
+        assert dist_urgent == pytest.approx(dist_normal / TravelCoeff.URGENT)
 
-    def test_distance_slow(self):
-        dist_normal = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.NORMAL)
-        dist_slow   = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.SLOW)
-        assert dist_slow == pytest.approx(dist_normal * TravelCoeff.SLOW)
+    def test_distance_express(self):
+        dist_normal  = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.NORMAL)
+        dist_express = self.court.get_distance("苏州知府", "皇帝", TravelCoeff.EXPRESS)
+        assert dist_express == pytest.approx(dist_normal / TravelCoeff.EXPRESS)
 
     def test_distance_unknown_official(self):
         dist = self.court.get_distance("不存在A", "不存在B")

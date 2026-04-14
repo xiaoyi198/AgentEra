@@ -3,8 +3,8 @@
 独立于 Orchestrator，维护自己的对话历史，注入所有 FC 工具集（ALL_TOOLS）。
 
 与生产路径**行为完全一致**：天玑执行 FC 时也走 fc_handlers.dispatch_fc，
-所以 wake_agent / create_timer / execute_policy / relay_decree
-等命令在天玑会话中产生和主模拟一模一样的副作用（真实唤醒、真实排定时器、
+所以 wake_agent / execute_policy / relay_decree
+等命令在天玑会话中产生和主模拟一模一样的副作用（真实唤醒、按坐标排定时器、
 用真实 sim_time 作为时间基准等）。
 
 每轮对话通过 SSE 事件流返回：tool_call / tool_result / assistant_delta / done。
@@ -234,8 +234,8 @@ class TianJiAgent:
         """组装天玑的 FCContext.
 
         若挂载了 orchestrator，共享其 sim_time / pending_wakeups / _agent_tasks
-        以及 _run_action 绑定方法 —— 这样天玑调用 wake_agent / create_timer /
-        execute_policy 等都产生与生产路径一致的真实副作用。
+        以及 _run_action 绑定方法 —— 这样天玑调用 wake_agent / execute_policy
+        等都产生与生产路径一致的真实副作用。
         """
         orch = self.orchestrator
         return FCContext(
@@ -360,8 +360,7 @@ _DEFAULT_SYSTEM_PROMPT = """你是「天玑」，大明王朝·朝堂风云世�
 - `complete_action(result_description, duration_days)` — 标记行动模拟结束
 
 **路由指令工具**（与生产路径行为一致，会产生真实副作用）：
-- `wake_agent(target, message)` — 真实唤醒目标 Agent（下一 tick 送达）
-- `create_timer(target, delay_days, message)` — 写入定时器表（使用模拟时间）
+- `wake_agent(target, message, from_agent, urgency?)` — 真实投递消息；同城立即，异地按坐标+urgency（urgent/express/normal）自动写定时器
 - `execute_policy(policy, location, executor)` — 调用 ActionAgent 推演结果（真实执行）
 - `relay_decree(decree, targets)` — 真实传达圣旨给指定官员
 

@@ -165,23 +165,12 @@ class RouterAgent:
             return RouterCommand(
                 command_type=RouterCommandType.WAKE_AGENT,
                 target=args.get("target"),
-                payload={"message": args.get("message", ""), "from": from_agent},
-                delay_seconds=0,
-                chain_id=f"chain_{uuid.uuid4().hex[:8]}",
-                source_action=source_action,
-            )
-        elif fc_name == "create_timer":
-            delay_days = args.get("delay_days", 1)
-            delay_seconds = delay_days * 86400  # 游戏秒（1天=86400）
-            return RouterCommand(
-                command_type=RouterCommandType.CREATE_TIMER,
-                target=args.get("target"),
                 payload={
                     "message": args.get("message", ""),
                     "from": from_agent,
                     "urgency": args.get("urgency", "normal"),
                 },
-                delay_seconds=delay_seconds,
+                delay_seconds=0,
                 chain_id=f"chain_{uuid.uuid4().hex[:8]}",
                 source_action=source_action,
             )

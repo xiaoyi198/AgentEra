@@ -5,14 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from multiagent_framework.llm_client import LLMConfig
-from multiagent_framework.runtime_paths import RUNTIME_DIR
 from multiagent_framework.types import PlayerAction, PlayerActionType
 
 from . import _state as state
@@ -152,8 +149,10 @@ async def get_memorials():
 
 @router.post("/new-game")
 async def new_game():
-    """清空 runtime/ 目录，从 seed 重新初始化."""
+    """清空 runtime/ 数据，从 seed 重新初始化."""
     from main import init_orchestrator
+    import gc
+    import sqlite3
 
     if state.orchestrator:
         await state.orchestrator.pause()
@@ -167,12 +166,34 @@ async def new_game():
             pass
         state._orch_task = None
 
-    # 清空 runtime/ 目录
-    if RUNTIME_DIR.exists():
-        shutil.rmtree(RUNTIME_DIR)
+    state.orchestrator = None
+    gc.collect()
 
-    # 重新初始化（is_fresh=True 会触发 seed）
-    state.orchestrator = init_orchestrator()
+    from multiagent_framework.runtime_paths import (
+        WORLD_DB, CHAIN_LOG, STATE_FILE, AGENTS_DIR,
+    )
+
+    # 用空数据库覆盖 world.db，绕过 Windows 文件锁
+    if WORLD_DB.exists():
+        src = sqlite3.connect(":memory:")
+        dst = sqlite3.connect(str(WORLD_DB))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+
+    # 清理其他 runtime 文件
+    if CHAIN_LOG.exists():
+        CHAIN_LOG.unlink(missing_ok=True)
+    if STATE_FILE.exists():
+        STATE_FILE.unlink(missing_ok=True)
+    if AGENTS_DIR.exists():
+        for f in AGENTS_DIR.glob("*.json"):
+            f.unlink(missing_ok=True)
+
+    # force_fresh=True 确保重新 seed
+    state.orchestrator = init_orchestrator(force_fresh=True)
     return {"status": "new_game_started"}
 
 
@@ -289,7 +310,7 @@ async def tianji_tools():
     tools = state.tianji_agent._build_tools()
     world_state_names = {"query_entity", "query_inventory", "update_entity_status",
                          "update_inventory", "complete_action"}
-    router_names = {"wake_agent", "create_timer", "execute_policy", "relay_decree"}
+    router_names = {"wake_agent", "execute_policy", "relay_decree"}
     agent_names = {"submit_action", "request_action"}
 
     categorized = {"世界状态": [], "路由指令": [], "官员行为": [], "其他": []}

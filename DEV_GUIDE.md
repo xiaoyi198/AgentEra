@@ -41,8 +41,7 @@
 | 工具 | 作用 |
 |------|------|
 | `list_agents(location_id?)` | 列出所有可唤醒 Agent 的 ID 和基本信息，确认合法目标 |
-| `wake_agent(target, message, from_agent)` | 直接唤醒目标 Agent，投递消息 |
-| `create_timer(target, delay_days, message, from_agent, urgency?)` | 创建延迟定时器，N 天后送达；`urgency` 为可选传递系数 |
+| `wake_agent(target, message, from_agent, urgency?)` | 向目标 Agent 投递消息；延迟由代码按双方坐标与 urgency（urgent/express/normal，速度倍率 1.8/1.5/1）自动计算，同城立即送达 |
 | `execute_policy(policy, location, executor, from_agent?, description?)` | 调用 ActionAgent 执行政策效果；可选 `from_agent` 和 `description` |
 | `relay_decree(decree, targets, urgency?)` | 传递皇帝圣旨给指定官员；`urgency` 为可选传递系数 |
 
@@ -101,7 +100,7 @@ FC 工具定义的中央注册表：
 - 每个工具以具名常量定义（`WAKE_AGENT_TOOL`, `LIST_ENTITIES_TOOL` 等），共 13 个
 - 预组合工具集：
   - `ACTION_AGENT_TOOLS` — `list_entities / query_entity / query_inventory / update_entity_status / update_inventory + list_agents + complete_action`（7 个）
-  - `ROUTER_TOOLS` — `list_agents / wake_agent / create_timer / execute_policy / relay_decree`
+  - `ROUTER_TOOLS` — `list_agents / wake_agent / execute_policy / relay_decree`
   - `AGENT_TOOLS` — `submit_action / request_action`
   - `ALL_TOOLS` — 天玑用，全量 13 个工具
 - **添加新工具**：在此文件定义工具 schema，加入对应分组；Agent 代码无需改动
@@ -120,7 +119,7 @@ FC 处理函数的中央注册表：
 - **每个 FC 工具一个 handler**，全部注册在 `FC_HANDLERS: dict[str, (handler, is_async)]`：
   - 世界状态组：`handle_query_entity / handle_query_inventory / handle_update_entity_status / handle_update_inventory`
   - `handle_complete_action` — 纯解析，返回结构化结果，调用方决定收尾
-  - Router 组（async）：`handle_wake_agent / handle_create_timer / handle_execute_policy / handle_relay_decree`
+  - Router 组（async）：`handle_wake_agent / handle_execute_policy / handle_relay_decree`
 - `dispatch_fc(name, ctx, args)` — 统一分发入口，async-aware
 - `command_type_to_fc_name(cmd_type)` — RouterCommandType 枚举 → FC 工具名
 - `command_to_fc_args(cmd)` — RouterCommand → FC 参数 dict（Orchestrator 桥接用）
@@ -222,7 +221,7 @@ Agent 运行时：
 天玑调试 Agent（独立于 Orchestrator）：
 - `TianJiAgent` — 与用户对话，注入全部工具集（ALL_TOOLS，11 个）
 - 构造参数：`llm_client / world_state / court_graph / timer_system / chain_log / action_agent / router / orchestrator（可选）`
-- **注意**：当前 `main.py` 创建 TianJiAgent 时未传入 orchestrator，也未调用 `attach_orchestrator()`，因此 `wake_agent` 和 `relay_decree` 无法正常工作（`pending_wakeups` 为 None）。`create_timer` 仍可工作（直接使用 timer_system），`execute_policy` 走 ActionAgent 直连路径仍可工作。
+- **注意**：当前 `main.py` 创建 TianJiAgent 时未传入 orchestrator，也未调用 `attach_orchestrator()`，因此 `wake_agent` 的"立即"分支（pending_wakeups 队列）和 `relay_decree` 无法正常工作。`wake_agent` 异地延迟分支（走 timer_system）和 `execute_policy` 走 ActionAgent 直连路径仍可工作。
 - `attach_orchestrator(orch)` — 反向注入 Orchestrator，共享 `sim_time / pending_wakeups / _agent_tasks`；使天玑 `wake_agent / relay_decree` 等产生与主模拟一致的真实副作用
 - `reset()` — 清空 messages，重新注入 system prompt
 - `chat(user_text)` — 主入口，async generator，yield SSE 事件流：
@@ -263,13 +262,13 @@ Agent 运行时：
 - `Official` — 官员数据（id/name/rank/location_id/role/agent_type/superior_id/personality_seed/enabled/extra_prompt）
 - `Location` — 地理位置（id/name/region/x/y），平面直角坐标系，以京城为原点，单位：里
 - `distance_li(loc1, loc2)` — 计算两地点间直线距离（里）
-- `TravelCoeff` — 传递系数：URGENT=0.5, NORMAL=1.0, SLOW=2.0
-- `TRAVEL_SPEED_LI_PER_DAY` = 300（基准速度：快马日夜兼程）
+- `TravelCoeff` — 速度倍率（越大越快）：URGENT=1.8（急递，约 540 里/天），EXPRESS=1.5（快马），NORMAL=1.0（普通公文）
+- `TRAVEL_SPEED_LI_PER_DAY` = 300（基准速度：普通公文急递）
 - `MIN_TRAVEL_DAYS` = 0.1（同城传递最短耗时）
 - `CourtGraph` 类：
   - `get_official()`, `get_superior()`, `get_subordinates()` — 层级查询
   - `get_chain_to_emperor()` — 完整上报链
-  - `get_distance(from_id, to_id, mode)` — 通信耗时（天），mode 可选 TravelCoeff
+  - `get_distance(from_id, to_id, speed_coeff)` — 通信耗时（天），speed_coeff 可选 TravelCoeff（越大越快）
   - `get_officials_at_location()` — 按地点查询
   - `get_all_locations()` — 获取所有地点
   - `get_all_officials()` — 获取所有官员
@@ -500,8 +499,7 @@ Orchestrator._tick()
         ├─ router.process_batch(actions) → RouterCommand 列表
         │
         └─ _execute_commands(commands)
-            ├─ WAKE_AGENT → 加入 _pending_wakeups（下次 tick 处理）
-            ├─ CREATE_TIMER → timers.schedule()
+            ├─ WAKE_AGENT → 按坐标+urgency 算延迟 → 同城走 _pending_wakeups / 异地走 timers.schedule()
             ├─ EXECUTE_POLICY → _run_action()（后台 Task）
             └─ RELAY_DECREE → 为每个 target 加入 _pending_wakeups
 ```

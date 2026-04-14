@@ -9,15 +9,15 @@ from typing import Any
 
 # ── 距离常量 ──
 
-TRAVEL_SPEED_LI_PER_DAY = 300.0  # 基准速度：快马急递日夜兼程，里/天（1里≈500米）
+TRAVEL_SPEED_LI_PER_DAY = 300.0  # 基准速度：普通公文急递，里/天（1里≈500米）
 MIN_TRAVEL_DAYS = 0.1             # 同城传递最短耗时（天）
 
 
 class TravelCoeff:
-    """传递时间系数（越小越快）."""
-    URGENT = 0.5    # 六百里加急（约 600 里/天）
-    NORMAL = 1.0    # 普通公文急递（300 里/天）
-    SLOW   = 2.0    # 民信/绕远路（约 150 里/天）
+    """传递速度倍率（越大越快）."""
+    URGENT  = 1.8   # 急递（约 540 里/天）
+    EXPRESS = 1.5   # 快马（约 450 里/天）
+    NORMAL  = 1.0   # 普通公文（300 里/天）
 
 
 # ── 显式列选择（防止 SELECT * 带入已废弃列）──
@@ -147,31 +147,31 @@ class CourtGraph:
         self,
         from_id: str,
         to_id: str,
-        mode: float = TravelCoeff.NORMAL,
+        speed_coeff: float = TravelCoeff.NORMAL,
     ) -> float:
         """获取两名官员之间的通信耗时（天）.
 
         坐标数据从 WorldState entity metadata 获取。
 
         Args:
-            from_id: 发送方官员 ID
-            to_id:   接收方官员 ID
-            mode:    传递系数（TravelCoeff.URGENT / NORMAL / SLOW）
+            from_id:     发送方官员 ID
+            to_id:       接收方官员 ID
+            speed_coeff: 速度倍率（TravelCoeff.URGENT / EXPRESS / NORMAL，越大越快）
         Returns:
             通信天数（浮点），最少 MIN_TRAVEL_DAYS
         """
         from_official = self.get_official(from_id)
         to_official = self.get_official(to_id)
         if not from_official or not to_official:
-            return 5.0 * mode
+            return 5.0 / speed_coeff
         if self._world_state and from_official.location_id and to_official.location_id:
             from_c = self._world_state.get_coordinates(from_official.location_id)
             to_c = self._world_state.get_coordinates(to_official.location_id)
             if from_c and to_c:
                 dist = math.sqrt((from_c[0] - to_c[0]) ** 2 + (from_c[1] - to_c[1]) ** 2)
-                days = dist / TRAVEL_SPEED_LI_PER_DAY * mode
+                days = dist / (TRAVEL_SPEED_LI_PER_DAY * speed_coeff)
                 return max(days, MIN_TRAVEL_DAYS)
-        return 5.0 * mode
+        return 5.0 / speed_coeff
 
     # ── 数据写入 ──
 

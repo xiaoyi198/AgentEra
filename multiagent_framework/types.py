@@ -82,7 +82,6 @@ class EventObject:
 class RouterCommandType(str, Enum):
     """Router 输出的指令类型."""
     WAKE_AGENT = "wake_agent"
-    CREATE_TIMER = "create_timer"
     EXECUTE_POLICY = "execute_policy"
     RELAY_DECREE = "relay_decree"
     BROADCAST = "broadcast"

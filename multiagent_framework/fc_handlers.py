@@ -228,34 +228,63 @@ def handle_complete_action(ctx: FCContext, args: dict[str, Any]) -> dict[str, An
 
 # ── Router handlers（真实执行）──────────────────────────────────────────────
 
+# urgency → 速度倍率（越大越快）
+_URGENCY_SPEED: dict[str, float] = {
+    "urgent":  1.8,
+    "express": 1.5,
+    "normal":  1.0,
+}
+
+
 async def handle_wake_agent(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
-    """唤醒指定 Agent，立即投递消息（追加到 pending_wakeups 队列）."""
+    """向目标 Agent 投递消息。
+
+    延迟由代码根据双方坐标（通过 CourtGraph → WorldState）和 urgency 速度倍率
+    确定性计算：
+      - 同城 / 无坐标 / 最短时间 → 立即入 pending_wakeups
+      - 其他 → 走 timers.schedule 按天数延迟
+
+    需要 ctx.court 才能查距离；ctx.timers / ctx.pending_wakeups 任一可用即可。
+    """
+    from .court_graph import MIN_TRAVEL_DAYS
+
     target = args.get("target", "")
-    message = args.get("message", "")
-    from_agent = args.get("from_agent", "") or args.get("from", "")
-
-    if ctx.pending_wakeups is None:
-        logger.warning("handle_wake_agent: no pending_wakeups queue, target=%s", target)
-        return {"ok": False, "error": "无待唤醒队列", "target": target}
-
-    ctx.pending_wakeups.append({
-        "target": target,
-        "payload": {"message": message, "from": from_agent},
-        "chain_id": ctx.chain_id or f"chain_{uuid.uuid4().hex[:8]}",
-    })
-    return {"ok": True, "target": target, "queued": True}
-
-
-async def handle_create_timer(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
-    """创建延迟定时器 —— 始终以 ctx.sim_time 为时间基准."""
-    target = args.get("target", "")
-    delay_days = float(args.get("delay_days", 1.0))
     message = args.get("message", "")
     from_agent = args.get("from_agent", "") or args.get("from", "")
     urgency = args.get("urgency", "normal")
+    speed_coeff = _URGENCY_SPEED.get(urgency, 1.0)
 
+    # 计算延迟
+    if ctx.court is not None and from_agent:
+        try:
+            delay_days = float(ctx.court.get_distance(from_agent, target, speed_coeff))
+        except Exception as e:
+            logger.warning("get_distance(%s → %s) failed: %s", from_agent, target, e)
+            delay_days = 0.0
+    else:
+        if not from_agent:
+            logger.warning("handle_wake_agent: from_agent missing, target=%s", target)
+        delay_days = 0.0
+
+    chain_id = ctx.chain_id or f"chain_{uuid.uuid4().hex[:8]}"
+
+    # 同城 / 可忽略距离 → 立即投递
+    if delay_days <= MIN_TRAVEL_DAYS and ctx.pending_wakeups is not None:
+        ctx.pending_wakeups.append({
+            "target": target,
+            "payload": {"message": message, "from": from_agent, "urgency": urgency},
+            "chain_id": chain_id,
+        })
+        logger.info("wake_agent: %s → %s 立即投递（%s）", from_agent or "?", target, urgency)
+        return {
+            "ok": True, "target": target, "queued": True,
+            "delay_days": delay_days,
+        }
+
+    # 否则写定时器
     if ctx.timers is None:
-        return {"ok": False, "error": "timers 未注入"}
+        logger.warning("handle_wake_agent: no timers and no pending_wakeups, target=%s", target)
+        return {"ok": False, "error": "无投递通道", "target": target}
 
     delay_seconds = delay_days * ctx.seconds_per_day
     entry = TimerEntry(
@@ -266,13 +295,13 @@ async def handle_create_timer(ctx: FCContext, args: dict[str, Any]) -> dict[str,
             "from": from_agent,
             "urgency": urgency,
         },
-        chain_id=ctx.chain_id or f"chain_{uuid.uuid4().hex[:8]}",
+        chain_id=chain_id,
         created_at=ctx.sim_time,
     )
     timer_id = ctx.timers.schedule(entry)
     logger.info(
-        "Timer created: → %s in %.0fs (%.1f days)",
-        target, delay_seconds, delay_days,
+        "wake_agent: %s → %s 延迟 %.2f 天（%s, coeff=%.1f）",
+        from_agent or "?", target, delay_days, urgency, speed_coeff,
     )
     return {
         "ok": True,
@@ -410,7 +439,6 @@ FC_HANDLERS: dict[str, tuple[Callable, bool]] = {
     "complete_action":      (handle_complete_action, False),
     "list_agents":          (handle_list_agents, False),
     "wake_agent":           (handle_wake_agent, True),
-    "create_timer":         (handle_create_timer, True),
     "execute_policy":       (handle_execute_policy, True),
     "relay_decree":         (handle_relay_decree, True),
 }
@@ -451,14 +479,6 @@ def command_to_fc_args(cmd: RouterCommand) -> dict[str, Any]:
     if ct == RouterCommandType.WAKE_AGENT:
         return {
             "target": cmd.target or "",
-            "message": payload.get("message", ""),
-            "from_agent": payload.get("from", ""),
-        }
-
-    if ct == RouterCommandType.CREATE_TIMER:
-        return {
-            "target": cmd.target or "",
-            "delay_days": (cmd.delay_seconds / 86400.0) if cmd.delay_seconds else 1.0,
             "message": payload.get("message", ""),
             "from_agent": payload.get("from", ""),
             "urgency": payload.get("urgency", "normal"),

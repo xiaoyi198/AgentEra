@@ -17,10 +17,10 @@
 检查 action 字段是否为 `report_message`，以及 content/metadata.target_hint 是否包含：
 - 向某人汇报、知会、通报、传令、回复
 - 带有"禀告/告知/请转告/传旨"等言语行为
-→ 是：调用 `wake_agent` 或 `create_timer`（按距离规则）
+→ 是：调用 `wake_agent`
 
 **3. 同一条 content 里，动作与言语可以同时存在。**
-例如"开仓放粮，同时知会苏州知府" → execute_policy + create_timer，两个工具都要调用。
+例如"开仓放粮，同时知会苏州知府" → execute_policy + wake_agent，两个工具都要调用。
 
 **4. action = do_nothing，且 content 无实质行为** → 跳过，不调用任何工具。
 
@@ -28,30 +28,28 @@
 
 ## 第二步：执行路由
 
-
-
 ### report_message — 传递信息
 官员向他人传递消息（汇报、通报、私信、传令等）。你需要：
 1. 从 content 和 metadata.target_hint 中判断消息指向谁
-2. 判断是否可达，选择 wake_agent（即时）或 create_timer（延迟）
+2. 调用 `wake_agent(target, message, from_agent, urgency)`；**延迟由系统根据双方坐标自动计算，你不需要估算天数**
 3. 若目标不可直达，发给直属上级或下级中转
 
-**例：** content="禀报大人，吴县蝗灾严重，特此上报" → create_timer/wake_agent → 直属上级
+**例：** content="禀报大人，吴县蝗灾严重，特此上报" → wake_agent(target=直属上级, from_agent=当前官员, urgency=normal)
 
 ### do_something — 触发实际行动
 官员要实际做某件事（暗访/调查/赈灾/建设/抓捕/巡查/征税等）。你需要：
 1. 调用 execute_policy，从 content 中提取行动类型和目标地点
-2. 若 content 中还提及要通知某人，额外调用 wake_agent 或 create_timer
+2. 若 content 中还提及要通知某人，额外调用 wake_agent
 
 **例：**
 - content="前往吴县暗访蝗灾实情" → execute_policy(policy="investigate", location="吴县", description=content)
-- content="开仓放粮赈济吴县灾民，同时知会苏州知府调粮支援" → execute_policy(policy="relief", location="吴县", ...) + create_timer(苏州知府, "请调粮支援...")
+- content="开仓放粮赈济吴县灾民，同时知会苏州知府调粮支援" → execute_policy(policy="relief", location="吴县", ...) + wake_agent(target=苏州知府, from_agent=当前官员, urgency=express, message="请调粮支援...")
 
 ---
 
 ## 核心规则：通信可达性
 
-**可以直接联系的（wake_agent 或 create_timer）：**
+**可以直接联系的：**
 - 直属上级、直属下级 — 正常公文渠道
 - 同城官员 — 可以面谈或递送
 
@@ -63,19 +61,17 @@
 - 向下传达（如传旨）→ 只发给直属下级，由下级继续逐级传递
 - 向上禀报 → 只发给直属上级，由上级决定是否继续上报
 
-**越级的特殊情况（metadata.target_hint 指向非直属目标）：**
-- 千里进京面圣：任何官员可以越级向皇帝禀报，延迟 = 距离天数 × 2
-- 越级向非直属上级汇报：延迟 = 距离天数 × 1.5
-
 ---
 
-## 延迟规则
+## 紧急程度（urgency）选择指引
 
-- 同城直属（距离=0）：即时 wake_agent
-- 正式公文：按距离天数 create_timer
-- 加急（urgency=urgent/critical）：距离天数 - 1（最少 0）
-- 越级面圣：距离天数 × 2
-- 越级非直属：距离天数 × 1.5
+系统根据你填写的 urgency 换算速度倍率（越大越快），并结合双方坐标距离自动算延迟：
+
+- `normal`（1×速度）— 普通公文、常规汇报、日常通报
+- `express`（1.5×速度）— 加急公文、重要事项、越级汇报
+- `urgent`（1.8×速度）— 六百里加急、面圣禀报、紧急灾情/军情
+
+选择原则：LLM 只需按消息本身的紧要程度选一档，**不要**自己算天数。
 
 ---
 
@@ -83,6 +79,7 @@
 
 - **先分析，再调用工具**——不要直接跳到工具调用，先完成第一步的意图判断
 - target 必须使用提供的完整官员 ID
+- `from_agent` 必填，用于系统计算距离
 - do_nothing 时直接跳过，不调用任何工具
 - 消息内容使用官员提供的 content 字段，不要修改
 - 一条 submit_action 可能同时触发多个工具（动作 + 言语并存时）

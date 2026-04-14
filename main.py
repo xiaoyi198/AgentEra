@@ -58,13 +58,17 @@ async def broadcast_tick(tick: TickResult) -> None:
 
 # ── 初始化 ──
 
-def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
+def init_orchestrator(
+    load_from_save: bool = False,
+    force_fresh: bool = False,
+) -> Orchestrator:
     """从配置文件初始化 Orchestrator.
 
     冷启动逻辑：
     - runtime/ 不存在 → is_fresh=True，从 daming_court/ seed 初始化
     - runtime/ 存在 → is_fresh=False，从 runtime/ 恢复状态，不再重新 seed
     - load_from_save=True → 读档流程，runtime/ 已由调用方替换好，按非 fresh 处理
+    - force_fresh=True → 新游戏，强制按 fresh 处理（忽略 runtime/ 是否存在）
     """
     ensure_runtime_dir()
 
@@ -85,7 +89,7 @@ def init_orchestrator(load_from_save: bool = False) -> Orchestrator:
             seconds_per_day = tc.get("seconds_per_day", 600.0)
 
     db_path = str(WORLD_DB)              # runtime/world.db
-    is_fresh = not runtime_exists() and not load_from_save
+    is_fresh = force_fresh or (not runtime_exists() and not load_from_save)
 
     court = CourtGraph(db_path)
     timers = TimerSystem(db_path)

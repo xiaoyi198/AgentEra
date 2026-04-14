@@ -125,34 +125,26 @@ WAKE_AGENT_TOOL = {
     "type": "function",
     "function": {
         "name": "wake_agent",
-        "description": "唤醒指定 Agent，直接投递消息",
+        "description": (
+            "向目标 Agent 投递消息。延迟由系统根据双方坐标与紧急程度自动计算："
+            "同城/无距离立即送达，否则按直线距离与 urgency 对应速度倍率延迟。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "target": {"type": "string", "description": "目标 Agent ID"},
                 "message": {"type": "string", "description": "传递的消息内容"},
-                "from_agent": {"type": "string", "description": "消息来源 Agent ID"},
+                "from_agent": {"type": "string", "description": "消息来源 Agent ID（用于计算距离）"},
+                "urgency": {
+                    "type": "string",
+                    "enum": ["urgent", "express", "normal"],
+                    "description": (
+                        "紧急程度，决定传递速度："
+                        "urgent=急递(1.8×速度)，express=快马(1.5×速度)，normal=普通公文(1×速度)"
+                    ),
+                },
             },
-            "required": ["target", "message"],
-        },
-    },
-}
-
-CREATE_TIMER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "create_timer",
-        "description": "创建延迟定时器，消息在指定天数后送达",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string", "description": "目标 Agent ID"},
-                "delay_days": {"type": "number", "description": "延迟天数"},
-                "message": {"type": "string", "description": "送达时的消息内容"},
-                "from_agent": {"type": "string", "description": "消息来源 Agent ID"},
-                "urgency": {"type": "string", "description": "紧急程度"},
-            },
-            "required": ["target", "delay_days", "message"],
+            "required": ["target", "message", "from_agent"],
         },
     },
 }
@@ -316,7 +308,6 @@ ACTION_AGENT_TOOLS = [
 ROUTER_TOOLS = [
     LIST_AGENTS_TOOL,
     WAKE_AGENT_TOOL,
-    CREATE_TIMER_TOOL,
     EXECUTE_POLICY_TOOL,
     RELAY_DECREE_TOOL,
 ]
@@ -338,7 +329,6 @@ ALL_TOOLS = [
     # Agent 调度
     LIST_AGENTS_TOOL,
     WAKE_AGENT_TOOL,
-    CREATE_TIMER_TOOL,
     EXECUTE_POLICY_TOOL,
     RELAY_DECREE_TOOL,
     # Agent 行动

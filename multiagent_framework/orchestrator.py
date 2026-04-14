@@ -719,9 +719,6 @@ class Orchestrator:
             ctx.source_action = cmd.source_action
             fc_name = command_type_to_fc_name(cmd.command_type)
             args = command_to_fc_args(cmd)
-            # RouterCommand 的 delay_seconds 是权威值，直接还原成 delay_days
-            if cmd.command_type == RouterCommandType.CREATE_TIMER and cmd.delay_seconds:
-                args["delay_days"] = cmd.delay_seconds / GAME_SECONDS_PER_DAY
             try:
                 await dispatch_fc(fc_name, ctx, args)
             except Exception as e:
