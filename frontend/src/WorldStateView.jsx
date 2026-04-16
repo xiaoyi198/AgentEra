@@ -20,7 +20,7 @@ const TYPE_LABELS = {
 
 const ALL_TYPES = ['location', 'person', 'institution', 'organization', 'object']
 
-const CATEGORY_SUGGESTIONS = ['粮食', '货币', '兵力', '物资', '人口', '税收']
+const RESOURCE_TOKENS = ['金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口']
 
 function typeIcon(type) {
   return TYPE_ICONS[type] || '❓'
@@ -39,9 +39,6 @@ export default function WorldStateView() {
   const [editingInv, setEditingInv] = useState(null)   // { idx, field } 正在编辑的格子
   const [invEdits, setInvEdits] = useState({})         // idx → {quantity, description} 临时值
 
-  // 新增库存表单
-  const [showNewItem, setShowNewItem] = useState(false)
-  const [newItem, setNewItem] = useState({ category: '', item_name: '', quantity: '', description: '' })
 
   // 地点坐标（仅 type=location 时使用）
   const [locCoords, setLocCoords] = useState(null)  // { x, y, region, name } | null
@@ -76,7 +73,6 @@ export default function WorldStateView() {
         setEntityForm({ ...data.entity })
         setEditingInv(null)
         setInvEdits({})
-        setShowNewItem(false)
         // 如果是地点类型，加载坐标
         if (data.entity.type === 'location') {
           try {
@@ -165,17 +161,14 @@ export default function WorldStateView() {
     if (!selected) return
     const edited = invEdits[idx] || {}
     const qty = edited.quantity !== undefined ? parseFloat(edited.quantity) : item.quantity
-    const desc = edited.description !== undefined ? edited.description : item.description
     if (isNaN(qty)) { setMsg('✗ 数量必须是数字'); return }
     try {
       await fetch(`${API_BASE}/world-state/${encodeURIComponent(selected.entity.id)}/inventory`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          category: item.category,
-          item_name: item.item_name,
+          resource_name: item.item_name,
           quantity: qty,
-          description: desc,
         }),
       })
       setEditingInv(null)
@@ -183,49 +176,6 @@ export default function WorldStateView() {
       await loadEntity(selected.entity.id)
     } catch (e) {
       setMsg('✗ 保存库存失败')
-    }
-  }
-
-  // ── 删除库存项 ──
-  const handleDeleteInvItem = async (item) => {
-    if (!selected) return
-    const catEnc = encodeURIComponent(item.category)
-    const itemEnc = encodeURIComponent(item.item_name)
-    try {
-      await fetch(`${API_BASE}/world-state/${encodeURIComponent(selected.entity.id)}/inventory/${catEnc}/${itemEnc}`, {
-        method: 'DELETE',
-      })
-      await loadEntity(selected.entity.id)
-    } catch (e) {
-      setMsg('✗ 删除失败')
-    }
-  }
-
-  // ── 新增库存项 ──
-  const handleAddNewItem = async () => {
-    if (!selected) return
-    if (!newItem.category.trim() || !newItem.item_name.trim()) {
-      setMsg('✗ 类目和名称不能为空')
-      return
-    }
-    const qty = parseFloat(newItem.quantity)
-    if (isNaN(qty)) { setMsg('✗ 数量必须是数字'); return }
-    try {
-      await fetch(`${API_BASE}/world-state/${encodeURIComponent(selected.entity.id)}/inventory`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          category: newItem.category,
-          item_name: newItem.item_name,
-          quantity: qty,
-          description: newItem.description,
-        }),
-      })
-      setNewItem({ category: '', item_name: '', quantity: '', description: '' })
-      setShowNewItem(false)
-      await loadEntity(selected.entity.id)
-    } catch (e) {
-      setMsg('✗ 添加失败')
     }
   }
 
@@ -484,145 +434,66 @@ export default function WorldStateView() {
                 </section>
               )}
 
-              {/* 库存管理 */}
+              {/* 资源代币 */}
               <section className="ws-section">
                 <div className="ws-section-header">
-                  <h3>库存</h3>
-                  <button className="btn ghost ws-add-inv-btn" onClick={() => setShowNewItem(!showNewItem)}>
-                    + 添加
-                  </button>
+                  <h3>资源代币</h3>
                 </div>
 
-                {selected.inventory.length === 0 && !showNewItem ? (
-                  <div className="ws-empty">暂无库存记录</div>
-                ) : (
-                  <table className="ws-inventory-table">
-                    <thead>
-                      <tr>
-                        <th>类目</th>
-                        <th>物品名称</th>
-                        <th>数量</th>
-                        <th>单位/备注</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selected.inventory.map((item, idx) => {
-                        const isEditingQty = editingInv?.idx === idx && editingInv?.field === 'quantity'
-                        const isEditingDesc = editingInv?.idx === idx && editingInv?.field === 'description'
-                        const currentQty = invEdits[idx]?.quantity !== undefined ? invEdits[idx].quantity : item.quantity
-                        const currentDesc = invEdits[idx]?.description !== undefined ? invEdits[idx].description : item.description
-                        return (
-                          <tr key={`${item.category}-${item.item_name}`} className="ws-inv-row">
-                            <td className="ws-inv-category">{item.category}</td>
-                            <td className="ws-inv-name">{item.item_name}</td>
-                            <td className="ws-inv-qty">
-                              {isEditingQty ? (
-                                <input
-                                  className="ws-inline-edit"
-                                  type="number"
-                                  value={currentQty}
-                                  autoFocus
-                                  onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], quantity: e.target.value } }))}
-                                  onBlur={() => handleSaveInvRow(item, idx)}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter') handleSaveInvRow(item, idx)
-                                    if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
-                                  }}
-                                />
-                              ) : (
-                                <span
-                                  className="ws-editable-cell"
-                                  onClick={() => setEditingInv({ idx, field: 'quantity' })}
-                                  title="点击编辑"
-                                >
-                                  {typeof currentQty === 'number' ? currentQty.toLocaleString() : currentQty}
-                                </span>
-                              )}
-                            </td>
-                            <td className="ws-inv-desc">
-                              {isEditingDesc ? (
-                                <input
-                                  className="ws-inline-edit"
-                                  value={currentDesc}
-                                  autoFocus
-                                  onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], description: e.target.value } }))}
-                                  onBlur={() => handleSaveInvRow(item, idx)}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter') handleSaveInvRow(item, idx)
-                                    if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
-                                  }}
-                                />
-                              ) : (
-                                <span
-                                  className="ws-editable-cell ws-desc-cell"
-                                  onClick={() => setEditingInv({ idx, field: 'description' })}
-                                  title="点击编辑单位"
-                                >
-                                  {currentDesc || <span className="ws-placeholder-text">+ 单位</span>}
-                                </span>
-                              )}
-                            </td>
-                            <td>
-                              <button
-                                className="ws-del-btn"
-                                onClick={() => handleDeleteInvItem(item)}
-                                title="删除此项"
-                              >✕</button>
-                            </td>
-                          </tr>
-                        )
-                      })}
-
-                      {/* 新增行 */}
-                      {showNewItem && (
-                        <tr className="ws-new-item-row">
-                          <td>
-                            <input
-                              className="ws-inline-edit"
-                              list="ws-cat-list"
-                              placeholder="类目"
-                              value={newItem.category}
-                              onChange={e => setNewItem(p => ({ ...p, category: e.target.value }))}
-                            />
-                            <datalist id="ws-cat-list">
-                              {CATEGORY_SUGGESTIONS.map(c => <option key={c} value={c} />)}
-                            </datalist>
-                          </td>
-                          <td>
-                            <input
-                              className="ws-inline-edit"
-                              placeholder="名称"
-                              value={newItem.item_name}
-                              onChange={e => setNewItem(p => ({ ...p, item_name: e.target.value }))}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="ws-inline-edit"
-                              type="number"
-                              placeholder="数量"
-                              value={newItem.quantity}
-                              onChange={e => setNewItem(p => ({ ...p, quantity: e.target.value }))}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="ws-inline-edit"
-                              placeholder="单位"
-                              value={newItem.description}
-                              onChange={e => setNewItem(p => ({ ...p, description: e.target.value }))}
-                            />
-                          </td>
-                          <td className="ws-new-item-actions">
-                            <button className="btn primary ws-confirm-btn" onClick={handleAddNewItem}>✓</button>
-                            <button className="btn ghost ws-cancel-btn" onClick={() => { setShowNewItem(false); setNewItem({ category: '', item_name: '', quantity: '', description: '' }) }}>✕</button>
-                          </td>
+                {(() => {
+                  const visibleItems = selected.inventory.filter(it =>
+                    RESOURCE_TOKENS.includes(it.item_name) && it.quantity !== -1
+                  )
+                  return visibleItems.length === 0 ? (
+                    <div className="ws-empty">暂无资源记录</div>
+                  ) : (
+                    <table className="ws-inventory-table">
+                      <thead>
+                        <tr>
+                          <th>资源</th>
+                          <th>数量</th>
+                          <th>单位</th>
                         </tr>
-                      )}
-                    </tbody>
-                  </table>
-                )}
+                      </thead>
+                      <tbody>
+                        {visibleItems.map((item, idx) => {
+                          const isEditingQty = editingInv?.idx === idx && editingInv?.field === 'quantity'
+                          const currentQty = invEdits[idx]?.quantity !== undefined ? invEdits[idx].quantity : item.quantity
+                          return (
+                            <tr key={item.item_name} className="ws-inv-row">
+                              <td className="ws-inv-name">{item.item_name}</td>
+                              <td className="ws-inv-qty">
+                                {isEditingQty ? (
+                                  <input
+                                    className="ws-inline-edit"
+                                    type="number"
+                                    value={currentQty}
+                                    autoFocus
+                                    onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], quantity: e.target.value } }))}
+                                    onBlur={() => handleSaveInvRow(item, idx)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleSaveInvRow(item, idx)
+                                      if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
+                                    }}
+                                  />
+                                ) : (
+                                  <span
+                                    className="ws-editable-cell"
+                                    onClick={() => setEditingInv({ idx, field: 'quantity' })}
+                                    title="点击编辑"
+                                  >
+                                    {typeof currentQty === 'number' ? currentQty.toLocaleString() : currentQty}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="ws-inv-desc">{item.description}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )
+                })()}
               </section>
             </>
           )}

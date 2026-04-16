@@ -180,19 +180,19 @@ def handle_update_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, A
     try:
         raw_id = args.get("entity_id", "")
         entity_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
-        category = args.get("category", "")
-        item_name = args.get("item_name", "")
+        resource_name = args.get("resource_name", "") or args.get("item_name", "")
         delta = float(args.get("quantity_delta", 0))
         reason = args.get("reason", "")
         new_qty = ctx.world_state.update_inventory(
-            entity_id, category, item_name, delta, reason,
+            entity_id, resource_name, resource_name, delta, reason,
         )
         if ctx.changes_made is not None:
             ctx.changes_made.append({
                 "type": "inventory_update",
                 "entity_id": entity_id,
-                "category": category,
-                "item_name": item_name,
+                "resource_name": resource_name,
+                "category": resource_name,
+                "item_name": resource_name,
                 "delta": delta,
                 "new_quantity": new_qty,
                 "reason": reason,

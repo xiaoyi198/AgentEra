@@ -112,27 +112,25 @@ async def delete_world_entity(entity_id: str):
 
 
 class InventoryItemRequest(BaseModel):
-    category: str
-    item_name: str
+    resource_name: str
     quantity: float
-    description: str = ""
 
 
 @router.put("/world-state/{entity_id}/inventory")
 async def upsert_inventory_item(entity_id: str, req: InventoryItemRequest):
-    """设置实体的某项库存（绝对赋值，调试用）."""
+    """设置实体的某项资源代币（绝对赋值，调试用）。仅允许 7 种标准代币。"""
     ws = getattr(state.orchestrator, "world_state", None)
     if ws is None:
         return {"error": "world_state not initialized"}
-    ws.set_inventory(entity_id, req.category, req.item_name, req.quantity, req.description)
+    from multiagent_framework.world_state import RESOURCE_META
+    meta = RESOURCE_META.get(req.resource_name)
+    if not meta:
+        return {"error": f"非标准资源代币: {req.resource_name}"}
+    ws.set_inventory(entity_id, req.resource_name, req.resource_name, req.quantity, meta["unit"])
     return {"status": "ok"}
 
 
 @router.delete("/world-state/{entity_id}/inventory/{category}/{item_name}")
 async def delete_inventory_item_api(entity_id: str, category: str, item_name: str):
-    """删除实体的单条库存记录（调试用）."""
-    ws = getattr(state.orchestrator, "world_state", None)
-    if ws is None:
-        return {"error": "world_state not initialized"}
-    ok = ws.delete_inventory_item(entity_id, category, item_name)
-    return {"status": "ok" if ok else "not_found"}
+    """标准资源代币不可删除。"""
+    return {"error": "标准资源代币不可删除", "status": "forbidden"}

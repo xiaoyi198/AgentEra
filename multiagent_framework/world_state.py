@@ -14,6 +14,21 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# ── 资源代币定义 ──
+
+RESOURCE_TOKENS: list[dict[str, Any]] = [
+    {"name": "金钱", "unit": "两", "default": 0, "min": 0, "max": None, "type": "resource"},
+    {"name": "粮草", "unit": "石", "default": 0, "min": 0, "max": None, "type": "resource"},
+    {"name": "工料", "unit": "工日", "default": 0, "min": 0, "max": None, "type": "resource"},
+    {"name": "科技点", "unit": "点", "default": 0, "min": 0, "max": 200, "type": "data"},
+    {"name": "兵力", "unit": "人", "default": 0, "min": 0, "max": None, "type": "resource"},
+    {"name": "满意度", "unit": "", "default": 50, "min": -1, "max": 100, "type": "data"},
+    {"name": "人口", "unit": "人", "default": 0, "min": -1, "max": None, "type": "resource"},
+]
+RESOURCE_NAMES: set[str] = {t["name"] for t in RESOURCE_TOKENS}
+RESOURCE_META: dict[str, dict[str, Any]] = {t["name"]: t for t in RESOURCE_TOKENS}
+
+
 # ── 数据类 ──
 
 @dataclass
@@ -137,6 +152,22 @@ class WorldState:
                     json.dumps(entity.metadata, ensure_ascii=False),
                 ),
             )
+        self.init_default_inventory(entity.id, entity.type)
+
+    def init_default_inventory(self, entity_id: str, entity_type: str = "") -> None:
+        """为实体补齐 7 个标准资源代币（INSERT OR IGNORE，不覆盖已有值）."""
+        with sqlite3.connect(self._db_path) as conn:
+            for token in RESOURCE_TOKENS:
+                default_qty = token["default"]
+                if entity_type == "institution" and token["name"] in ("满意度", "人口"):
+                    default_qty = -1
+                conn.execute(
+                    """INSERT OR IGNORE INTO inventory
+                       (entity_id, category, item_name, quantity, description)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (entity_id, token["name"], token["name"],
+                     default_qty, token["unit"]),
+                )
 
     def update_status(self, entity_id: str, new_status: str, sim_time: float) -> None:
         """增量更新实体的 current_status 字段."""
@@ -154,7 +185,9 @@ class WorldState:
         return cur.rowcount > 0
 
     def delete_inventory_item(self, entity_id: str, category: str, item_name: str) -> bool:
-        """删除单条库存记录。"""
+        """删除单条库存记录。标准资源代币不可删除。"""
+        if item_name in RESOURCE_NAMES:
+            return False
         with sqlite3.connect(self._db_path) as conn:
             cur = conn.execute(
                 "DELETE FROM inventory WHERE entity_id=? AND category=? AND item_name=?",
@@ -191,6 +224,20 @@ class WorldState:
             ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
+    @staticmethod
+    def _clamp_resource(name: str, value: float) -> float:
+        """根据资源代币的 min/max 约束裁剪数值。-1 表示不适用，不参与约束。"""
+        if value == -1:
+            return -1
+        meta = RESOURCE_META.get(name)
+        if not meta:
+            return value
+        lo = meta["min"] if meta["min"] is not None else float("-inf")
+        if lo == -1:
+            lo = 0
+        hi = meta["max"] if meta["max"] is not None else float("inf")
+        return max(lo, min(hi, value))
+
     def set_inventory(
         self,
         entity_id: str,
@@ -199,7 +246,11 @@ class WorldState:
         quantity: float,
         description: str = "",
     ) -> None:
-        """绝对赋值：覆盖数量."""
+        """绝对赋值：覆盖数量. 仅允许标准资源代币。"""
+        if item_name not in RESOURCE_NAMES:
+            raise ValueError(f"不允许操作非标准资源代币: {item_name}")
+        category = item_name
+        quantity = self._clamp_resource(item_name, quantity)
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO inventory
@@ -216,7 +267,10 @@ class WorldState:
         quantity_delta: float,
         reason: str = "",
     ) -> float:
-        """相对增减：返回变更后的新数量. 不存在的条目按 0 起算."""
+        """相对增减：返回变更后的新数量. 仅允许标准资源代币。"""
+        if item_name not in RESOURCE_NAMES:
+            raise ValueError(f"不允许操作非标准资源代币: {item_name}")
+        category = item_name
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
                 """SELECT quantity, description FROM inventory
@@ -229,7 +283,9 @@ class WorldState:
             else:
                 old_qty = 0.0
                 desc = ""
-            new_qty = old_qty + quantity_delta
+            if old_qty == -1:
+                raise ValueError(f"实体 {entity_id} 的 {item_name} 不适用（值为 -1），不可修改")
+            new_qty = self._clamp_resource(item_name, old_qty + quantity_delta)
             conn.execute(
                 """INSERT OR REPLACE INTO inventory
                    (entity_id, category, item_name, quantity, description)
@@ -245,9 +301,14 @@ class WorldState:
         entities: list[Entity],
         inventory: list[InventoryItem],
     ) -> tuple[int, int]:
-        """批量导入实体和库存（INSERT OR REPLACE 语义，安全重入）."""
+        """批量导入实体和库存（INSERT OR REPLACE 语义，安全重入）.
+
+        导入后自动补齐每个实体的 7 个标准资源代币。
+        """
+        entity_types: dict[str, str] = {}
         with sqlite3.connect(self._db_path) as conn:
             for e in entities:
+                entity_types[e.id] = e.type
                 conn.execute(
                     """INSERT OR REPLACE INTO entities
                        (id, type, name, description, current_status, updated_at, metadata)
@@ -266,10 +327,15 @@ class WorldState:
                     (it.entity_id, it.category, it.item_name,
                      it.quantity, it.description),
                 )
+        for e in entities:
+            self.init_default_inventory(e.id, entity_types.get(e.id, ""))
         return len(entities), len(inventory)
 
     def restore_all(self, data: dict[str, Any]) -> tuple[int, int]:
-        """清空并从导出数据完整恢复世界状态（读档用）."""
+        """清空并从导出数据完整恢复世界状态（读档用）.
+
+        恢复后自动补齐每个实体的 7 个标准资源代币。
+        """
         with sqlite3.connect(self._db_path) as conn:
             conn.execute("DELETE FROM inventory")
             conn.execute("DELETE FROM entities")
@@ -343,12 +409,17 @@ class WorldState:
             if loc.current_status:
                 lines.append(f"- 当前状况：{loc.current_status}")
             inv = self.get_inventory(location_id)
-            if inv:
+            resource_items = [
+                it for it in inv
+                if it.quantity != -1
+                and RESOURCE_META.get(it.item_name, {}).get("type") == "resource"
+            ]
+            if resource_items:
                 lines.append("- 库存：")
-                for it in inv:
+                for it in resource_items:
                     qty = f"{it.quantity:g}"
                     unit = f" {it.description}" if it.description else ""
-                    lines.append(f"  · {it.category}/{it.item_name}：{qty}{unit}")
+                    lines.append(f"  · {it.item_name}：{qty}{unit}")
             else:
                 lines.append("- 库存：（无记录）")
         else:

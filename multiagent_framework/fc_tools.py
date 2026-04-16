@@ -47,7 +47,7 @@ QUERY_INVENTORY_TOOL = {
     "type": "function",
     "function": {
         "name": "query_inventory",
-        "description": "查询一个实体的库存（粮食、货币、兵力、物资等）。",
+        "description": "查询实体的资源代币（金钱/粮草/工料/科技点/兵力/满意度/人口）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -78,17 +78,20 @@ UPDATE_INVENTORY_TOOL = {
     "type": "function",
     "function": {
         "name": "update_inventory",
-        "description": "相对增减某实体的库存条目。quantity_delta 正数为增加，负数为减少。",
+        "description": "增减某实体的资源代币。系统只有 7 种固定资源，quantity_delta 正数为增加，负数为减少。",
         "parameters": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string"},
-                "category": {"type": "string", "description": "类别：粮食/货币/兵力/物资"},
-                "item_name": {"type": "string", "description": "条目名：稻米/白银/官兵 等"},
+                "entity_id": {"type": "string", "description": "实体 ID"},
+                "resource_name": {
+                    "type": "string",
+                    "enum": ["金钱", "粮草", "工料", "科技点", "兵力", "满意度", "人口"],
+                    "description": "资源代币名称",
+                },
                 "quantity_delta": {"type": "number", "description": "变化量，正增负减"},
                 "reason": {"type": "string", "description": "变动原因（用于日志）"},
             },
-            "required": ["entity_id", "category", "item_name", "quantity_delta"],
+            "required": ["entity_id", "resource_name", "quantity_delta"],
         },
     },
 }
