@@ -107,6 +107,9 @@
     {"entity_id": "京城", "category": "兵力", "item_name": "兵力", "quantity": 50000, "description": "人"},
     {"entity_id": "京城", "category": "满意度", "item_name": "满意度", "quantity": 70, "description": ""},
     {"entity_id": "京城", "category": "人口", "item_name": "人口", "quantity": 1000000, "description": "人"},
+    {"entity_id": "京城", "category": "生活质量", "item_name": "生活质量", "quantity": 1.0, "description": ""},
+    {"entity_id": "京城", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "京城", "category": "生产系数", "item_name": "生产系数", "quantity": 1.0, "description": ""},
 
     {"entity_id": "北京", "category": "金钱", "item_name": "金钱", "quantity": 100000, "description": "两"},
     {"entity_id": "北京", "category": "粮草", "item_name": "粮草", "quantity": 80000, "description": "石"},
@@ -115,6 +118,9 @@
     {"entity_id": "北京", "category": "兵力", "item_name": "兵力", "quantity": 50000, "description": "人"},
     {"entity_id": "北京", "category": "满意度", "item_name": "满意度", "quantity": 70, "description": ""},
     {"entity_id": "北京", "category": "人口", "item_name": "人口", "quantity": 1000000, "description": "人"},
+    {"entity_id": "北京", "category": "生活质量", "item_name": "生活质量", "quantity": 1.0, "description": ""},
+    {"entity_id": "北京", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "北京", "category": "生产系数", "item_name": "生产系数", "quantity": 1.0, "description": ""},
 
     {"entity_id": "江南", "category": "金钱", "item_name": "金钱", "quantity": 50000, "description": "两"},
     {"entity_id": "江南", "category": "粮草", "item_name": "粮草", "quantity": 100000, "description": "石"},
@@ -123,6 +129,9 @@
     {"entity_id": "江南", "category": "兵力", "item_name": "兵力", "quantity": 5000, "description": "人"},
     {"entity_id": "江南", "category": "满意度", "item_name": "满意度", "quantity": 68, "description": ""},
     {"entity_id": "江南", "category": "人口", "item_name": "人口", "quantity": 5000000, "description": "人"},
+    {"entity_id": "江南", "category": "生活质量", "item_name": "生活质量", "quantity": 1.0, "description": ""},
+    {"entity_id": "江南", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "江南", "category": "生产系数", "item_name": "生产系数", "quantity": 1.8, "description": ""},
 
     {"entity_id": "苏州", "category": "金钱", "item_name": "金钱", "quantity": 15000, "description": "两"},
     {"entity_id": "苏州", "category": "粮草", "item_name": "粮草", "quantity": 25000, "description": "石"},
@@ -131,6 +140,9 @@
     {"entity_id": "苏州", "category": "兵力", "item_name": "兵力", "quantity": 2000, "description": "人"},
     {"entity_id": "苏州", "category": "满意度", "item_name": "满意度", "quantity": 65, "description": ""},
     {"entity_id": "苏州", "category": "人口", "item_name": "人口", "quantity": 500000, "description": "人"},
+    {"entity_id": "苏州", "category": "生活质量", "item_name": "生活质量", "quantity": 0.75, "description": ""},
+    {"entity_id": "苏州", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "苏州", "category": "生产系数", "item_name": "生产系数", "quantity": 2.0, "description": ""},
 
     {"entity_id": "吴县", "category": "金钱", "item_name": "金钱", "quantity": 3000, "description": "两"},
     {"entity_id": "吴县", "category": "粮草", "item_name": "粮草", "quantity": 8000, "description": "石"},
@@ -139,6 +151,9 @@
     {"entity_id": "吴县", "category": "兵力", "item_name": "兵力", "quantity": 800, "description": "人"},
     {"entity_id": "吴县", "category": "满意度", "item_name": "满意度", "quantity": 55, "description": ""},
     {"entity_id": "吴县", "category": "人口", "item_name": "人口", "quantity": 120000, "description": "人"},
+    {"entity_id": "吴县", "category": "生活质量", "item_name": "生活质量", "quantity": 0.65, "description": ""},
+    {"entity_id": "吴县", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "吴县", "category": "生产系数", "item_name": "生产系数", "quantity": 2.0, "description": ""},
 
     {"entity_id": "昆山", "category": "金钱", "item_name": "金钱", "quantity": 2000, "description": "两"},
     {"entity_id": "昆山", "category": "粮草", "item_name": "粮草", "quantity": 6000, "description": "石"},
@@ -147,6 +162,9 @@
     {"entity_id": "昆山", "category": "兵力", "item_name": "兵力", "quantity": 600, "description": "人"},
     {"entity_id": "昆山", "category": "满意度", "item_name": "满意度", "quantity": 58, "description": ""},
     {"entity_id": "昆山", "category": "人口", "item_name": "人口", "quantity": 100000, "description": "人"},
+    {"entity_id": "昆山", "category": "生活质量", "item_name": "生活质量", "quantity": 0.70, "description": ""},
+    {"entity_id": "昆山", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "昆山", "category": "生产系数", "item_name": "生产系数", "quantity": 2.0, "description": ""},
 
     {"entity_id": "南京", "category": "金钱", "item_name": "金钱", "quantity": 80000, "description": "两"},
     {"entity_id": "南京", "category": "粮草", "item_name": "粮草", "quantity": 60000, "description": "石"},
@@ -155,6 +173,9 @@
     {"entity_id": "南京", "category": "兵力", "item_name": "兵力", "quantity": 30000, "description": "人"},
     {"entity_id": "南京", "category": "满意度", "item_name": "满意度", "quantity": 68, "description": ""},
     {"entity_id": "南京", "category": "人口", "item_name": "人口", "quantity": 800000, "description": "人"},
+    {"entity_id": "南京", "category": "生活质量", "item_name": "生活质量", "quantity": 1.0, "description": ""},
+    {"entity_id": "南京", "category": "税率", "item_name": "税率", "quantity": 0.08, "description": "%"},
+    {"entity_id": "南京", "category": "生产系数", "item_name": "生产系数", "quantity": 1.5, "description": ""},
 
     {"entity_id": "吏部", "category": "金钱", "item_name": "金钱", "quantity": 5000, "description": "两"},
     {"entity_id": "吏部", "category": "粮草", "item_name": "粮草", "quantity": 0, "description": "石"},

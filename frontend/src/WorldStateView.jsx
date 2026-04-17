@@ -20,7 +20,10 @@ const TYPE_LABELS = {
 
 const ALL_TYPES = ['location', 'person', 'institution', 'organization', 'object']
 
-const RESOURCE_TOKENS = ['金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口']
+const RESOURCE_TOKENS = [
+  '金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口',
+  '生活质量', '税率', '生产系数',
+]
 
 function typeIcon(type) {
   return TYPE_ICONS[type] || '❓'

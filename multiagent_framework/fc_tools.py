@@ -47,7 +47,7 @@ QUERY_INVENTORY_TOOL = {
     "type": "function",
     "function": {
         "name": "query_inventory",
-        "description": "查询实体的资源代币（金钱/粮草/工料/科技点/兵力/满意度/人口）。",
+        "description": "查询实体的资源代币和核心参数（金钱/粮草/工料/科技点/兵力/满意度/人口/生活质量/税率/生产系数）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -85,8 +85,9 @@ UPDATE_INVENTORY_TOOL = {
                 "entity_id": {"type": "string", "description": "实体 ID"},
                 "resource_name": {
                     "type": "string",
-                    "enum": ["金钱", "粮草", "工料", "科技点", "兵力", "满意度", "人口"],
-                    "description": "资源代币名称",
+                    "enum": ["金钱", "粮草", "工料", "科技点", "兵力", "满意度", "人口",
+                             "生活质量", "税率", "生产系数"],
+                    "description": "资源代币或核心参数名称",
                 },
                 "quantity_delta": {"type": "number", "description": "变化量，正增负减"},
                 "reason": {"type": "string", "description": "变动原因（用于日志）"},

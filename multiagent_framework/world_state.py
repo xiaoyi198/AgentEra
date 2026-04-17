@@ -24,6 +24,10 @@ RESOURCE_TOKENS: list[dict[str, Any]] = [
     {"name": "兵力", "unit": "人", "default": 0, "min": 0, "max": None, "type": "resource"},
     {"name": "满意度", "unit": "", "default": 50, "min": -1, "max": 100, "type": "data"},
     {"name": "人口", "unit": "人", "default": 0, "min": -1, "max": None, "type": "resource"},
+    # ── 核心参数 ──
+    {"name": "生活质量", "unit": "", "default": 1.0, "min": 0.2, "max": 1.5, "type": "param"},
+    {"name": "税率", "unit": "%", "default": 0.08, "min": 0, "max": 0.5, "type": "param"},
+    {"name": "生产系数", "unit": "", "default": 1.0, "min": 0.5, "max": 2.5, "type": "param"},
 ]
 RESOURCE_NAMES: set[str] = {t["name"] for t in RESOURCE_TOKENS}
 RESOURCE_META: dict[str, dict[str, Any]] = {t["name"]: t for t in RESOURCE_TOKENS}
@@ -159,7 +163,9 @@ class WorldState:
         with sqlite3.connect(self._db_path) as conn:
             for token in RESOURCE_TOKENS:
                 default_qty = token["default"]
-                if entity_type == "institution" and token["name"] in ("满意度", "人口"):
+                if entity_type == "institution" and token["name"] in (
+                    "满意度", "人口", "生活质量", "税率", "生产系数",
+                ):
                     default_qty = -1
                 conn.execute(
                     """INSERT OR IGNORE INTO inventory
@@ -422,6 +428,18 @@ class WorldState:
                     lines.append(f"  · {it.item_name}：{qty}{unit}")
             else:
                 lines.append("- 库存：（无记录）")
+            # 展示核心参数（type=param）
+            param_items = [
+                it for it in inv
+                if it.quantity != -1
+                and RESOURCE_META.get(it.item_name, {}).get("type") == "param"
+            ]
+            if param_items:
+                lines.append("- 核心参数：")
+                for it in param_items:
+                    qty = f"{it.quantity:g}"
+                    unit = f" {it.description}" if it.description else ""
+                    lines.append(f"  · {it.item_name}：{qty}{unit}")
         else:
             lines.append(f"### 目标地点：{location_id}")
             lines.append("- （世界状态数据库中尚未登记该地点，请根据行动描述合理推演）")
