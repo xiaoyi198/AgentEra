@@ -20,10 +20,8 @@ const TYPE_LABELS = {
 
 const ALL_TYPES = ['location', 'person', 'institution', 'organization', 'object']
 
-const RESOURCE_TOKENS = [
-  '金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口',
-  '生活质量', '税率', '生产系数',
-]
+const RESOURCE_TOKENS = ['金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口']
+const PARAM_TOKENS = ['生活质量', '税率', '生产系数']
 
 function typeIcon(type) {
   return TYPE_ICONS[type] || '❓'
@@ -486,6 +484,70 @@ export default function WorldStateView() {
                                     title="点击编辑"
                                   >
                                     {typeof currentQty === 'number' ? currentQty.toLocaleString() : currentQty}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="ws-inv-desc">{item.description}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )
+                })()}
+              </section>
+
+              {/* 核心参数 */}
+              <section className="ws-section">
+                <div className="ws-section-header">
+                  <h3>核心参数</h3>
+                </div>
+
+                {(() => {
+                  const paramItems = selected.inventory.filter(it =>
+                    PARAM_TOKENS.includes(it.item_name) && it.quantity !== -1
+                  )
+                  return paramItems.length === 0 ? (
+                    <div className="ws-empty">暂无参数记录（institution 类实体不适用）</div>
+                  ) : (
+                    <table className="ws-inventory-table">
+                      <thead>
+                        <tr>
+                          <th>参数</th>
+                          <th>数值</th>
+                          <th>单位</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paramItems.map((item, rawIdx) => {
+                          const idx = 1000 + rawIdx
+                          const isEditingQty = editingInv?.idx === idx && editingInv?.field === 'quantity'
+                          const currentQty = invEdits[idx]?.quantity !== undefined ? invEdits[idx].quantity : item.quantity
+                          return (
+                            <tr key={item.item_name} className="ws-inv-row">
+                              <td className="ws-inv-name">{item.item_name}</td>
+                              <td className="ws-inv-qty">
+                                {isEditingQty ? (
+                                  <input
+                                    className="ws-inline-edit"
+                                    type="number"
+                                    step="0.01"
+                                    value={currentQty}
+                                    autoFocus
+                                    onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], quantity: e.target.value } }))}
+                                    onBlur={() => handleSaveInvRow(item, idx)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleSaveInvRow(item, idx)
+                                      if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
+                                    }}
+                                  />
+                                ) : (
+                                  <span
+                                    className="ws-editable-cell"
+                                    onClick={() => setEditingInv({ idx, field: 'quantity' })}
+                                    title="点击编辑"
+                                  >
+                                    {typeof currentQty === 'number' ? currentQty : currentQty}
                                   </span>
                                 )}
                               </td>

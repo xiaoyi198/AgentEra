@@ -1,4 +1,4 @@
-"""世界状态 — 实体 + 库存 CRUD."""
+"""世界状态 — 实体 + 库存 + 关系 CRUD."""
 
 from __future__ import annotations
 
@@ -8,6 +8,13 @@ from pydantic import BaseModel
 from . import _state as state
 
 router = APIRouter(prefix="/api", tags=["worldstate"])
+
+
+def _ws():
+    """取运行中的 WorldState，没有则返回 None。"""
+    if not state.orchestrator:
+        return None
+    return getattr(state.orchestrator, "world_state", None)
 
 
 @router.get("/world-state")
@@ -23,7 +30,7 @@ async def get_world_state():
 
 @router.get("/world-state/{entity_id}")
 async def get_world_entity(entity_id: str):
-    """返回单个实体详情 + 库存."""
+    """返回单个实体详情 + 库存 + 关系（parents/children/siblings）."""
     if not state.orchestrator:
         return {"error": "not initialized"}
     ws = getattr(state.orchestrator, "world_state", None)
@@ -52,6 +59,11 @@ async def get_world_entity(entity_id: str):
             }
             for it in inventory
         ],
+        "relations": {
+            "parents": ws.get_parents(entity_id),
+            "children": ws.get_children(entity_id),
+            "siblings": ws.get_siblings(entity_id),
+        },
     }
 
 
@@ -134,3 +146,66 @@ async def upsert_inventory_item(entity_id: str, req: InventoryItemRequest):
 async def delete_inventory_item_api(entity_id: str, category: str, item_name: str):
     """标准资源代币不可删除。"""
     return {"error": "标准资源代币不可删除", "status": "forbidden"}
+
+
+# ── 关系图 ──
+
+@router.get("/relations")
+async def list_relations():
+    """返回整张关系图：所有实体（轻量）+ 所有边。"""
+    ws = _ws()
+    if ws is None:
+        return {"error": "world_state not initialized"}
+    entities = ws.get_all_entities()
+    return {
+        "entities": [
+            {"id": e.id, "type": e.type, "name": e.name}
+            for e in entities
+        ],
+        "relations": ws.get_all_relations(),
+    }
+
+
+@router.get("/world-state/{entity_id}/relations")
+async def get_entity_relations(entity_id: str):
+    """返回单个实体的 parents / children / siblings."""
+    ws = _ws()
+    if ws is None:
+        return {"error": "world_state not initialized"}
+    return {
+        "parents": ws.get_parents(entity_id),
+        "children": ws.get_children(entity_id),
+        "siblings": ws.get_siblings(entity_id),
+    }
+
+
+class RelationRequest(BaseModel):
+    parent_id: str
+    child_id: str
+    rel_type: str
+    note: str = ""
+
+
+@router.post("/relations")
+async def upsert_relation(req: RelationRequest):
+    """创建或覆盖一条边。"""
+    from multiagent_framework.world_state import RELATION_TYPES
+    ws = _ws()
+    if ws is None:
+        return {"error": "world_state not initialized"}
+    if req.rel_type not in RELATION_TYPES:
+        return {"error": f"非法关系类型: {req.rel_type}", "valid": sorted(RELATION_TYPES)}
+    if req.parent_id == req.child_id:
+        return {"error": "parent_id 与 child_id 不能相同"}
+    ws.add_relation(req.parent_id, req.child_id, req.rel_type, req.note)
+    return {"status": "ok"}
+
+
+@router.delete("/relations")
+async def delete_relation(parent_id: str, child_id: str, rel_type: str):
+    """删除一条边。通过查询参数 ?parent_id=...&child_id=...&rel_type=... 传入。"""
+    ws = _ws()
+    if ws is None:
+        return {"error": "world_state not initialized"}
+    ok = ws.remove_relation(parent_id, child_id, rel_type)
+    return {"status": "ok" if ok else "not_found"}

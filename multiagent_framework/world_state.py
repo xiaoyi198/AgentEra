@@ -33,6 +33,9 @@ RESOURCE_NAMES: set[str] = {t["name"] for t in RESOURCE_TOKENS}
 RESOURCE_META: dict[str, dict[str, Any]] = {t["name"]: t for t in RESOURCE_TOKENS}
 
 
+RELATION_TYPES: set[str] = {"subordinate", "affiliated"}
+
+
 # ── 数据类 ──
 
 @dataclass
@@ -90,6 +93,21 @@ class WorldState:
                     FOREIGN KEY (entity_id) REFERENCES entities(id)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_relations (
+                    parent_id TEXT NOT NULL,
+                    child_id  TEXT NOT NULL,
+                    rel_type  TEXT NOT NULL,
+                    note      TEXT DEFAULT '',
+                    PRIMARY KEY (parent_id, child_id, rel_type)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_child  ON entity_relations(child_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_parent ON entity_relations(parent_id)"
+            )
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -184,9 +202,13 @@ class WorldState:
             )
 
     def delete_entity(self, entity_id: str) -> bool:
-        """删除实体（同时级联删除其库存）。返回是否存在并删除。"""
+        """删除实体（级联删除其库存与关系）。返回是否存在并删除。"""
         with sqlite3.connect(self._db_path) as conn:
             conn.execute("DELETE FROM inventory WHERE entity_id = ?", (entity_id,))
+            conn.execute(
+                "DELETE FROM entity_relations WHERE parent_id = ? OR child_id = ?",
+                (entity_id, entity_id),
+            )
             cur = conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
         return cur.rowcount > 0
 
@@ -300,16 +322,115 @@ class WorldState:
             )
         return new_qty
 
+    # ── 关系 CRUD ──
+
+    def add_relation(
+        self,
+        parent_id: str,
+        child_id: str,
+        rel_type: str,
+        note: str = "",
+    ) -> None:
+        """创建或覆盖一条实体关系边。rel_type 必须是标准类型。"""
+        if rel_type not in RELATION_TYPES:
+            raise ValueError(f"未知关系类型: {rel_type}")
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO entity_relations
+                   (parent_id, child_id, rel_type, note)
+                   VALUES (?, ?, ?, ?)""",
+                (parent_id, child_id, rel_type, note),
+            )
+
+    def remove_relation(
+        self,
+        parent_id: str,
+        child_id: str,
+        rel_type: str,
+    ) -> bool:
+        """删除一条边。返回是否存在并删除。"""
+        with sqlite3.connect(self._db_path) as conn:
+            cur = conn.execute(
+                """DELETE FROM entity_relations
+                   WHERE parent_id=? AND child_id=? AND rel_type=?""",
+                (parent_id, child_id, rel_type),
+            )
+        return cur.rowcount > 0
+
+    def get_parents(self, child_id: str) -> list[dict[str, str]]:
+        """返回指向 child_id 的所有父节点。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT parent_id, rel_type, note FROM entity_relations
+                   WHERE child_id = ?""",
+                (child_id,),
+            ).fetchall()
+        return [
+            {"parent_id": r["parent_id"], "rel_type": r["rel_type"], "note": r["note"] or ""}
+            for r in rows
+        ]
+
+    def get_children(self, parent_id: str) -> list[dict[str, str]]:
+        """返回 parent_id 的所有子节点。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT child_id, rel_type, note FROM entity_relations
+                   WHERE parent_id = ?""",
+                (parent_id,),
+            ).fetchall()
+        return [
+            {"child_id": r["child_id"], "rel_type": r["rel_type"], "note": r["note"] or ""}
+            for r in rows
+        ]
+
+    def get_siblings(self, entity_id: str) -> list[dict[str, str]]:
+        """返回所有"同父同 rel_type"的兄弟节点，带上 via_parent_id 说明来源。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT r2.child_id AS sibling_id, r.parent_id AS via_parent_id, r.rel_type
+                   FROM entity_relations r
+                   JOIN entity_relations r2
+                     ON r.parent_id = r2.parent_id AND r.rel_type = r2.rel_type
+                   WHERE r.child_id = ? AND r2.child_id != ?""",
+                (entity_id, entity_id),
+            ).fetchall()
+        return [
+            {
+                "sibling_id": r["sibling_id"],
+                "via_parent_id": r["via_parent_id"],
+                "rel_type": r["rel_type"],
+            }
+            for r in rows
+        ]
+
+    def get_all_relations(self) -> list[dict[str, str]]:
+        """整图导出所有关系边。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT parent_id, child_id, rel_type, note FROM entity_relations"
+            ).fetchall()
+        return [
+            {
+                "parent_id": r["parent_id"],
+                "child_id": r["child_id"],
+                "rel_type": r["rel_type"],
+                "note": r["note"] or "",
+            }
+            for r in rows
+        ]
+
     # ── 批量操作 ──
 
     def bulk_load(
         self,
         entities: list[Entity],
         inventory: list[InventoryItem],
-    ) -> tuple[int, int]:
-        """批量导入实体和库存（INSERT OR REPLACE 语义，安全重入）.
+        relations: list[dict[str, str]] | None = None,
+    ) -> tuple[int, int, int]:
+        """批量导入实体、库存与关系（INSERT OR REPLACE 语义，安全重入）.
 
         导入后自动补齐每个实体的 7 个标准资源代币。
+        返回 (实体数, 库存数, 关系数)。
         """
         entity_types: dict[str, str] = {}
         with sqlite3.connect(self._db_path) as conn:
@@ -333,16 +454,29 @@ class WorldState:
                     (it.entity_id, it.category, it.item_name,
                      it.quantity, it.description),
                 )
+            rel_count = 0
+            for r in (relations or []):
+                rel_type = r.get("rel_type", "")
+                if rel_type not in RELATION_TYPES:
+                    continue
+                conn.execute(
+                    """INSERT OR REPLACE INTO entity_relations
+                       (parent_id, child_id, rel_type, note)
+                       VALUES (?, ?, ?, ?)""",
+                    (r["parent_id"], r["child_id"], rel_type, r.get("note", "")),
+                )
+                rel_count += 1
         for e in entities:
             self.init_default_inventory(e.id, entity_types.get(e.id, ""))
-        return len(entities), len(inventory)
+        return len(entities), len(inventory), rel_count
 
-    def restore_all(self, data: dict[str, Any]) -> tuple[int, int]:
+    def restore_all(self, data: dict[str, Any]) -> tuple[int, int, int]:
         """清空并从导出数据完整恢复世界状态（读档用）.
 
         恢复后自动补齐每个实体的 7 个标准资源代币。
         """
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("DELETE FROM entity_relations")
             conn.execute("DELETE FROM inventory")
             conn.execute("DELETE FROM entities")
         entities = [
@@ -363,7 +497,8 @@ class WorldState:
             )
             for i in data.get("inventory", [])
         ]
-        return self.bulk_load(entities, inventory)
+        relations = list(data.get("relations", []))
+        return self.bulk_load(entities, inventory, relations)
 
     def export_all(self) -> dict[str, Any]:
         """导出为 JSON 友好结构."""
@@ -391,6 +526,7 @@ class WorldState:
                 }
                 for r in inv_rows
             ],
+            "relations": self.get_all_relations(),
         }
 
     # ── Action Agent 专用：动态上下文 ──

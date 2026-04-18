@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import GodView from './GodView'
 import WorldStateView from './WorldStateView'
+import RelationsView from './RelationsView'
 import './App.css'
 
 const WS_URL = `ws://${window.location.host}/ws`
@@ -168,7 +169,7 @@ function App() {
   const [simTime, setSimTime] = useState(0)
   const [running, setRunning] = useState(false)
   const [paused, setPaused] = useState(false)
-  const [currentView, setCurrentView] = useState('emperor') // 'emperor' | 'god' | 'world'
+  const [currentView, setCurrentView] = useState('emperor') // 'emperor' | 'god' | 'world' | 'relations'
   const [tokenUsage, setTokenUsage] = useState({})
   const [decreeText, setDecreeText] = useState('')
   const [noteText, setNoteText] = useState('')
@@ -369,6 +370,12 @@ function App() {
           >
             世界状态
           </button>
+          <button
+            className={`btn ${currentView === 'relations' ? 'active' : 'ghost'}`}
+            onClick={() => setCurrentView(v => v === 'relations' ? 'emperor' : 'relations')}
+          >
+            关系图
+          </button>
           <button className="btn danger" onClick={async () => {
             if (!confirm('确定要开始新游戏？当前运行时状态（含所有 Agent 记忆、世界状态、进度）将被清除。')) return
             await fetch(`${API_BASE}/new-game`, { method: 'POST' })
@@ -401,6 +408,8 @@ function App() {
         <GodView />
       ) : currentView === 'world' ? (
         <WorldStateView />
+      ) : currentView === 'relations' ? (
+        <RelationsView />
       ) : (
         <div className="layout">
           <aside className="panel memorial-list">

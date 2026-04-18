@@ -105,15 +105,15 @@ def _build_system_prompt(
 def load_world_state(
     config_path: str,
     world_state: WorldState,
-) -> tuple[int, int]:
-    """从 JSON 加载初始世界状态（实体 + 库存）到 WorldState.
+) -> tuple[int, int, int]:
+    """从 JSON 加载初始世界状态（实体 + 库存 + 关系）到 WorldState.
 
-    返回 (entity_count, inventory_count)。
-    文件不存在时返回 (0, 0) —— 允许 DLC 不配置初始世界状态。
+    返回 (entity_count, inventory_count, relation_count)。
+    文件不存在时返回 (0, 0, 0) —— 允许 DLC 不配置初始世界状态。
     """
     path = Path(config_path)
     if not path.exists():
-        return (0, 0)
+        return (0, 0, 0)
 
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
@@ -140,7 +140,9 @@ def load_world_state(
             description=item.get("description", ""),
         ))
 
-    return world_state.bulk_load(entities, inventory)
+    relations = list(data.get("relations", []))
+
+    return world_state.bulk_load(entities, inventory, relations)
 
 
 def load_events(config_path: str = "daming_court/config/events.json") -> list[EventObject]:

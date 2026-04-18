@@ -164,9 +164,9 @@ def _load_dlc(
 
     if not load_from_save:
         if Path(world_state_path).exists():
-            ent_cnt, inv_cnt = load_world_state(world_state_path, world_state)
-            logger.info("Loaded world state: %d entities, %d inventory items",
-                        ent_cnt, inv_cnt)
+            ent_cnt, inv_cnt, rel_cnt = load_world_state(world_state_path, world_state)
+            logger.info("Loaded world state: %d entities, %d inventory items, %d relations",
+                        ent_cnt, inv_cnt, rel_cnt)
         else:
             logger.info("No world_state.json at %s, skipped", world_state_path)
 

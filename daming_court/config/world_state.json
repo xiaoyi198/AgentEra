@@ -224,5 +224,17 @@
     {"entity_id": "工部", "category": "兵力", "item_name": "兵力", "quantity": 0, "description": "人"},
     {"entity_id": "工部", "category": "满意度", "item_name": "满意度", "quantity": -1, "description": ""},
     {"entity_id": "工部", "category": "人口", "item_name": "人口", "quantity": -1, "description": "人"}
+  ],
+  "relations": [
+    {"parent_id": "江南", "child_id": "苏州", "rel_type": "subordinate"},
+    {"parent_id": "苏州", "child_id": "吴县", "rel_type": "subordinate"},
+    {"parent_id": "苏州", "child_id": "昆山", "rel_type": "subordinate"},
+    {"parent_id": "京城", "child_id": "吏部", "rel_type": "affiliated"},
+    {"parent_id": "京城", "child_id": "户部", "rel_type": "affiliated"},
+    {"parent_id": "京城", "child_id": "礼部", "rel_type": "affiliated"},
+    {"parent_id": "京城", "child_id": "兵部", "rel_type": "affiliated"},
+    {"parent_id": "京城", "child_id": "刑部", "rel_type": "affiliated"},
+    {"parent_id": "京城", "child_id": "工部", "rel_type": "affiliated"},
+    {"parent_id": "南京", "child_id": "江南", "rel_type": "affiliated"}
   ]
 }
