@@ -104,6 +104,7 @@ class _DLCMaterializedSnapshot:
     official_ids: set[str]
     prompts: dict[str, "PromptRegistry"]
     model_profiles: dict[str, str]
+    agent_packages: dict[str, str]
     agent_fingerprints: dict[str, str]
     resources: list[ResourceDefinition]
     entities: list[Entity]
@@ -279,7 +280,10 @@ class AgentFactory:
     ) -> list[BaseAgent]:
         agents: list[BaseAgent] = []
         sources = {str(item.get("id", "")): item for item in (agent_sources or [])}
-        resolver = ModelBindingResolver(self.llm_client, package.manifest.model_bindings)
+        base_client = self.llm_client
+        if hasattr(base_client, "for_dlc"):
+            base_client = base_client.for_dlc(package.manifest.id)
+        resolver = ModelBindingResolver(base_client, package.manifest.model_bindings)
         self.last_bindings = {}
         for official in officials:
             if official.role == "player" or not official.enabled:
@@ -501,6 +505,7 @@ class DLCBundleLoader:
         officials: list[Official] = []
         prompts_by_package: dict[str, PromptRegistry] = {}
         model_profiles: dict[str, str] = {}
+        agent_packages: dict[str, str] = {}
         agent_fingerprints: dict[str, str] = {}
         package_hashes: dict[str, str] = {}
         resources: list[ResourceDefinition] = []
@@ -551,6 +556,7 @@ class DLCBundleLoader:
                 agents[agent.agent_id] = agent
                 profile = package_bindings.get(agent.agent_id, "")
                 model_profiles[agent.agent_id] = profile
+                agent_packages[agent.agent_id] = package.manifest.id
                 agent_fingerprints[agent.agent_id] = _stable_hash({
                     "agent_id": agent.agent_id,
                     "agent_type": agent.agent_type,
@@ -574,7 +580,11 @@ class DLCBundleLoader:
                     global_prompts[runtime_id] = prompt_text
                     global_prompt_hashes[runtime_id] = _stable_hash(prompt_text)
                     if gateway is not None and hasattr(gateway, "for_task"):
-                        base_client = gateway.for_task(task_type, agent_id=runtime_id)
+                        base_client = gateway.for_task(
+                            task_type, agent_id=runtime_id
+                        )
+                        if hasattr(base_client, "for_dlc"):
+                            base_client = base_client.for_dlc(package.manifest.id)
                         resolver = ModelBindingResolver(
                             base_client, package.manifest.model_bindings
                         )
@@ -632,6 +642,7 @@ class DLCBundleLoader:
             official_ids={official.id for official in officials},
             prompts=prompts_by_package,
             model_profiles=model_profiles,
+            agent_packages=agent_packages,
             agent_fingerprints=agent_fingerprints,
             resources=resources,
             entities=entities,
@@ -737,6 +748,7 @@ class DLCBundleLoader:
                     "class": type(agent).__name__,
                     "config": asdict(agent.config),
                     "model_profile": snapshot.model_profiles.get(agent_id, ""),
+                    "package_id": snapshot.agent_packages.get(agent_id, ""),
                 }
                 for agent_id, agent in sorted(snapshot.agents.items())
             ],
@@ -746,6 +758,7 @@ class DLCBundleLoader:
                 for package_id, registry in sorted(snapshot.prompts.items())
             },
             "model_profiles": dict(snapshot.model_profiles),
+            "agent_packages": dict(snapshot.agent_packages),
             "agent_fingerprints": dict(snapshot.agent_fingerprints),
             "resources": [asdict(item) for item in snapshot.resources],
             "entities": [asdict(item) for item in snapshot.entities],
@@ -783,7 +796,9 @@ class DLCBundleLoader:
             "personas": dict(blueprint.get("personas", {})),
         }, package)
 
-    def _restore_global_client(self, runtime_id: str, profile: str) -> Any:
+    def _restore_global_client(
+        self, runtime_id: str, profile: str, package_id: str = ""
+    ) -> Any:
         task_types = {
             "router": "router.ambiguous",
             "action_agent": "action.simulation",
@@ -795,6 +810,8 @@ class DLCBundleLoader:
             base_client = gateway.for_task(
                 task_types.get(runtime_id, runtime_id), agent_id=runtime_id
             )
+            if package_id and hasattr(base_client, "for_dlc"):
+                base_client = base_client.for_dlc(package_id)
         else:
             base_client = self.agent_factory.llm_client
         return ModelBindingResolver(base_client).bind(runtime_id, profile)
@@ -814,6 +831,14 @@ class DLCBundleLoader:
             str(key): str(value)
             for key, value in dict(blueprint.get("model_profiles", {})).items()
         }
+        agent_packages = {
+            str(key): str(value)
+            for key, value in dict(blueprint.get("agent_packages", {})).items()
+        }
+        package_ids = tuple(str(item) for item in blueprint.get("package_ids", []))
+        primary_package_id = str(blueprint.get("primary_package_id", ""))
+        if not primary_package_id and len(package_ids) == 1:
+            primary_package_id = package_ids[0]
         agents: dict[str, BaseAgent] = {}
         classes = {
             "OfficialAgent": OfficialAgent,
@@ -829,9 +854,18 @@ class DLCBundleLoader:
             profile = str(raw_agent.get(
                 "model_profile", model_profiles.get(config.agent_id, "")
             ))
-            client = ModelBindingResolver(self.agent_factory.llm_client).bind(
-                config.agent_id, profile
+            package_id = str(
+                raw_agent.get(
+                    "package_id",
+                    agent_packages.get(config.agent_id, primary_package_id),
+                )
             )
+            if package_id:
+                agent_packages[config.agent_id] = package_id
+            base_client = self.agent_factory.llm_client
+            if package_id and hasattr(base_client, "for_dlc"):
+                base_client = base_client.for_dlc(package_id)
+            client = ModelBindingResolver(base_client).bind(config.agent_id, profile)
             agents[config.agent_id] = agent_class(config, client)
 
         global_prompts = {
@@ -846,11 +880,12 @@ class DLCBundleLoader:
         }
         global_clients = {
             runtime_id: self._restore_global_client(
-                runtime_id, global_profiles.get(runtime_id, "")
+                runtime_id,
+                global_profiles.get(runtime_id, ""),
+                primary_package_id,
             )
             for runtime_id in global_prompts
         }
-        package_ids = tuple(str(item) for item in blueprint.get("package_ids", []))
         officials = [
             Official(**dict(item)) for item in blueprint.get("officials", [])
         ]
@@ -867,6 +902,7 @@ class DLCBundleLoader:
             official_ids={item.id for item in officials},
             prompts=prompts,
             model_profiles=model_profiles,
+            agent_packages=agent_packages,
             agent_fingerprints={
                 str(key): str(value)
                 for key, value in dict(
@@ -965,6 +1001,7 @@ class DLCBundleLoader:
             official_ids=set(snapshot.official_ids),
             prompts=dict(snapshot.prompts),
             model_profiles=dict(snapshot.model_profiles),
+            agent_packages=dict(snapshot.agent_packages),
             agent_fingerprints=dict(snapshot.agent_fingerprints),
             resources=copy.deepcopy(snapshot.resources),
             entities=copy.deepcopy(snapshot.entities),
@@ -1395,6 +1432,16 @@ class DLCBundleLoader:
             finally:
                 self._reload_metrics["reload_in_progress"] = False
                 self._reload_metrics["current_waiting_inflight_agents"] = 0
+
+    def model_policy_targets(self) -> dict[str, set[str]]:
+        """Return active package/Agent identifiers for internal policy validation."""
+        snapshot = self._active_snapshot
+        if snapshot is None:
+            return {}
+        result = {package_id: set() for package_id in snapshot.package_ids}
+        for agent_id, package_id in snapshot.agent_packages.items():
+            result.setdefault(package_id, set()).add(agent_id)
+        return result
 
     def public_runtime(self) -> dict[str, Any]:
         snapshot = self._active_snapshot

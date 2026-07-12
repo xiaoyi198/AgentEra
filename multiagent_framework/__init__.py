@@ -1,5 +1,6 @@
-"""Multi-Agent Framework — 可插拔的多Agent模拟框架."""
+"""Multi-Agent Framework: pluggable multi-agent simulation framework."""
 
 from .memory_compressor import LLMMemoryCompressor, MemoryCompressor
+from .version import __version__
 
-__all__ = ["MemoryCompressor", "LLMMemoryCompressor"]
+__all__ = ["MemoryCompressor", "LLMMemoryCompressor", "__version__"]

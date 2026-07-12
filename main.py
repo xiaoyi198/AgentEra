@@ -29,6 +29,7 @@ from multiagent_framework.tianji_agent import TianJiAgent
 from multiagent_framework.timer_system import TimerSystem
 from multiagent_framework.types import TickResult
 from multiagent_framework.world_state import WorldState
+from multiagent_framework.version import __version__
 
 from routers import _state as state
 from routers.simulation import router as simulation_router, ws_router
@@ -56,6 +57,9 @@ def _task_client_for_primary_dlc(
     client = gateway.for_task(task_type, agent_id=agent_id)
     if primary_dlc is None:
         return client
+    package_id = str(getattr(primary_dlc.manifest, "id", ""))
+    if package_id and hasattr(client, "for_dlc"):
+        client = client.for_dlc(package_id)
     resolver = ModelBindingResolver(client, primary_dlc.manifest.model_bindings)
     profile = resolver.resolve("", task_type=task_type)
     return resolver.bind(agent_id, profile)
@@ -318,7 +322,7 @@ async def lifespan(app: FastAPI):
             await model_gateway.close()
 
 
-app = FastAPI(title="大明王朝·朝堂风云", lifespan=lifespan)
+app = FastAPI(title="大明王朝·朝堂风云", version=__version__, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

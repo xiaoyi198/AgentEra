@@ -1787,3 +1787,77 @@ Promotion invariants:
 The output records canonical matrix/policy fingerprints so downstream CI can bind approval to the exact reviewed evidence. Deployment still needs a separate authenticated model-config preview/reload and rollback plan.
 
 Latest verified local gate on 2026-07-12: **16 promotion tests**, **84 focused promotion/matrix/model/trajectory tests**, **346 complete Python tests**, **6 frontend tests**, frontend lint/build passed, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Diff check passed.
+
+## Applying an approved model promotion (2026-07-12)
+
+Model promotion is a two-request, generation-bound administrative operation. Keep the admin API disabled by default and provide its token only through the protected runtime environment.
+
+A mapping document binds safe evaluation cohorts to real DLC and Agent targets:
+
+```json
+{
+  "schema_version": "1.0",
+  "promotion_id": "promotion-2026-07-12",
+  "expected_gateway_generation": 1,
+  "expected_policy_fingerprint": "<64 lowercase hex characters>",
+  "cohort_targets": {
+    "daming-core": {
+      "dlcs": ["daming_court"],
+      "agents": [
+        {"dlc_id": "daming_court", "agent_id": "cabinet"}
+      ]
+    }
+  }
+}
+```
+
+Operational sequence:
+
+1. Submit the approved Promotion Gate artifact and mapping to `POST /api/debug/model-promotion/preview`.
+2. Review the safe change counts, current/next generation, target counts, policy fingerprint, and returned `plan_fingerprint`.
+3. Submit the same promotion and mapping plus `expected_plan_fingerprint` to `POST /api/debug/model-promotion/apply`.
+4. Confirm that the returned generation advanced exactly once and that the persisted `config/models.json` equals the active Gateway configuration.
+5. Observe the new generation before proceeding to a wider rollout. Do not reuse a preview after any Gateway reload, mapping change, Promotion artifact change, or external model-config edit.
+
+The apply path deliberately rejects stale generations, unknown Profiles, unknown DLC/Agent targets, incomplete/overlapping cohort mappings, policy-fingerprint substitution, plan-fingerprint substitution, and source-file changes between preview and apply. A failed Gateway activation restores the previous file. Calls already in progress continue with their captured generation and client set; later calls use the new policies.
+
+Scoped central model configuration uses:
+
+```json
+{
+  "task_policies": {
+    "agent.turn": ["fast_tools"]
+  },
+  "dlc_task_policies": {
+    "daming_court": {
+      "agent.turn": ["deep_sim", "fast_tools"]
+    }
+  },
+  "agent_task_policies": {
+    "daming_court": {
+      "cabinet": {
+        "agent.turn": ["deep_sim", "fast_tools"]
+      }
+    }
+  }
+}
+```
+
+Never place API keys in these files. Profiles reference `api_key_env`; the environment provides the secret. Promotion artifacts, mappings, previews, logs, and error responses must not contain Provider URLs, environment variable names, credentials, Prompt/message/memory text, filesystem paths, Agent/Trace/command/tool-call IDs, or raw exceptions.
+
+### Version synchronization
+
+`VERSION` is the canonical project version. For every release, update all of the following in the same change:
+
+- `VERSION`
+- `multiagent_framework/version.py`
+- `frontend/package.json` and its lockfile
+- the current-version line in `README.md`
+
+FastAPI imports the backend version for OpenAPI metadata. Run:
+
+```powershell
+python -m pytest -q tests/unit/test_version_consistency.py
+```
+
+The complete local release gate for version `0.10.0` is **360 Python tests**, **6 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and `git diff --check`.

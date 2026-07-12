@@ -1055,3 +1055,32 @@ Next priorities:
 5. Repeat the process independently for production; never reuse local or staging evidence as a production prerequisite.
 
 This closes the local tooling gap between reviewed model selection and deployment gating. It does not claim that any provider/model policy has passed real staging or production evidence yet.
+
+## Progress update: atomic scoped model-policy activation (2026-07-12)
+
+Status: **implementation and local gates complete; real staging/production promotion remains pending**.
+
+Completed in this checkpoint:
+
+- added central DLC-level and Agent-level task policies with strict schema validation and deterministic precedence;
+- propagated DLC/Agent context through TaskLLMClient, AgentFactory, candidate selection, credential checks, chat, streaming, and generation archives;
+- added optimistic Gateway generation checks for ordinary model reload and promotion apply;
+- added a strict cohort-to-DLC/Agent mapping format with complete, non-overlapping, known-target validation;
+- bound apply operations to approved Promotion Gate, matrix, policy, current-config, candidate-policy, and plan fingerprints;
+- added secret-free preview and authenticated apply APIs;
+- added atomic model-config persistence with fsync, replace, and file rollback when runtime activation fails;
+- proved external edits between preview/apply are rejected without overwriting the external file;
+- proved in-flight calls retain old-generation clients and routing while the next call uses the promoted DLC/Agent policy;
+- synchronized release version **0.10.0** across backend, frontend, FastAPI metadata, README, and canonical `VERSION`;
+- completed the **360-test** backend gate, **6 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Diff check.
+
+Next priorities:
+
+1. Run the credentialed repeated live matrix in an isolated staging environment and complete two-reviewer quorum for every target.
+2. Produce same-environment signed scale and operational evidence, then obtain an approved Promotion Gate artifact.
+3. Exercise preview/apply against staging, monitor the new generation, verify safe aggregates, and retain rollback evidence.
+4. Add an operator-facing promotion panel to DLC Studio so approved artifacts and mappings can be validated without hand-authoring requests while preserving the admin boundary.
+5. Continue world-simulator depth work: deterministic time progression, richer event chains, economic balancing around the unified value anchor, and longer mock-LLM end-to-end scenarios.
+6. Continue Prompt/memory optimization using credentialed trajectory evidence rather than static preference, including task-specific model budgets and long-horizon memory quality checks.
+
+The product goal remains active. Local tooling now closes the path from reviewed model recommendation to atomic scoped policy activation, but no production model choice is claimed until external evidence and controlled rollout complete.

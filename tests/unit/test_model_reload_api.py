@@ -111,6 +111,24 @@ def test_model_reload_preview_and_reload_are_safe_and_atomic(monkeypatch, tmp_pa
         state.orchestrator = previous
 
 
+def test_model_reload_rejects_stale_expected_generation(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORLD_SIM_ENABLE_ADMIN_API", "1")
+    monkeypatch.setenv("WORLD_SIM_ADMIN_TOKEN", "admin-secret")
+    app, gateway = _app_with_gateway(tmp_path)
+    previous = _install_gateway(gateway)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/debug/model-config/reload",
+                headers={"X-Admin-Token": "admin-secret"},
+                json={"expected_generation": 2},
+            )
+        assert response.status_code == 400
+        assert gateway.generation == 1
+    finally:
+        state.orchestrator = previous
+
+
 def test_invalid_reload_keeps_previous_generation(monkeypatch, tmp_path):
     monkeypatch.setenv("WORLD_SIM_ENABLE_ADMIN_API", "1")
     monkeypatch.setenv("WORLD_SIM_ADMIN_TOKEN", "admin-secret")

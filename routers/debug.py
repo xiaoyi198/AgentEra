@@ -9,6 +9,10 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from multiagent_framework.model_promotion_apply import (
+    ModelPromotionApplier,
+    ModelPromotionApplyError,
+)
 from . import _state as state
 
 router = APIRouter(prefix="/api/debug", tags=["debug"])
@@ -16,6 +20,19 @@ router = APIRouter(prefix="/api/debug", tags=["debug"])
 
 class DLCRollbackRequest(BaseModel):
     source_generation: int = Field(ge=1)
+
+
+class ModelConfigReloadRequest(BaseModel):
+    expected_generation: int | None = Field(default=None, ge=1)
+
+
+class ModelPromotionPreviewRequest(BaseModel):
+    promotion: dict
+    mapping: dict
+
+
+class ModelPromotionApplyRequest(ModelPromotionPreviewRequest):
+    expected_plan_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 def _require_model_admin(token: str | None) -> None:
@@ -43,6 +60,13 @@ def _dlc_loader():
     if not loader:
         raise HTTPException(status_code=503, detail="DLC runtime is not initialized")
     return loader
+
+
+def _model_promotion_applier() -> ModelPromotionApplier:
+    loader = _dlc_loader()
+    return ModelPromotionApplier(
+        _model_gateway(), known_targets=loader.model_policy_targets()
+    )
 
 
 @router.get("/timeline")
@@ -142,16 +166,55 @@ async def preview_model_config_reload(
 
 @router.post("/model-config/reload")
 async def reload_model_config(
+    request: ModelConfigReloadRequest | None = None,
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     """Atomically reload the configured local model file after admin authentication."""
     _require_model_admin(x_admin_token)
     gateway = _model_gateway()
     try:
-        return await gateway.reload_from_file()
+        return await gateway.reload_from_file(
+            expected_generation=(request.expected_generation if request else None)
+        )
     except (OSError, ValueError, KeyError, RuntimeError):
         raise HTTPException(
             status_code=400, detail="Model configuration reload failed"
+        ) from None
+
+
+@router.post("/model-promotion/preview")
+async def preview_model_promotion(
+    request: ModelPromotionPreviewRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Plan an approved cohort policy promotion without exposing model secrets."""
+    _require_model_admin(x_admin_token)
+    try:
+        return _model_promotion_applier().preview(
+            request.promotion, request.mapping
+        )
+    except (ModelPromotionApplyError, OSError, ValueError, KeyError):
+        raise HTTPException(
+            status_code=400, detail="Model promotion validation failed"
+        ) from None
+
+
+@router.post("/model-promotion/apply")
+async def apply_model_promotion(
+    request: ModelPromotionApplyRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Atomically persist and activate one previously previewed promotion plan."""
+    _require_model_admin(x_admin_token)
+    try:
+        return await _model_promotion_applier().apply(
+            request.promotion,
+            request.mapping,
+            expected_plan_fingerprint=request.expected_plan_fingerprint,
+        )
+    except (ModelPromotionApplyError, OSError, ValueError, KeyError, RuntimeError):
+        raise HTTPException(
+            status_code=400, detail="Model promotion apply failed"
         ) from None
 
 
