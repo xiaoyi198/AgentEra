@@ -23,6 +23,18 @@ class FakeRouter:
         self.time_scale = value
 
 
+class FakeCausalEngine:
+    def __init__(self, snapshot=None) -> None:
+        self.value = snapshot or {}
+        self.restored = None
+
+    def snapshot(self):
+        return self.value
+
+    def restore(self, value, *, sim_time):
+        self.restored = (value, sim_time)
+
+
 class FakeLoader:
     def load_from_db(self) -> int:
         return 0
@@ -61,6 +73,14 @@ def test_runtime_persistor_and_startup_loader_round_trip_memory_v3(tmp_path, mon
         _seconds_per_day=720.0,
         memorials=[{"id": "m1"}],
         agents={"keeper": source_agent},
+        causal_event_engine=FakeCausalEngine({
+            "schema_version": "1.0",
+            "observed_event_ids": ["evt-1"],
+            "chain_counts": {},
+            "chain_order": [],
+            "dropped_count": 0,
+            "pending": [],
+        }),
     )
     persistor = RuntimePersistor(source_orch)
     persistor.mark_state_dirty()
@@ -83,6 +103,7 @@ def test_runtime_persistor_and_startup_loader_round_trip_memory_v3(tmp_path, mon
         router=FakeRouter(),
         timers=FakeLoader(),
         chain_log=FakeLoader(),
+        causal_event_engine=FakeCausalEngine(),
     )
     monkeypatch.setattr(main, "STATE_FILE", state_file)
     monkeypatch.setattr(main, "AGENTS_DIR", agents_dir)
@@ -95,6 +116,17 @@ def test_runtime_persistor_and_startup_loader_round_trip_memory_v3(tmp_path, mon
     assert restored_orch._seconds_per_day == 720.0
     assert restored_orch.router.time_scale == 720.0
     assert restored_orch.memorials == [{"id": "m1"}]
+    assert restored_orch.causal_event_engine.restored == (
+        {
+            "schema_version": "1.0",
+            "observed_event_ids": ["evt-1"],
+            "chain_counts": {},
+            "chain_order": [],
+            "dropped_count": 0,
+            "pending": [],
+        },
+        123.5,
+    )
     assert restored_snapshot["messages"] == [
         {"role": "user", "content": "Inspect the northern granary"}
     ]

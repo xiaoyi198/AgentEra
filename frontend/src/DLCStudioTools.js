@@ -10,6 +10,7 @@ const ARRAY_SECTIONS = [
   'initial_events',
   'ongoing_events',
   'random_events',
+  'causal_event_rules',
   'time_rules',
 ]
 const OBJECT_SECTIONS = ['personas', 'prompts']
@@ -25,6 +26,7 @@ const KEYERS = {
   initial_events: item => item?.event_id,
   ongoing_events: item => item?.event_id,
   random_events: item => item?.template_id,
+  causal_event_rules: item => item?.rule_id,
   time_rules: item => item?.rule_id,
 }
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from multiagent_framework.orchestrator import Orchestrator
+from multiagent_framework.types import EventObject
 from multiagent_framework.event_generator import (
     GAME_SECONDS_PER_DAY,
     RandomEventGenerator,
@@ -185,3 +186,84 @@ def test_poll_rejects_non_positive_or_boolean_budget():
     for budget in (0, -1, True):
         with pytest.raises(RandomEventGeneratorError, match="budget"):
             generator.poll(GAME_SECONDS_PER_DAY, max_attempts=budget)
+
+
+
+def make_orchestrator_for_events():
+    class Court:
+        def get_official(self, agent_id):
+            if agent_id in {"county-a", "county-b"}:
+                return SimpleNamespace(id=agent_id, role="player")
+            return None
+
+    class Timers:
+        def pop_due(self, _sim_time):
+            return []
+
+        def get_in_transit(self):
+            return []
+
+    class Router:
+        def __init__(self):
+            self.llm = SimpleNamespace(token_counter=SimpleNamespace(to_dict=lambda: {}))
+
+    return Orchestrator(
+        court_graph=Court(), timer_system=Timers(),
+        chain_log=SimpleNamespace(), router=Router(),
+    )
+
+
+def test_orchestrator_random_event_triggers_zero_delay_causal_event_without_payload_leak():
+    orch = make_orchestrator_for_events()
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1)
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": "locust_to_famine",
+        "source_event_types": ["locust_plague"],
+        "child_event_type": "famine_risk",
+        "delay_days": 0,
+        "probability": 1,
+        "inherit_payload_keys": ["area"],
+        "initial_payload": {"private_note": "never-expose"},
+        "max_depth": 4,
+        "max_fires_per_chain": 1,
+    }])
+    orch._sim_time = GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    assert [item["event_type"] for item in result.generated_events] == [
+        "locust_plague", "famine_risk",
+    ]
+    causal = result.generated_events[1]
+    assert causal["source"] == "causal"
+    assert "initial_payload" not in causal
+    assert "target_agents" not in causal
+    assert "private_note" not in str(causal)
+    assert len(result.new_memorials) == 4
+
+
+def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():
+    orch = make_orchestrator_for_events()
+    rules = [{
+        "rule_id": f"fanout-{index}",
+        "source_event_types": ["*"],
+        "child_event_type": f"echo-{index}",
+        "target_agents": ["county-a"],
+        "delay_days": 0,
+        "probability": 1,
+        "max_depth": 16,
+        "max_fires_per_chain": 64,
+    } for index in range(16)]
+    orch.configure_causal_events(rules)
+    orch.inject_event(EventObject(
+        event_id="source-fanout", event_type="start", severity=5,
+        target_agents=["county-a"], initial_payload={}, generated_at=0,
+    ))
+
+    result = asyncio.run(orch._tick())
+
+    assert len(result.generated_events) == 128
+    assert all(item["source"] == "causal" for item in result.generated_events)
+    assert orch.causal_event_status()["pending_count"] > 0

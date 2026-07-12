@@ -1626,3 +1626,29 @@ Status: **implemented and locally verified; credentialed staging observation rem
 - Frontend: **11 tests passed**, lint passed, and production build passed.
 - Python compile and `git diff --check` passed. Prompt contracts and deterministic trajectory replay both scored **100%**.
 - Production use still requires credentialed staging promotion, protected operational observation, rollback rehearsal, independent review quorum, and environment-specific alert thresholds.
+
+
+## Phase checkpoint: deterministic causal event chains (2026-07-12)
+
+Status: **implemented and locally verified**.
+
+### Runtime architecture
+
+- `multiagent_framework/causal_events.py` defines validated `CausalEventRule` and `CausalCondition` schemas plus a deterministic, restart-safe scheduler. A source event is observed once, matching rules are evaluated in stable priority/ID order, and complete child `EventObject` values are materialized immediately.
+- Stable SHA-256 sampling makes probability decisions reproducible for the same rule, source event, and causal chain. Child IDs are deterministic, duplicate source injection is idempotent, severity is clamped to `1..10`, and target Agents may be inherited or explicitly overridden.
+- Conditions support `anchored_inventory`, `metric`, and `parameter`. Anchored inventory compares `quantity * anchor_rate` in base-value units; metrics and parameters use their typed `entity_values` stores. Missing facts fail closed.
+- Materialized children retain their delay, targets, payload, severity, and causal metadata across DLC hot reload. Rule fire counts are reserved when scheduling, not when polling, preventing restart/reload re-entry from over-scheduling.
+- Chain depth, per-rule fire limits, a 128-event per-Tick causal budget, a 10,000 pending-event cap, bounded observed IDs, and bounded completed-chain retention prevent unbounded event storms. Aggregate dropped counts are observable without exposing event payloads or identifiers.
+- Scheduler snapshots persist observed IDs, per-chain rule counts, pending materialized events, ordering, and dropped aggregates. Restore validates shapes, sizes, finite times, severity, target lists, payload maps, IDs, and count bounds before replacing live state. Legacy state without `causal_events` restores as an empty scheduler.
+
+### DLC and Studio integration
+
+- Bundle Content adds `causal_event_rules`. Registry validation checks rule schema, duplicate IDs, Agent references, entity/resource references, and resource-kind compatibility. Active DLC materialization also rejects cross-package rule-ID collisions.
+- Runtime snapshots, generation blueprints, preview/reload, rollback, public aggregate status, startup restoration, and `RuntimePersistor` all include causal scheduler state or causal rule configuration as appropriate. Rules are configured before initial events are injected.
+- DLC Studio adds a dedicated causal-chain editor and includes rules in import/export, stable keyed Diff, history, counts, and validation-oriented forms. The editor supports source types, child type, priority, enablement, delay, probability, severity delta, depth/fire limits, Agent targets, inherited payload keys, conditions JSON, and initial payload JSON.
+- Generated-event API metadata identifies causal origin but excludes target Agent lists and event payloads. Public scheduler status contains only counts, next due time, dropped count, and a configuration fingerprint.
+
+### Version identity
+
+- Release identity is `0.13.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
+- Acceptance evidence: **412 Python tests passed**; **12 frontend tests passed**; frontend lint/build and Python compile passed; Prompt contracts and deterministic trajectory replay both scored **100%**; `git diff --check` and maintained-document encoding checks passed.

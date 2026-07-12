@@ -1900,3 +1900,56 @@ Status: **implemented and locally verified; credentialed staging observation rem
 - Frontend: **11 tests passed**, lint passed, and production build passed.
 - Python compile and `git diff --check` passed. Prompt contracts and deterministic trajectory replay both scored **100%**.
 - Production use still requires credentialed staging promotion, protected operational observation, rollback rehearsal, independent review quorum, and environment-specific alert thresholds.
+
+
+## Deterministic causal event chain development (v0.13.0)
+
+Add rules to the bundle Content section `causal_event_rules` or use the DLC Studio **Causal Event Chains** tab. A minimal rule is:
+
+```json
+{
+  "rule_id": "drought_to_shortage",
+  "source_event_types": ["drought"],
+  "child_event_type": "food_shortage",
+  "target_agents": [],
+  "delay_days": 10,
+  "probability": 1,
+  "severity_delta": 1,
+  "initial_payload": {},
+  "inherit_payload_keys": ["region"],
+  "conditions": [
+    {
+      "kind": "anchored_inventory",
+      "entity_id": "capital",
+      "name": "grain",
+      "operator": "lt",
+      "value": 1000
+    }
+  ],
+  "max_depth": 4,
+  "max_fires_per_chain": 1,
+  "priority": 0,
+  "enabled": true
+}
+```
+
+Development rules:
+
+1. `rule_id`, event types, and explicit Agent targets must use safe IDs; IDs must be unique across all active DLCs.
+2. An empty `target_agents` array inherits the source event targets. Only keys listed by `inherit_payload_keys` are copied; causal metadata keys are reserved and cannot be authored.
+3. `probability` is deterministic for a rule/source/chain tuple. Do not use it as a cryptographic random source.
+4. `anchored_inventory` compares base value (`quantity * anchor_rate`), not raw quantity. The referenced resource must be an asset. `metric` and `parameter` conditions must reference matching resource kinds.
+5. Missing world facts fail closed. Keep rules explicit and avoid wildcard cycles unless depth and fire limits are deliberately tested.
+6. A rule fire is counted when its child is scheduled. Reloading a DLC changes only future observations; already materialized children preserve committed semantics.
+7. Public/admin responses must never add event payloads, target Agent IDs, entity/resource IDs, chain IDs, paths, credentials, Prompt/message/memory bodies, or raw exceptions.
+8. Any schema/runtime change must update Registry, generation blueprint/rollback, persistence, Studio import/export/Diff, tests, `README.md`, `PROJECT_DOC.md`, `DEV_GUIDE.md`, `OPTIMIZATION_PLAN.md`, and the synchronized project version.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_events.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_runtime_persistor.py tests/unit/test_event_generator.py
+cd frontend
+npm test
+npm run lint
+npm run build
+```
