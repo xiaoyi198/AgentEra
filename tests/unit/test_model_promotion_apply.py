@@ -272,6 +272,11 @@ def test_promotion_admin_api_preview_and_apply_share_auth_boundary(monkeypatch, 
                 headers={"X-Admin-Token": "admin-secret"},
                 json={"promotion": promotion(), "mapping": mapping()},
             )
+            invalid = client.post(
+                "/api/debug/model-promotion/preview",
+                headers={"X-Admin-Token": "admin-secret"},
+                json={"promotion": {"schema_version": "1.0"}, "mapping": mapping()},
+            )
             applied = client.post(
                 "/api/debug/model-promotion/apply",
                 headers={"X-Admin-Token": "admin-secret"},
@@ -282,7 +287,17 @@ def test_promotion_admin_api_preview_and_apply_share_auth_boundary(monkeypatch, 
                 },
             )
         assert denied.status_code == 403
+        assert invalid.status_code == 400
+        assert invalid.json() == {"detail": "Model promotion validation failed"}
         assert preview.status_code == 200
+        assert set(preview.json()) == {
+            "schema_version", "promotion_id", "gate_id", "environment_id",
+            "matrix_id", "matrix_fingerprint", "policy_fingerprint",
+            "current_config_fingerprint", "candidate_policy_fingerprint",
+            "current_generation", "next_generation", "global_task_changes",
+            "dlc_task_changes", "agent_task_changes", "dlc_target_count",
+            "agent_target_count", "plan_fingerprint",
+        }
         assert applied.status_code == 200
         assert applied.json()["generation"] == 2
         serialized = (preview.text + applied.text).lower()

@@ -1585,3 +1585,24 @@ Acceptance evidence:
 - External-file-change and in-flight-generation regression tests passed; `git diff --check` passed.
 
 Production activation is still pending credentialed live-model runs, independent review quorum, and same-environment staging scale/operational evidence.
+
+
+## Phase checkpoint: DLC Studio model-promotion workbench (2026-07-12)
+
+Status: **implemented and locally verified; credentialed staging evidence remains pending**.
+
+- `frontend/src/ModelPromotionWorkbench.jsx` adds an operator-facing Promotion Gate import, cohort mapping generator, authenticated Preview, safe plan summary, and generation-bound Apply flow to DLC Studio.
+- Quick mapping targets the currently selected DLC. Agent targets are opt-in checkboxes rather than implicit all-Agent expansion, reducing accidental policy scope.
+- The Admin Token exists only in component memory and is sent only in `X-Admin-Token`; it is not persisted, exported, copied into artifacts, or rendered after entry.
+- `parsePromotionArtifact`, `parsePromotionMapping`, and `createPromotionMapping` enforce schema v1, approved decisions, lowercase SHA-256 policy fingerprints, safe IDs, positive Gateway generations, and object-shaped cohort policies before requests are sent.
+- A deterministic input fingerprint binds Preview state to the exact Promotion text, Mapping text, selected DLC, and public Gateway generation. Any change disables Apply until a new Preview succeeds.
+- Apply submits the Preview `plan_fingerprint`, clears the old preview, and reloads `GET /api/debug/model-config` so the UI observes the activated generation.
+- The UI renders only safe generation numbers, change/target counts, and shortened fingerprints. Backend validation failures remain generic and do not expose credentials, provider metadata, paths, Prompt/message/memory text, IDs from traces or commands, or raw exceptions.
+
+### Version identity and acceptance evidence
+
+- Release identity is `0.11.0`, synchronized across `VERSION`, backend package version, frontend package and lockfile, FastAPI metadata, and README.
+- Complete Python suite: **360 passed**; focused Promotion apply/API suite: **11 passed**.
+- Frontend: **9 tests passed**, lint passed, and production build passed.
+- Python compile passed. Prompt contracts and deterministic trajectory replay both remain **100%**.
+- Production activation still requires protected live-model runs, independent reviewer quorum, same-environment staging scale/operational evidence, controlled rollout, and observation of the new generation.
