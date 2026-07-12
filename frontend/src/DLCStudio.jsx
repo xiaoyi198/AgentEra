@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './DLCStudio.css'
 import { PersonaEditor, PromptEditor, StructuredContentEditor } from './DLCContentEditors.jsx'
+import ModelPromotionWorkbench from './ModelPromotionWorkbench.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -596,6 +597,7 @@ export default function DLCStudio() {
     { key: 'personas', label: `Persona ${counts.personas}` },
     { key: 'prompts', label: `Prompt ${counts.prompts}` },
     { key: 'models', label: UI.modelPolicies },
+    { key: 'promotion', label: '\u664b\u7ea7\u5de5\u4f5c\u53f0' },
     { key: 'raw', label: UI.fullData },
   ]
 
@@ -625,7 +627,8 @@ export default function DLCStudio() {
           </div>
           <nav className="dlc-tabs">{tabs.map(item => <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => { setTab(item.key); setSelectedItem('') }}>{item.label}</button>)}</nav>
           {tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
-            : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
+            : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
+              : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
                 : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />

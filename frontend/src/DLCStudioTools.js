@@ -208,3 +208,88 @@ export function redoContentHistory(history) {
     future: history.future.slice(1),
   }
 }
+
+const SAFE_PROMOTION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
+const SHA256_HEX = /^[a-f0-9]{64}$/
+
+function promotionObject(value, label) {
+  if (!isObject(value)) throw new Error(`${label} root must be an object`)
+  return value
+}
+
+function promotionId(value, label) {
+  const result = String(value || '').trim()
+  if (!SAFE_PROMOTION_ID.test(result)) throw new Error(`${label} is invalid`)
+  return result
+}
+
+export function parsePromotionArtifact(text) {
+  let value
+  try {
+    value = JSON.parse(String(text || ''))
+  } catch {
+    throw new Error('Promotion artifact must be valid JSON')
+  }
+  const artifact = promotionObject(value, 'Promotion artifact')
+  if (artifact.schema_version !== '1.0') throw new Error('Promotion schema_version must be 1.0')
+  if (artifact.approved !== true || artifact.decision !== 'approved') {
+    throw new Error('Promotion artifact is not approved')
+  }
+  if (!SHA256_HEX.test(String(artifact.policy_fingerprint || ''))) {
+    throw new Error('Promotion policy_fingerprint must be a lowercase SHA-256 hex value')
+  }
+  const patch = promotionObject(artifact.policy_patch, 'Promotion policy_patch')
+  const cohorts = promotionObject(patch.cohort_task_policies, 'Promotion cohort_task_policies')
+  const cohortIds = Object.keys(cohorts)
+  if (!cohortIds.length) throw new Error('Promotion artifact has no cohort policies')
+  cohortIds.forEach(id => promotionId(id, 'Cohort ID'))
+  return cloneJson(artifact)
+}
+
+export function parsePromotionMapping(text) {
+  let value
+  try {
+    value = JSON.parse(String(text || ''))
+  } catch {
+    throw new Error('Promotion mapping must be valid JSON')
+  }
+  const mapping = promotionObject(value, 'Promotion mapping')
+  if (mapping.schema_version !== '1.0') throw new Error('Promotion mapping schema_version must be 1.0')
+  promotionId(mapping.promotion_id, 'Promotion ID')
+  if (!Number.isInteger(mapping.expected_gateway_generation) || mapping.expected_gateway_generation < 1) {
+    throw new Error('Expected Gateway generation must be a positive integer')
+  }
+  if (!SHA256_HEX.test(String(mapping.expected_policy_fingerprint || ''))) {
+    throw new Error('Expected policy fingerprint must be a lowercase SHA-256 hex value')
+  }
+  promotionObject(mapping.cohort_targets, 'Promotion cohort_targets')
+  return cloneJson(mapping)
+}
+
+export function createPromotionMapping({ promotion, dlcId, agentIds = [], generation, promotionId: requestedId }) {
+  const artifact = typeof promotion === 'string' ? parsePromotionArtifact(promotion) : parsePromotionArtifact(JSON.stringify(promotion))
+  const safeDlcId = promotionId(dlcId, 'DLC ID')
+  const safePromotionId = promotionId(requestedId, 'Promotion ID')
+  if (!Number.isInteger(generation) || generation < 1) throw new Error('Gateway generation must be a positive integer')
+  const agents = [...new Set(agentIds.map(id => promotionId(id, 'Agent ID')))].sort()
+  const cohortIds = Object.keys(artifact.policy_patch.cohort_task_policies).sort()
+  return {
+    schema_version: '1.0',
+    promotion_id: safePromotionId,
+    expected_gateway_generation: generation,
+    expected_policy_fingerprint: artifact.policy_fingerprint,
+    cohort_targets: Object.fromEntries(cohortIds.map(cohort => [cohort, {
+      dlcs: [safeDlcId],
+      agents: agents.map(agentId => ({ dlc_id: safeDlcId, agent_id: agentId })),
+    }])),
+  }
+}
+
+export function promotionInputFingerprint({ promotionText, mappingText, generation, dlcId }) {
+  return JSON.stringify({
+    promotionText: String(promotionText || ''),
+    mappingText: String(mappingText || ''),
+    generation: Number.isInteger(generation) ? generation : null,
+    dlcId: String(dlcId || ''),
+  })
+}

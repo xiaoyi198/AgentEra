@@ -1860,4 +1860,23 @@ FastAPI imports the backend version for OpenAPI metadata. Run:
 python -m pytest -q tests/unit/test_version_consistency.py
 ```
 
-The complete local release gate for version `0.10.0` is **360 Python tests**, **6 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and `git diff --check`.
+The complete local release gate for version `0.11.0` is **360 Python tests**, **9 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and `git diff --check`.
+
+
+## DLC Studio promotion workbench (2026-07-12)
+
+Open `http://localhost:3000/dlc.html`, select a DLC, and choose the **晋级工作台** tab. The panel is an operator client for the existing authenticated Promotion APIs; it does not weaken or bypass backend validation.
+
+Recommended workflow:
+
+1. Generate an approved Promotion Gate artifact from reviewed, same-environment evidence.
+2. Import or paste the artifact. Local validation requires schema `1.0`, `approved: true`, `decision: approved`, a lowercase 64-character policy fingerprint, and at least one cohort policy.
+3. Enter a safe Promotion ID, explicitly select any Agent targets, and generate the mapping. Every cohort is mapped to the current DLC; no Agent is included unless checked.
+4. Enter the Admin Token in the password field. It remains only in React state and is sent only as `X-Admin-Token`. Never place it in Promotion or Mapping JSON.
+5. Run Preview and inspect current/next Generation, global/DLC/Agent change counts, target counts, and fingerprints.
+6. Apply only while the Preview is current. Editing either JSON document, changing the selected DLC, or observing a new Gateway Generation invalidates the plan and disables Apply.
+7. After Apply, the workbench reloads the public model configuration and reports the activated Generation. Continue with operational observation before wider rollout.
+
+The pure helpers live in `frontend/src/DLCStudioTools.js`; their Node tests cover approval/fingerprint validation, safe-ID rejection, explicit-Agent mapping, cohort expansion, and stale input fingerprints. The API contract test verifies the exact safe Preview field set and generic invalid-artifact error response.
+
+Do not add local/session storage for the token. Do not render raw backend payloads or errors. Do not expose Provider URLs, environment-variable names, credentials, Prompt/message/memory bodies, filesystem paths, or Trace/command/tool-call identifiers.

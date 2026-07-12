@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
@@ -6,7 +6,11 @@ import {
   commitContentHistory,
   createContentExport,
   createContentHistory,
+  createPromotionMapping,
   normalizeImportedContent,
+  parsePromotionArtifact,
+  parsePromotionMapping,
+  promotionInputFingerprint,
   redoContentHistory,
   summarizeContentDiff,
   undoContentHistory,
@@ -136,4 +140,75 @@ test('migration preview content is represented as a reviewable schema and keyed 
   assert.equal(diff.entries.some(item => item.section === 'inventory' && item.type === 'changed'), true)
   assert.equal(history.past.length, 1)
   assert.equal(history.present.schema_version, '1.0')
+})
+
+
+const approvedPromotion = {
+  schema_version: '1.0',
+  gate_id: 'gate-v1',
+  environment_id: 'staging',
+  decision: 'approved',
+  approved: true,
+  matrix_id: 'matrix-v1',
+  matrix_fingerprint: 'b'.repeat(64),
+  policy_fingerprint: 'a'.repeat(64),
+  policy_patch: {
+    task_policies: {},
+    cohort_task_policies: {
+      'daming-core': { 'agent.turn': ['deep'] },
+      'daming-router': { 'router.ambiguous': ['fast'] },
+    },
+  },
+}
+
+test('promotion artifact parser enforces approval schema fingerprints and cohorts', () => {
+  assert.deepEqual(parsePromotionArtifact(JSON.stringify(approvedPromotion)), approvedPromotion)
+  assert.throws(() => parsePromotionArtifact('[]'), /root must be an object/)
+  assert.throws(() => parsePromotionArtifact('{'), /valid JSON/)
+  assert.throws(
+    () => parsePromotionArtifact(JSON.stringify({ ...approvedPromotion, approved: false })),
+    /not approved/,
+  )
+  assert.throws(
+    () => parsePromotionArtifact(JSON.stringify({ ...approvedPromotion, policy_fingerprint: 'ABC' })),
+    /lowercase SHA-256/,
+  )
+})
+
+test('quick promotion mapping scopes every cohort to current DLC and explicit agents', () => {
+  const mapping = createPromotionMapping({
+    promotion: approvedPromotion,
+    dlcId: 'daming_court',
+    agentIds: ['cabinet', 'cabinet', 'emperor'],
+    generation: 7,
+    promotionId: 'promotion-2026-07-12',
+  })
+
+  assert.equal(mapping.expected_gateway_generation, 7)
+  assert.equal(mapping.expected_policy_fingerprint, 'a'.repeat(64))
+  assert.deepEqual(Object.keys(mapping.cohort_targets), ['daming-core', 'daming-router'])
+  assert.deepEqual(mapping.cohort_targets['daming-core'], {
+    dlcs: ['daming_court'],
+    agents: [
+      { dlc_id: 'daming_court', agent_id: 'cabinet' },
+      { dlc_id: 'daming_court', agent_id: 'emperor' },
+    ],
+  })
+  assert.deepEqual(parsePromotionMapping(JSON.stringify(mapping)), mapping)
+})
+
+test('promotion mapping and input fingerprint reject stale or unsafe operator input', () => {
+  assert.throws(
+    () => createPromotionMapping({ promotion: approvedPromotion, dlcId: '../bad', generation: 1, promotionId: 'safe' }),
+    /DLC ID is invalid/,
+  )
+  assert.throws(
+    () => parsePromotionMapping(JSON.stringify({ schema_version: '1.0', promotion_id: 'safe' })),
+    /positive integer/,
+  )
+  const first = promotionInputFingerprint({ promotionText: '{}', mappingText: '{}', generation: 1, dlcId: 'a' })
+  const nextGeneration = promotionInputFingerprint({ promotionText: '{}', mappingText: '{}', generation: 2, dlcId: 'a' })
+  const nextDlc = promotionInputFingerprint({ promotionText: '{}', mappingText: '{}', generation: 1, dlcId: 'b' })
+  assert.notEqual(first, nextGeneration)
+  assert.notEqual(first, nextDlc)
 })

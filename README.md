@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.10.0**
+> 当前版本：**v0.11.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -13,6 +13,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
+- **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
 - **任务模型路由**：可按全局任务、DLC、Agent 和显式 Profile 选择不同模型。
 - **模型评测与晋级**：支持真实轨迹矩阵、独立人工评审、cohort 分区、环境门禁、安全预览、原子应用和失败回滚。
@@ -110,6 +111,16 @@ DLC Studio 支持草稿校验、发布、Generation 归档、热重载和回滚�
 ```
 
 管理 API 默认关闭。启用时必须同时配置管理开关与管理令牌。预览和应用结果只返回安全标识、计数与 SHA-256 指纹，不返回 Provider 地址、环境变量名、凭据、Prompt 或消息正文。
+
+DLC Studio 的“晋级工作台”可直接完成上述 Preview/Apply 流程：
+
+1. 导入或粘贴已批准的 Promotion Gate JSON。
+2. 选择当前 DLC，可选地显式勾选 Agent，并生成 cohort mapping。
+3. 在密码输入框中临时输入 Admin Token；令牌只保存在页面内存并仅用于请求头。
+4. 先 Preview 并检查 Generation、变化数、目标数和计划指纹，再 Apply。
+5. Promotion、Mapping、DLC 或 Gateway Generation 任一变化后，旧 Preview 自动失效。
+
+工作台地址仍为 `http://localhost:3000/dlc.html`。管理接口必须通过 `WORLD_SIM_ENABLE_ADMIN_API` 和 `WORLD_SIM_ADMIN_TOKEN` 显式启用。
 
 ## 测试
 

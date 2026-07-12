@@ -1084,3 +1084,30 @@ Next priorities:
 6. Continue Prompt/memory optimization using credentialed trajectory evidence rather than static preference, including task-specific model budgets and long-horizon memory quality checks.
 
 The product goal remains active. Local tooling now closes the path from reviewed model recommendation to atomic scoped policy activation, but no production model choice is claimed until external evidence and controlled rollout complete.
+
+
+## Progress update: DLC Studio model-promotion workbench (2026-07-12)
+
+Status: **implementation and local gates complete; real staging/production promotion remains pending**.
+
+Completed in this checkpoint:
+
+- added a dedicated DLC Studio tab for approved Promotion Gate import, strict client-side validation, Preview, and atomic Apply;
+- added quick cohort mapping for the selected DLC with explicit opt-in Agent targets, avoiding accidental all-Agent policy expansion;
+- kept the Admin Token ephemeral in React state and outside JSON artifacts, browser storage, exports, logs, and rendered summaries;
+- bound each successful Preview to the exact Promotion, Mapping, selected DLC, and public Gateway Generation so stale plans cannot be applied from the UI;
+- exposed only generation numbers, change/target counts, and safe fingerprint summaries;
+- refreshed public model configuration after Apply to observe the newly activated generation;
+- expanded frontend tool coverage from **6 to 9 tests** and strengthened the backend Promotion API contract test;
+- synchronized release version **0.11.0** across backend, frontend, lockfile, FastAPI metadata, README, and canonical `VERSION`;
+- completed **360 Python tests**, **9 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.
+
+Next priorities:
+
+1. Run credentialed repeated live matrices in an isolated staging environment and complete independent reviewer quorum.
+2. Produce same-environment signed scale and operational evidence, then import the approved Promotion artifact into the workbench for a controlled staging Preview/Apply.
+3. Add post-promotion observation dashboards and a guided rollback action without exposing model configuration secrets.
+4. Continue deeper world simulation: deterministic time progression, event-chain causality, economic balancing around unified value anchors, and longer end-to-end scenarios.
+5. Continue Prompt and long-horizon memory optimization using credentialed trajectory evidence, including task-specific budgets and model choice.
+
+The persistent product goal remains active. This checkpoint removes hand-authored HTTP requests from the approved model-policy rollout path while preserving the backend admin boundary and generation/fingerprint safety invariants.
