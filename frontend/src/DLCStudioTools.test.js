@@ -7,12 +7,14 @@ import {
   createContentExport,
   createContentHistory,
   createPromotionMapping,
+  generationRollbackFingerprint,
   normalizeImportedContent,
   parsePromotionArtifact,
   parsePromotionMapping,
   promotionInputFingerprint,
   redoContentHistory,
   summarizeContentDiff,
+  summarizeGenerationStatus,
   undoContentHistory,
 } from './DLCStudioTools.js'
 
@@ -211,4 +213,39 @@ test('promotion mapping and input fingerprint reject stale or unsafe operator in
   const nextDlc = promotionInputFingerprint({ promotionText: '{}', mappingText: '{}', generation: 1, dlcId: 'b' })
   assert.notEqual(first, nextGeneration)
   assert.notEqual(first, nextDlc)
+})
+
+
+test('generation rollback fingerprint invalidates stale source or current generation', () => {
+  const first = generationRollbackFingerprint({ sourceGeneration: 1, currentGeneration: 3 })
+  assert.notEqual(first, generationRollbackFingerprint({ sourceGeneration: 2, currentGeneration: 3 }))
+  assert.notEqual(first, generationRollbackFingerprint({ sourceGeneration: 1, currentGeneration: 4 }))
+  assert.equal(first, generationRollbackFingerprint({ sourceGeneration: 1, currentGeneration: 3 }))
+})
+
+test('generation status summary keeps operational aggregates and omits unsafe extras', () => {
+  const summary = summarizeGenerationStatus({
+    schema_version: '1.0',
+    current_generation: 3,
+    generations: [{
+      generation: 3, is_current: true, activated_at: 123,
+      config_fingerprint: 'a'.repeat(64), calls: 5, errors: 1,
+      fallback_attempts: 2, total_tokens: 42, mean_latency_ms: 10.5,
+      max_latency_ms: 20, active_calls: 1, base_url: 'unsafe',
+    }],
+    archive: { enabled: true, persisted_generation_count: 3, issue_count: 0 },
+  })
+  assert.deepEqual(summary, {
+    currentGeneration: 3,
+    generations: [{
+      generation: 3, activatedAt: 123, current: true, fingerprint: 'a'.repeat(64),
+      calls: 5, errors: 1, fallbacks: 2, tokens: 42, meanLatencyMs: 10.5,
+      maxLatencyMs: 20, activeCalls: 1,
+    }],
+    archiveEnabled: true,
+    persistedGenerationCount: 3,
+    archiveIssueCount: 0,
+  })
+  assert.equal(JSON.stringify(summary).includes('unsafe'), false)
+  assert.throws(() => summarizeGenerationStatus({ schema_version: '0.9' }), /schema_version/)
 })

@@ -9,6 +9,10 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from multiagent_framework.model_generation_control import (
+    ModelGenerationController,
+    ModelGenerationControlError,
+)
 from multiagent_framework.model_promotion_apply import (
     ModelPromotionApplier,
     ModelPromotionApplyError,
@@ -24,6 +28,15 @@ class DLCRollbackRequest(BaseModel):
 
 class ModelConfigReloadRequest(BaseModel):
     expected_generation: int | None = Field(default=None, ge=1)
+
+
+class ModelRollbackPreviewRequest(BaseModel):
+    source_generation: int = Field(ge=1)
+    expected_current_generation: int = Field(ge=1)
+
+
+class ModelRollbackApplyRequest(ModelRollbackPreviewRequest):
+    expected_plan_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 class ModelPromotionPreviewRequest(BaseModel):
@@ -60,6 +73,10 @@ def _dlc_loader():
     if not loader:
         raise HTTPException(status_code=503, detail="DLC runtime is not initialized")
     return loader
+
+
+def _model_generation_controller() -> ModelGenerationController:
+    return ModelGenerationController(_model_gateway())
 
 
 def _model_promotion_applier() -> ModelPromotionApplier:
@@ -147,6 +164,63 @@ async def debug_model_config():
     if not gateway:
         return {"error": "model gateway not initialized"}
     return gateway.public_config()
+
+
+@router.get("/model-generations")
+async def debug_model_generations(
+    limit: int = 20,
+    trace_limit: int = 1000,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Return secret-free model generation history and operational aggregates."""
+    _require_model_admin(x_admin_token)
+    try:
+        return _model_gateway().generation_status(
+            limit=max(1, min(limit, 100)),
+            trace_limit=max(1, min(trace_limit, 1000)),
+        )
+    except (OSError, ValueError, KeyError, RuntimeError):
+        raise HTTPException(
+            status_code=400, detail="Model generation observation failed"
+        ) from None
+
+
+@router.post("/model-config/rollback/preview")
+async def preview_model_rollback(
+    request: ModelRollbackPreviewRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Preview restoration of a retained configuration as a new generation."""
+    _require_model_admin(x_admin_token)
+    try:
+        return _model_generation_controller().preview_rollback(
+            request.source_generation, request.expected_current_generation
+        )
+    except (ModelGenerationControlError, OSError, ValueError, KeyError):
+        raise HTTPException(
+            status_code=400, detail="Model rollback validation failed"
+        ) from None
+
+
+@router.post("/model-config/rollback/apply")
+async def apply_model_rollback(
+    request: ModelRollbackApplyRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Atomically restore a retained configuration as the next generation."""
+    _require_model_admin(x_admin_token)
+    try:
+        return await _model_generation_controller().apply_rollback(
+            request.source_generation,
+            request.expected_current_generation,
+            request.expected_plan_fingerprint,
+        )
+    except (
+        ModelGenerationControlError, OSError, ValueError, KeyError, RuntimeError
+    ):
+        raise HTTPException(
+            status_code=400, detail="Model rollback apply failed"
+        ) from None
 
 
 @router.post("/model-config/preview")

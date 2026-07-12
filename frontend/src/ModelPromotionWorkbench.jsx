@@ -1,22 +1,28 @@
-﻿import { useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createPromotionMapping,
   parsePromotionArtifact,
   parsePromotionMapping,
   promotionInputFingerprint,
+  generationRollbackFingerprint,
+  summarizeGenerationStatus,
 } from './DLCStudioTools.js'
 
 const PREVIEW_API = '/api/debug/model-promotion/preview'
 const APPLY_API = '/api/debug/model-promotion/apply'
+const GENERATIONS_API = '/api/debug/model-generations'
+const ROLLBACK_PREVIEW_API = '/api/debug/model-config/rollback/preview'
+const ROLLBACK_APPLY_API = '/api/debug/model-config/rollback/apply'
 
 async function adminRequest(url, token, body) {
+  const method = body === undefined ? 'GET' : 'POST'
   const response = await fetch(url, {
-    method: 'POST',
+    method,
     headers: {
-      'Content-Type': 'application/json',
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       'X-Admin-Token': token,
     },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`)
@@ -30,6 +36,142 @@ function shortFingerprint(value) {
 
 function SummaryCard({ label, value, code = false }) {
   return <article><span>{label}</span>{code ? <code title={String(value || '')}>{shortFingerprint(value)}</code> : <strong>{value ?? '—'}</strong>}</article>
+}
+
+function ModelGenerationPanel({ adminToken, generation, onModelConfigReload }) {
+  const [observation, setObservation] = useState(null)
+  const [sourceGeneration, setSourceGeneration] = useState(null)
+  const [rollbackPreview, setRollbackPreview] = useState(null)
+  const [previewFingerprint, setPreviewFingerprint] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState('')
+  const currentGeneration = observation?.currentGeneration ?? generation
+  const rollbackFingerprint = useMemo(() => generationRollbackFingerprint({
+    sourceGeneration,
+    currentGeneration,
+  }), [currentGeneration, sourceGeneration])
+  const previewCurrent = Boolean(rollbackPreview && previewFingerprint === rollbackFingerprint)
+
+  const refresh = async ({ quiet = false } = {}) => {
+    if (!adminToken) return
+    if (!quiet) setBusy(true)
+    setError('')
+    try {
+      const payload = summarizeGenerationStatus(await adminRequest(GENERATIONS_API, adminToken))
+      setObservation(payload)
+      setSourceGeneration(current => payload.generations.some(item => item.generation === current && !item.current)
+        ? current
+        : payload.generations.find(item => !item.current)?.generation ?? null)
+      setRollbackPreview(null)
+      setPreviewFingerprint('')
+      setStatus(`已刷新 ${payload.generations.length} 个可用 Generation。`)
+    } catch (cause) {
+      setError(cause.message)
+    } finally {
+      if (!quiet) setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    setRollbackPreview(null)
+    setPreviewFingerprint('')
+    if (adminToken && generation) refresh({ quiet: true })
+    // Admin Token changes should not trigger background requests; operators explicitly refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generation])
+
+  const previewRollback = async () => {
+    if (!sourceGeneration || !currentGeneration) return
+    setBusy(true)
+    setError('')
+    setStatus('')
+    try {
+      const result = await adminRequest(ROLLBACK_PREVIEW_API, adminToken, {
+        source_generation: sourceGeneration,
+        expected_current_generation: currentGeneration,
+      })
+      setRollbackPreview(result)
+      setPreviewFingerprint(rollbackFingerprint)
+      setStatus('回滚计划预览已通过；Generation 选择或当前代变化后必须重新预览。')
+    } catch (cause) {
+      setRollbackPreview(null)
+      setPreviewFingerprint('')
+      setError(cause.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const applyRollback = async () => {
+    if (!previewCurrent || !window.confirm(`将 Generation ${sourceGeneration} 的配置恢复为新的 Generation ${rollbackPreview.next_generation}？`)) return
+    setBusy(true)
+    setError('')
+    setStatus('')
+    try {
+      const result = await adminRequest(ROLLBACK_APPLY_API, adminToken, {
+        source_generation: sourceGeneration,
+        expected_current_generation: currentGeneration,
+        expected_plan_fingerprint: rollbackPreview.plan_fingerprint,
+      })
+      await onModelConfigReload()
+      const payload = summarizeGenerationStatus(await adminRequest(GENERATIONS_API, adminToken))
+      setObservation(payload)
+      setSourceGeneration(sourceGeneration)
+      setRollbackPreview(null)
+      setPreviewFingerprint('')
+      setStatus(`安全回滚已作为新 Generation ${result.generation} 原子激活。`)
+    } catch (cause) {
+      setError(cause.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <section className="dlc-promotion-panel dlc-generation-panel">
+    <div className="dlc-section-heading">
+      <div><h2>4. Generation 观测与安全回滚</h2><p>按代查看调用、错误、回退、延迟与 Token；历史配置始终加密，界面只接收安全摘要。</p></div>
+      <button disabled={busy || !adminToken} onClick={() => refresh()}>刷新观测</button>
+    </div>
+    {error && <div className="dlc-model-error"><strong>Generation 操作失败</strong><span>{error}</span></div>}
+    {status && <div className="dlc-promotion-status">{status}</div>}
+    {observation && <>
+      <div className="dlc-promotion-summary">
+        <SummaryCard label="Current Generation" value={observation.currentGeneration} />
+        <SummaryCard label="Retained" value={observation.generations.length} />
+        <SummaryCard label="Encrypted archives" value={observation.persistedGenerationCount} />
+        <SummaryCard label="Archive issues" value={observation.archiveIssueCount} />
+      </div>
+      <div className="dlc-generation-table-wrap"><table className="dlc-generation-table">
+        <thead><tr><th>代</th><th>状态</th><th>Calls</th><th>Errors</th><th>Fallback</th><th>Tokens</th><th>Mean / Max ms</th><th>Active</th><th>Config</th></tr></thead>
+        <tbody>{observation.generations.map(item => <tr key={item.generation} className={item.current ? 'current' : ''}>
+          <td>{item.generation}</td><td>{item.current ? 'CURRENT' : 'RETAINED'}</td><td>{item.calls}</td><td>{item.errors}</td><td>{item.fallbacks}</td><td>{item.tokens}</td><td>{item.meanLatencyMs} / {item.maxLatencyMs}</td><td>{item.activeCalls}</td><td><code title={item.fingerprint}>{shortFingerprint(item.fingerprint)}</code></td>
+        </tr>)}</tbody>
+      </table></div>
+      <div className="dlc-generation-rollback">
+        <label>恢复来源<select value={sourceGeneration ?? ''} onChange={event => {
+          setSourceGeneration(Number(event.target.value) || null)
+          setRollbackPreview(null)
+          setPreviewFingerprint('')
+          setStatus('')
+        }}><option value="">选择非当前 Generation</option>{observation.generations.filter(item => !item.current).map(item => <option key={item.generation} value={item.generation}>Generation {item.generation}</option>)}</select></label>
+        <button disabled={busy || !adminToken || !sourceGeneration} onClick={previewRollback}>Preview rollback</button>
+        <button className="primary" disabled={busy || !previewCurrent} onClick={applyRollback}>Apply rollback</button>
+      </div>
+      {rollbackPreview && !previewCurrent && <div className="dlc-promotion-stale">来源或当前 Generation 已变化，旧回滚 Preview 已失效。</div>}
+      {previewCurrent && <div className="dlc-promotion-summary">
+        <SummaryCard label="Source Generation" value={rollbackPreview.source_generation} />
+        <SummaryCard label="Next Generation" value={rollbackPreview.next_generation} />
+        <SummaryCard label="Providers add / remove / change" value={`${rollbackPreview.providers_added_count} / ${rollbackPreview.providers_removed_count} / ${rollbackPreview.providers_changed_count}`} />
+        <SummaryCard label="Profiles add / remove / change" value={`${rollbackPreview.profiles_added_count} / ${rollbackPreview.profiles_removed_count} / ${rollbackPreview.profiles_changed_count}`} />
+        <SummaryCard label="Task changes" value={rollbackPreview.task_policy_changes} />
+        <SummaryCard label="DLC changes" value={rollbackPreview.dlc_policy_changes} />
+        <SummaryCard label="Agent changes" value={rollbackPreview.agent_policy_changes} />
+        <SummaryCard label="Plan fingerprint" value={rollbackPreview.plan_fingerprint} code />
+        <SummaryCard label="Source config" value={rollbackPreview.source_config_fingerprint} code />
+      </div>}
+    </>}
+  </section>
 }
 
 export default function ModelPromotionWorkbench({ dlcId, agents, modelConfig, modelConfigError, onModelConfigReload }) {
@@ -192,5 +334,6 @@ export default function ModelPromotionWorkbench({ dlcId, agents, modelConfig, mo
         </div>
       </>}
     </section>
+    <ModelGenerationPanel adminToken={adminToken} generation={generation} onModelConfigReload={onModelConfigReload} />
   </div>
 }
