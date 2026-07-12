@@ -293,3 +293,46 @@ export function promotionInputFingerprint({ promotionText, mappingText, generati
     dlcId: String(dlcId || ''),
   })
 }
+
+
+export function generationRollbackFingerprint({ sourceGeneration, currentGeneration }) {
+  return JSON.stringify({
+    sourceGeneration: Number.isInteger(sourceGeneration) ? sourceGeneration : null,
+    currentGeneration: Number.isInteger(currentGeneration) ? currentGeneration : null,
+  })
+}
+
+export function summarizeGenerationStatus(payload) {
+  if (!isObject(payload) || payload.schema_version !== '1.0') {
+    throw new Error('Generation status schema_version must be 1.0')
+  }
+  if (!Number.isInteger(payload.current_generation) || payload.current_generation < 1) {
+    throw new Error('Current generation must be a positive integer')
+  }
+  if (!Array.isArray(payload.generations)) throw new Error('Generation status must include generations')
+  const generations = payload.generations.map(item => {
+    if (!isObject(item) || !Number.isInteger(item.generation) || item.generation < 1) {
+      throw new Error('Generation entry is invalid')
+    }
+    return {
+      generation: item.generation,
+      activatedAt: Number(item.activated_at) || 0,
+      current: item.is_current === true,
+      fingerprint: String(item.config_fingerprint || ''),
+      calls: Math.max(0, Number(item.calls) || 0),
+      errors: Math.max(0, Number(item.errors) || 0),
+      fallbacks: Math.max(0, Number(item.fallback_attempts) || 0),
+      tokens: Math.max(0, Number(item.total_tokens) || 0),
+      meanLatencyMs: Math.max(0, Number(item.mean_latency_ms) || 0),
+      maxLatencyMs: Math.max(0, Number(item.max_latency_ms) || 0),
+      activeCalls: Math.max(0, Number(item.active_calls) || 0),
+    }
+  })
+  return {
+    currentGeneration: payload.current_generation,
+    generations,
+    archiveEnabled: payload.archive?.enabled === true,
+    persistedGenerationCount: Math.max(0, Number(payload.archive?.persisted_generation_count) || 0),
+    archiveIssueCount: Math.max(0, Number(payload.archive?.issue_count) || 0),
+  }
+}

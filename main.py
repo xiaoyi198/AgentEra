@@ -18,6 +18,7 @@ from multiagent_framework.court_graph import CourtGraph
 from multiagent_framework.dlc_registry import DLCRegistry, DLCRegistryError
 from multiagent_framework.dlc_runtime import DLCBundleLoader, ModelBindingResolver
 from multiagent_framework.model_gateway import ModelGateway, TaskLLMClient
+from multiagent_framework.model_generation_archive import ModelGenerationArchiveStore
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.router import RouterAgent
 from multiagent_framework.runtime_paths import (
@@ -106,6 +107,9 @@ def init_orchestrator(
     model_gateway = ModelGateway.from_files(
         models_path="config/models.json",
         legacy_path="config/llm.json",
+        generation_archive=ModelGenerationArchiveStore(
+            RUNTIME_DIR / "model_generations"
+        ),
     )
     router_llm = _task_client_for_primary_dlc(
         model_gateway, primary_dlc, "router.ambiguous", agent_id="router"

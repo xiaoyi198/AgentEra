@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from typing import Any, AsyncIterator, Iterable
 from urllib.parse import urlsplit
 
 from .llm_client import LLMClient, LLMConfig, LLMResponse
+from .model_generation_archive import ModelGenerationArchiveStore
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +513,7 @@ class ModelGateway:
         *,
         trace_store: TraceStore | None = None,
         runtime_keys: dict[str, str] | None = None,
+        generation_archive: ModelGenerationArchiveStore | None = None,
     ) -> None:
         config.validate()
         self.config = copy.deepcopy(config)
@@ -521,7 +524,12 @@ class ModelGateway:
         self._runtime_keys = dict(runtime_keys or {})
         self._redaction_keys = {key for key in self._runtime_keys.values() if key}
         self._clients: dict[str, LLMClient] = {}
+        self._generation_archive = generation_archive
+        self._generation_history: dict[int, tuple[float, GatewayConfig]] = {}
+        self._generation_archive_issues: list[dict[str, Any]] = []
+        self._persisted_generations: set[int] = set()
         self._generation = 1
+        self._restore_generation_history()
         self._active_calls: dict[int, int] = {}
         self._retired_clients: dict[int, dict[str, LLMClient]] = {}
         self._closed = False
@@ -535,9 +543,14 @@ class ModelGateway:
         legacy_path: str = "config/llm.json",
         *,
         trace_store: TraceStore | None = None,
+        generation_archive: ModelGenerationArchiveStore | None = None,
     ) -> "ModelGateway":
         if Path(models_path).exists():
-            return cls(GatewayConfig.from_file(models_path), trace_store=trace_store)
+            return cls(
+                GatewayConfig.from_file(models_path),
+                trace_store=trace_store,
+                generation_archive=generation_archive,
+            )
         if Path(legacy_path).exists():
             legacy = LLMConfig.from_file(legacy_path)
         else:
@@ -545,7 +558,88 @@ class ModelGateway:
             legacy = LLMConfig()
         gateway_config = GatewayConfig.from_legacy(legacy, source_path=legacy_path)
         runtime_keys = {"legacy": legacy.api_key} if legacy.api_key else {}
-        return cls(gateway_config, trace_store=trace_store, runtime_keys=runtime_keys)
+        return cls(
+            gateway_config,
+            trace_store=trace_store,
+            runtime_keys=runtime_keys,
+            generation_archive=generation_archive,
+        )
+
+    @staticmethod
+    def _config_fingerprint(config: GatewayConfig) -> str:
+        payload = json.dumps(
+            config.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _archive_issue(self, generation: int, code: str) -> None:
+        self._generation_archive_issues.append({
+            "generation": max(1, int(generation)),
+            "code": str(code).split(":", 1)[0][:80],
+        })
+        self._generation_archive_issues = self._generation_archive_issues[-100:]
+
+    def _persist_generation(self, generation: int, activated_at: float, config: GatewayConfig) -> bool:
+        if self._generation_archive is None:
+            return False
+        try:
+            self._generation_archive.save(
+                generation, config.to_dict(), created_at=activated_at
+            )
+            self._persisted_generations.add(generation)
+            retained = set(sorted(self._persisted_generations)[-self._generation_archive.history_limit:])
+            self._persisted_generations.intersection_update(retained)
+            return True
+        except Exception:
+            self._archive_issue(generation, "archive_persist_failed")
+            return False
+
+    def _trim_generation_history(self) -> None:
+        limit = (
+            self._generation_archive.history_limit
+            if self._generation_archive is not None
+            else 20
+        )
+        for generation in sorted(self._generation_history)[:-limit]:
+            self._generation_history.pop(generation, None)
+
+    def _restore_generation_history(self) -> None:
+        now = time.time()
+        if self._generation_archive is None:
+            self._generation_history[1] = (now, copy.deepcopy(self.config))
+            return
+        try:
+            loaded = self._generation_archive.load_all()
+        except Exception:
+            loaded = None
+            self._archive_issue(1, "archive_load_failed")
+        if loaded is not None:
+            self._generation_archive_issues.extend(loaded.issues[-100:])
+            for record in loaded.records:
+                try:
+                    restored = GatewayConfig.from_dict(
+                        record.config, source_path=self.config.source_path
+                    )
+                except (TypeError, ValueError, KeyError):
+                    self._archive_issue(record.generation, "archive_config_invalid")
+                    continue
+                self._generation_history[record.generation] = (
+                    record.created_at, restored
+                )
+                self._persisted_generations.add(record.generation)
+        current_fingerprint = self._config_fingerprint(self.config)
+        latest = max(self._generation_history, default=0)
+        if (
+            latest
+            and self._config_fingerprint(self._generation_history[latest][1])
+            == current_fingerprint
+        ):
+            self._generation = latest
+        else:
+            self._generation = latest + 1 if latest else 1
+            self._generation_history[self._generation] = (now, copy.deepcopy(self.config))
+            self._persist_generation(self._generation, now, self.config)
+        self._trim_generation_history()
 
     @staticmethod
     def _create_clients(
@@ -701,6 +795,100 @@ class ModelGateway:
         """Return one generation-consistent configuration copy for admin planning."""
         with self._state_lock:
             return self._generation, copy.deepcopy(self.config)
+
+    def generation_configuration(self, generation: int) -> GatewayConfig:
+        """Return an internal copy of one retained generation for guarded rollback."""
+        with self._state_lock:
+            record = self._generation_history.get(int(generation))
+            if record is None:
+                raise ModelGatewayError("Model gateway generation is unavailable")
+            config = copy.deepcopy(record[1])
+            config.source_path = self.config.source_path
+            return config
+
+    def generation_status(
+        self, *, limit: int = 20, trace_limit: int = 1000
+    ) -> dict[str, Any]:
+        """Return secret-free per-generation lifecycle and operational aggregates."""
+        safe_limit = max(1, min(int(limit), 100))
+        traces = self.trace_store.recent(limit=max(1, min(int(trace_limit), 1000)))
+        def safe_int(value: Any) -> int:
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+
+        def safe_float(value: Any) -> float:
+            try:
+                result = float(value or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+            return result if result >= 0.0 and result < float("inf") else 0.0
+
+        aggregates: dict[int, dict[str, Any]] = {}
+        for trace in traces:
+            raw_generation = trace.get("config_generation")
+            if isinstance(raw_generation, bool) or not isinstance(raw_generation, int):
+                continue
+            item = aggregates.setdefault(raw_generation, {
+                "calls": 0, "successes": 0, "errors": 0, "fallback_attempts": 0,
+                "input_tokens": 0, "output_tokens": 0, "latency_ms_total": 0.0,
+                "max_latency_ms": 0.0,
+            })
+            latency = safe_float(trace.get("latency_ms"))
+            item["calls"] += 1
+            item["successes" if trace.get("success") is True else "errors"] += 1
+            item["fallback_attempts"] += int(trace.get("fallback") is True)
+            item["input_tokens"] += safe_int(trace.get("input_tokens"))
+            item["output_tokens"] += safe_int(trace.get("output_tokens"))
+            item["latency_ms_total"] += latency
+            item["max_latency_ms"] = max(item["max_latency_ms"], latency)
+        with self._state_lock:
+            current = self._generation
+            active = dict(self._active_calls)
+            records = [
+                (generation, activated_at, copy.deepcopy(config))
+                for generation, (activated_at, config) in self._generation_history.items()
+            ]
+            issues = list(self._generation_archive_issues)
+            persisted_generation_count = len(self._persisted_generations)
+        generations = []
+        for generation, activated_at, config in sorted(records, reverse=True)[:safe_limit]:
+            metric = aggregates.get(generation, {})
+            calls = int(metric.get("calls", 0))
+            input_tokens = int(metric.get("input_tokens", 0))
+            output_tokens = int(metric.get("output_tokens", 0))
+            generations.append({
+                "generation": generation,
+                "activated_at": activated_at,
+                "is_current": generation == current,
+                "config_fingerprint": self._config_fingerprint(config),
+                "profile_count": len(config.models),
+                "task_policy_count": len(config.task_policies),
+                "dlc_policy_count": len(config.dlc_task_policies),
+                "agent_policy_count": sum(len(agents) for agents in config.agent_task_policies.values()),
+                "calls": calls,
+                "successes": int(metric.get("successes", 0)),
+                "errors": int(metric.get("errors", 0)),
+                "fallback_attempts": int(metric.get("fallback_attempts", 0)),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "mean_latency_ms": round(float(metric.get("latency_ms_total", 0.0)) / calls, 2) if calls else 0.0,
+                "max_latency_ms": round(float(metric.get("max_latency_ms", 0.0)), 2),
+                "active_calls": max(0, int(active.get(generation, 0))),
+            })
+        return {
+            "schema_version": "1.0",
+            "current_generation": current,
+            "generations": generations,
+            "archive": {
+                "enabled": self._generation_archive is not None,
+                "persisted_generation_count": persisted_generation_count if self._generation_archive is not None else 0,
+                "issue_count": len(issues),
+                "issues": issues[-20:],
+            },
+        }
 
     def credentials_available(
         self,
@@ -1075,6 +1263,14 @@ class ModelGateway:
                     self._runtime_keys = next_runtime_keys
                     self._redaction_keys.update(next_runtime_keys.values())
                     self._generation = old_generation + 1
+                    activated_at = time.time()
+                    self._generation_history[self._generation] = (
+                        activated_at, copy.deepcopy(candidate)
+                    )
+                    self._trim_generation_history()
+                    archive_persisted = self._persist_generation(
+                        self._generation, activated_at, candidate
+                    )
                     if self._active_calls.get(old_generation, 0):
                         self._retired_clients[old_generation] = old_clients
                     else:
@@ -1090,6 +1286,7 @@ class ModelGateway:
                             len(agents) for agents in candidate.agent_task_policies.values()
                         ),
                         "provider_count": len(candidate.providers),
+                        "archive_persisted": archive_persisted,
                     }
             closed_during_build = close_now is new_clients
         await self._close_clients(close_now)

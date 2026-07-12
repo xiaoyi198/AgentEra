@@ -1111,3 +1111,23 @@ Next priorities:
 5. Continue Prompt and long-horizon memory optimization using credentialed trajectory evidence, including task-specific budgets and model choice.
 
 The persistent product goal remains active. This checkpoint removes hand-authored HTTP requests from the approved model-policy rollout path while preserving the backend admin boundary and generation/fingerprint safety invariants.
+
+## Phase checkpoint: encrypted model-generation observation and guided rollback (2026-07-12)
+
+Status: **implemented and locally verified; credentialed staging observation remains pending**.
+
+- `ModelGenerationArchiveStore` persists a bounded model-configuration history with AES-GCM authenticated encryption and HKDF-derived keys. Runtime credential values, Prompt/message/response/memory bodies, Authorization data, and other forbidden sensitive fields are rejected before archival.
+- Gateway startup validates retained records, safely reports corrupt or undecryptable records by code, restores a matching monotonic generation across process restarts, and creates a new generation when the on-disk configuration changed externally.
+- Every successful `replace_config()` records the activated configuration in memory and attempts encrypted persistence without exposing archive failures or interrupting an otherwise valid activation.
+- `generation_status()` aggregates the latest redacted traces by `config_generation`: calls, successes, errors, fallback attempts, token totals, mean/max latency, and active-call count. It exposes only configuration fingerprints and structural counts.
+- `ModelGenerationController` recomputes rollback plans, verifies optimistic current-generation and plan fingerprints, rejects unavailable/current sources and external file edits, atomically writes the retained configuration, restores the original file if activation fails, and always activates rollback content as the next generation.
+- Authenticated administration endpoints now include `GET /api/debug/model-generations`, `POST /api/debug/model-config/rollback/preview`, and `POST /api/debug/model-config/rollback/apply`; errors are generic and payloads never include decrypted configuration.
+- DLC Studio reuses its ephemeral Admin Token to refresh a per-generation observation table, select a retained source, invalidate stale previews, and execute a confirmed Preview/Apply rollback.
+
+### Version identity and acceptance evidence
+
+- Release identity is `0.12.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
+- Complete Python suite: **371 passed**; encrypted archive and generation-control focused suite: **11 passed**.
+- Frontend: **11 tests passed**, lint passed, and production build passed.
+- Python compile and `git diff --check` passed. Prompt contracts and deterministic trajectory replay both scored **100%**.
+- Production use still requires credentialed staging promotion, protected operational observation, rollback rehearsal, independent review quorum, and environment-specific alert thresholds.
