@@ -1,4 +1,4 @@
-﻿export const DLC_CONTENT_EXPORT_FORMAT = 'world-simulator-dlc-content-v1'
+export const DLC_CONTENT_EXPORT_FORMAT = 'world-simulator-dlc-content-v1'
 
 const ARRAY_SECTIONS = [
   'resources',
@@ -336,5 +336,39 @@ export function summarizeGenerationStatus(payload) {
     archiveEnabled: payload.archive?.enabled === true,
     persistedGenerationCount: Math.max(0, Number(payload.archive?.persisted_generation_count) || 0),
     archiveIssueCount: Math.max(0, Number(payload.archive?.issue_count) || 0),
+  }
+}
+
+
+export function buildCausalEventCatalog(content) {
+  if (!isObject(content)) return []
+  const values = new Set()
+  for (const section of ['initial_events', 'random_events']) {
+    for (const item of Array.isArray(content[section]) ? content[section] : []) {
+      const eventType = typeof item?.event_type === 'string' ? item.event_type.trim() : ''
+      if (eventType) values.add(eventType)
+    }
+  }
+  for (const rule of Array.isArray(content.causal_event_rules) ? content.causal_event_rules : []) {
+    const childType = typeof rule?.child_event_type === 'string' ? rule.child_event_type.trim() : ''
+    if (childType) values.add(childType)
+    for (const source of Array.isArray(rule?.source_event_types) ? rule.source_event_types : []) {
+      const eventType = typeof source === 'string' ? source.trim() : ''
+      if (eventType && eventType !== '*') values.add(eventType)
+    }
+  }
+  return [...values].sort()
+}
+
+export function buildCausalDryRunDraft(content, rule, selectedIndex, sourceEvent) {
+  if (!isObject(content) || !isObject(rule) || !isObject(sourceEvent)) {
+    throw new Error('Causal dry-run draft is invalid')
+  }
+  const rules = (Array.isArray(content.causal_event_rules) ? content.causal_event_rules : []).map(cloneJson)
+  if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < rules.length) rules[selectedIndex] = cloneJson(rule)
+  else rules.push(cloneJson(rule))
+  return {
+    content: { ...cloneJson(content), causal_event_rules: rules },
+    source_event: cloneJson(sourceEvent),
   }
 }

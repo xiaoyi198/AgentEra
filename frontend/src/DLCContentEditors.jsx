@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { buildCausalDryRunDraft, buildCausalEventCatalog } from './DLCStudioTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -109,16 +110,6 @@ function parseObject(value, label) {
   return parsed
 }
 
-function parseArray(value, label) {
-  let parsed
-  try {
-    parsed = JSON.parse(value || '[]')
-  } catch (error) {
-    throw new Error(`${label}: ${error.message}`)
-  }
-  if (!Array.isArray(parsed)) throw new Error(`${label}: must be a JSON array`)
-  return parsed
-}
 
 function normalizedListForm(kind, value) {
   const source = value ? deepClone(value) : deepClone(EMPTY[kind])
@@ -126,7 +117,7 @@ function normalizedListForm(kind, value) {
   if (kind === 'causal_event_rules') {
     source._source_types_text = (source.source_event_types || ['*']).join(', ')
     source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
-    source._conditions_text = JSON.stringify(source.conditions || [], null, 2)
+    source.conditions = Array.isArray(source.conditions) ? source.conditions : []
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
@@ -169,9 +160,14 @@ function serializeListForm(kind, form) {
   }
   if (kind === 'causal_event_rules') {
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
-    data.conditions = parseArray(data._conditions_text, 'Conditions')
+    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
+      kind: String(condition.kind || ''),
+      entity_id: String(condition.entity_id || ''),
+      name: String(condition.name || ''),
+      operator: String(condition.operator || ''),
+      value: Number(condition.value),
+    }))
     delete data._payload_text
-    delete data._conditions_text
     data.source_event_types = [...new Set(String(data._source_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     data.inherit_payload_keys = [...new Set(String(data._inherit_keys_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     delete data._source_types_text
@@ -189,6 +185,9 @@ function serializeListForm(kind, form) {
     if (!Number.isInteger(data.max_fires_per_chain) || data.max_fires_per_chain < 1 || data.max_fires_per_chain > 64) throw new Error('Max fires per chain must be an integer from 1 to 64.')
     if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
     if (CAUSAL_RESERVED_FIELDS.some(key => Object.hasOwn(data.initial_payload, key) || data.inherit_payload_keys.includes(key))) throw new Error('Causal metadata fields are reserved.')
+    const conditionKinds = new Set(['anchored_inventory', 'metric', 'parameter'])
+    const conditionOperators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
+    if (data.conditions.some(condition => !conditionKinds.has(condition.kind) || !condition.entity_id || !condition.name || !conditionOperators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Every condition needs a kind, entity, matching resource, operator, and finite value.')
   }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -260,7 +259,87 @@ function EditorError({ children }) {
   return children ? <div className="dlc-editor-error">{children}</div> : null
 }
 
-export function StructuredContentEditor({ kind, content, selected, onSelect, onSaveContent, busy = false }) {
+const CONDITION_KINDS = [
+  { key: 'anchored_inventory', label: 'Anchored inventory value' },
+  { key: 'metric', label: 'World metric' },
+  { key: 'parameter', label: 'World parameter' },
+]
+const CONDITION_OPERATORS = [
+  { key: 'lt', label: '<' }, { key: 'lte', label: '<=' }, { key: 'eq', label: '=' },
+  { key: 'gte', label: '>=' }, { key: 'gt', label: '>' },
+]
+
+function resourcesForCondition(resources, kind) {
+  const resourceKind = kind === 'anchored_inventory' ? 'asset' : kind
+  return resources.filter(item => item.kind === resourceKind)
+}
+
+function CausalConditionBuilder({ value, entities, resources, onChange }) {
+  const conditions = Array.isArray(value) ? value : []
+  const update = (index, name, nextValue) => {
+    const next = conditions.map(item => ({ ...item }))
+    next[index][name] = nextValue
+    if (name === 'kind') {
+      const candidates = resourcesForCondition(resources, nextValue)
+      if (!candidates.some(item => item.name === next[index].name)) next[index].name = candidates[0]?.name || ''
+    }
+    onChange(next)
+  }
+  const add = () => {
+    const kind = 'anchored_inventory'
+    onChange([...conditions, {
+      kind,
+      entity_id: entities[0]?.id || '',
+      name: resourcesForCondition(resources, kind)[0]?.name || '',
+      operator: 'lt',
+      value: 0,
+    }])
+  }
+  const remove = index => onChange(conditions.filter((_, itemIndex) => itemIndex !== index))
+
+  return <section className="dlc-condition-builder">
+    <div className="dlc-condition-header"><div><strong>Condition builder</strong><small>All conditions must pass. No raw JSON is required.</small></div><button type="button" onClick={add}>+ Add condition</button></div>
+    {!conditions.length && <div className="dlc-condition-empty">No conditions: matching event types continue to probability evaluation.</div>}
+    {conditions.map((condition, index) => {
+      const candidates = resourcesForCondition(resources, condition.kind)
+      const selectedResource = candidates.find(item => item.name === condition.name)
+      return <div className="dlc-condition-row" key={`condition-${index}`}>
+        <label>Fact kind<select value={condition.kind || 'anchored_inventory'} onChange={event => update(index, 'kind', event.target.value)}>{CONDITION_KINDS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+        <EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+        <label>Resource / value<select value={condition.name || ''} onChange={event => update(index, 'name', event.target.value)}><option value="">--</option>{candidates.map(item => <option key={item.name} value={item.name}>{item.name}{item.unit ? ` (${item.unit})` : ''}</option>)}</select></label>
+        <label>Compare<select value={condition.operator || 'lt'} onChange={event => update(index, 'operator', event.target.value)}>{CONDITION_OPERATORS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+        <label>Threshold<input type="number" step="any" value={condition.value ?? 0} onChange={event => update(index, 'value', event.target.value)} /></label>
+        <button type="button" className="danger" onClick={() => remove(index)}>Delete</button>
+        {condition.kind === 'anchored_inventory' && <small className="dlc-condition-anchor">Compares quantity * anchor_rate{selectedResource ? `; ${selectedResource.name} anchor rate ${selectedResource.anchor_rate ?? 1}` : ''}</small>}
+      </div>
+    })}
+  </section>
+}
+
+function CausalDryRunPanel({ report, busy, sourceType, severity, horizonDays, eventTypes, onSourceType, onSeverity, onHorizonDays, onRun }) {
+  return <section className="dlc-causal-preview">
+    <div className="dlc-condition-header"><div><strong>Deterministic chain preview</strong><small>Runs against this unsaved draft and DLC seed facts without changing live world state.</small></div></div>
+    <div className="dlc-causal-preview-controls">
+      <label>Source event type<input list="causal-event-type-catalog" value={sourceType} onChange={event => onSourceType(event.target.value)} placeholder="shortage" /><datalist id="causal-event-type-catalog">{eventTypes.map(item => <option key={item} value={item} />)}</datalist></label>
+      <label>Severity<input type="number" min="1" max="10" step="1" value={severity} onChange={event => onSeverity(event.target.value)} /></label>
+      <label>Horizon days<input type="number" min="0" max="3650" step="1" value={horizonDays} onChange={event => onHorizonDays(event.target.value)} /></label>
+      <button type="button" className="primary" disabled={busy || !sourceType.trim()} onClick={onRun}>{busy ? 'Analyzing...' : 'Analyze and preview'}</button>
+    </div>
+    {report && <>
+      <div className="dlc-causal-summary">
+        <article><span>Rules</span><strong>{report.analysis.summary.enabled_count}/{report.analysis.summary.rule_count}</strong></article>
+        <article><span>Event nodes</span><strong>{report.summary.event_count}</strong></article>
+        <article><span>Errors / warnings</span><strong>{report.analysis.summary.error_count || 0} / {report.analysis.summary.warning_count}</strong></article>
+        <article><span>Pending</span><strong>{report.summary.pending_count}</strong></article>
+      </div>
+      {!!report.analysis.issues.length && <div className="dlc-causal-issues">{report.analysis.issues.map((issue, index) => <div key={`${issue.code}-${index}`} className={issue.severity}><strong>{issue.severity}</strong><code>{issue.code}</code><span>{issue.message}</span>{!!issue.rule_ids.length && <small>{issue.rule_ids.join(', ')}</small>}</div>)}</div>}
+      <div className="dlc-causal-timeline">{report.nodes.map((node, index) => <div className="dlc-causal-node" key={node.event_id}><span>Day {Number(node.day).toFixed(2)}</span><strong>{node.event_type}</strong><code>{node.event_id}</code><small>severity {node.severity} / depth {node.causal_depth}</small>{index < report.nodes.length - 1 && <i>-&gt;</i>}</div>)}</div>
+      {report.summary.truncated && <div className="dlc-editor-error">Preview reached the event limit while due events remained.</div>}
+    </>}
+  </section>
+}
+
+export function StructuredContentEditor({ kind, content, selected, onSelect, onSaveContent, onAnalyzeCausal, busy = false }) {
   const items = content[kind] || []
   const entities = content.entities || []
   const agents = content.agents || []
@@ -270,8 +349,39 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const selectedIndex = selected === '' ? -1 : Number(selected)
   const [form, setForm] = useState(() => normalizedListForm(kind, selectedIndex >= 0 ? items[selectedIndex] : null))
   const [error, setError] = useState('')
+  const eventTypes = useMemo(() => buildCausalEventCatalog(content), [content])
+  const [previewSourceType, setPreviewSourceType] = useState(() => String(form._source_types_text || '').split(',').map(value => value.trim()).find(value => value && value !== '*') || eventTypes[0] || '')
+  const [previewSeverity, setPreviewSeverity] = useState(5)
+  const [previewHorizon, setPreviewHorizon] = useState(365)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [previewReport, setPreviewReport] = useState(null)
 
   const set = (name, value) => setForm(current => ({ ...current, [name]: value }))
+  const runCausalPreview = async () => {
+    try {
+      const rule = serializeListForm('causal_event_rules', form)
+      const draft = buildCausalDryRunDraft(content, rule, selectedIndex, {
+        event_id: 'studio_preview_source',
+        event_type: previewSourceType.trim(),
+        severity: Number(previewSeverity),
+        target_agents: rule.target_agents || [],
+        initial_payload: {},
+        generated_at: 0,
+      })
+      setPreviewBusy(true)
+      setError('')
+      const report = await onAnalyzeCausal({
+        ...draft,
+        horizon_days: Number(previewHorizon),
+        max_events: 128,
+      })
+      setPreviewReport(report)
+    } catch (caught) {
+      setError(caught.message)
+    } finally {
+      setPreviewBusy(false)
+    }
+  }
   const save = () => {
     try {
       const data = serializeListForm(kind, form)
@@ -348,8 +458,20 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
         <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
         <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
-        <label>Conditions JSON<textarea className="dlc-json-field" rows="8" spellCheck="false" value={form._conditions_text || ''} onChange={event => set('_conditions_text', event.target.value)} placeholder={'[{"kind":"anchored_inventory","entity_id":"city","name":"grain","operator":"lt","value":1000}]'} /></label>
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
         <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
+        <CausalDryRunPanel
+          report={previewReport}
+          busy={previewBusy}
+          sourceType={previewSourceType}
+          severity={previewSeverity}
+          horizonDays={previewHorizon}
+          eventTypes={eventTypes}
+          onSourceType={setPreviewSourceType}
+          onSeverity={setPreviewSeverity}
+          onHorizonDays={setPreviewHorizon}
+          onRun={runCausalPreview}
+        />
       </>}
 
       {kind === 'time_rules' && <>

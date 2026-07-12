@@ -1652,3 +1652,26 @@ Status: **implemented and locally verified**.
 
 - Release identity is `0.13.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
 - Acceptance evidence: **412 Python tests passed**; **12 frontend tests passed**; frontend lint/build and Python compile passed; Prompt contracts and deterministic trajectory replay both scored **100%**; `git diff --check` and maintained-document encoding checks passed.
+
+## Phase checkpoint: causal rule authoring workbench and deterministic draft preview (2026-07-12)
+
+Status: **implemented and locally verified**.
+
+### Isolated analysis architecture
+
+- `multiagent_framework/causal_analysis.py` projects DLC seed inventory and typed entity values into a read-only fact provider. It never mutates the live Orchestrator, scheduler, SQLite database, or package files.
+- Static analysis emits a stable graph fingerprint, event-type nodes, rule edges, authored origins, fanout counts, duplicate-semantic warnings, bounded-cycle and zero-delay-cycle warnings, immediate wildcard-loop warnings, external-source information, and draft reference errors for missing Agents, entities, resources, or incompatible resource kinds.
+- Deterministic dry-run uses an isolated `CausalEventEngine`, stable source IDs, the existing probability semantics, the authored value anchors, a caller-bounded horizon, and a hard 256-event request ceiling. The result includes a timeline, parent/rule edges, pending events, truncation state, and the static analysis report.
+- `POST /api/dlcs/{dlc_id}/causal-events/dry-run` accepts either persisted content or an unsaved normalized Studio draft. Draft analysis does not save or publish content. Spoofed causal metadata, malformed sources, oversized limits, and invalid rule documents fail with controlled 400 responses.
+
+### Studio authoring workflow
+
+- The causal editor replaces raw Conditions JSON with repeatable structured rows for fact kind, entity, compatible resource/value, comparison operator, and finite threshold. Resource options are filtered to `asset`, `metric`, or `parameter` according to the selected condition kind.
+- Anchored inventory rows display the selected resource anchor rate and explicitly preview `quantity * anchor_rate` semantics. Existing Agent target selectors remain available.
+- The deterministic preview builds a request from the current unsaved rule form and complete in-memory DLC draft, then renders rule/error/warning counts, pending counts, diagnostics, and a horizontally ordered event timeline.
+- Pure frontend helpers build the event-type catalog and immutable dry-run draft, preventing preview from mutating Studio history before the author confirms Save.
+
+### Version identity and acceptance evidence
+
+- Release identity is `0.14.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
+- Acceptance evidence: **419 Python tests passed**; **13 frontend tests passed**; frontend lint/build and Python compile passed. Prompt contracts and deterministic trajectory replay remain part of the required final gate.

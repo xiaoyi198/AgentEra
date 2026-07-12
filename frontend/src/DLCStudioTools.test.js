@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   DLC_CONTENT_EXPORT_FORMAT,
+  buildCausalDryRunDraft,
+  buildCausalEventCatalog,
   commitContentHistory,
   createContentExport,
   createContentHistory,
@@ -278,4 +280,25 @@ test('causal event rules normalize and diff by rule_id', () => {
     && item.type === 'changed'
     && item.key === 'drought_to_shortage'
   )), true)
+})
+
+
+test('causal event catalog and dry-run draft include unsaved rule changes', () => {
+  const content = {
+    ...base,
+    initial_events: [{ event_type: 'shortage' }],
+    random_events: [{ event_type: 'storm' }],
+    causal_event_rules: [{ rule_id: 'old', source_event_types: ['shortage'], child_event_type: 'unrest' }],
+  }
+  assert.deepEqual(buildCausalEventCatalog(content), ['shortage', 'storm', 'unrest'])
+
+  const draft = buildCausalDryRunDraft(
+    content,
+    { rule_id: 'new', source_event_types: ['unrest'], child_event_type: 'crisis' },
+    0,
+    { event_id: 'studio_preview_source', event_type: 'unrest', severity: 5 },
+  )
+  assert.equal(draft.content.causal_event_rules[0].rule_id, 'new')
+  assert.equal(content.causal_event_rules[0].rule_id, 'old')
+  assert.equal(draft.source_event.event_type, 'unrest')
 })

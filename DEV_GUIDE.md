@@ -1953,3 +1953,50 @@ npm test
 npm run lint
 npm run build
 ```
+
+## Causal rule workbench development (v0.14.0)
+
+Use the DLC Studio causal-rule tab for structured conditions and isolated previews. The backend endpoint is:
+
+```text
+POST /api/dlcs/{dlc_id}/causal-events/dry-run
+```
+
+Request shape:
+
+```json
+{
+  "content": { "causal_event_rules": [] },
+  "source_event": {
+    "event_id": "studio_preview_source",
+    "event_type": "shortage",
+    "severity": 5,
+    "target_agents": [],
+    "initial_payload": {},
+    "generated_at": 0
+  },
+  "horizon_days": 365,
+  "max_events": 128
+}
+```
+
+Development invariants:
+
+1. Preview must use `DLCRegistry.normalize_content_document()` and must never call `save_content()`, publish, reload, or mutate the live causal scheduler.
+2. Reuse `CausalEventRule` and `CausalEventEngine`; do not implement a second probability, delay, depth, fire-limit, or anchored-value semantics in the API layer.
+3. Dry-run source payloads cannot contain causal metadata. Source severity must be an integer from 1 to 10, target IDs are bounded, the horizon is at most 3650 days, and the event limit is at most 256.
+4. Static diagnostics must remain deterministic and secret-free. Do not add world runtime payloads, credentials, Prompt/message/memory bodies, Provider metadata, filesystem paths, or raw exceptions.
+5. Structured conditions must filter resources by kind: `anchored_inventory -> asset`, `metric -> metric`, and `parameter -> parameter`. Every row requires an entity, resource/value, operator, and finite threshold.
+6. Preview must include the current unsaved rule form through `buildCausalDryRunDraft()` without committing Studio history or changing package content.
+7. Runtime behavior remains owned by `causal_events.py`; analysis code is advisory and isolated. A warning must never silently alter or disable a production rule.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_analysis.py tests/unit/test_causal_events.py tests/unit/test_dlc_api.py
+python -m compileall -q main.py routers multiagent_framework tests
+cd frontend
+npm test
+npm run lint
+npm run build
+```
