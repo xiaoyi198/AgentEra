@@ -6,6 +6,7 @@ const T = {
   assetOnly: '\u5e93\u5b58\u53ea\u80fd\u5f15\u7528 asset \u8d44\u6e90\uff1b\u9528\u5b9a\u4ef7\u503c = \u6570\u91cf \u00d7 anchor_rate\u3002',
   cancel: '\u53d6\u6d88',
   category: '\u5206\u7c7b',
+  causalEvents: '\u56e0\u679c\u4e8b\u4ef6\u89c4\u5219',
   child: '\u5b50\u5b9e\u4f53',
   delete: '\u5220\u9664',
   description: '\u63cf\u8ff0',
@@ -14,6 +15,7 @@ const T = {
   entity: '\u5b9e\u4f53',
   eventId: '\u4e8b\u4ef6 ID',
   eventType: '\u4e8b\u4ef6\u7c7b\u578b',
+  childEventType: '\u540e\u7ee7\u4e8b\u4ef6\u7c7b\u578b',
   expectedResult: '\u9884\u671f\u7ed3\u679c JSON',
   generatedAt: '\u751f\u6210\u6a21\u62df\u65f6\u95f4',
   initialEvents: '\u521d\u59cb\u4e8b\u4ef6',
@@ -62,6 +64,10 @@ const T = {
   version: '\u7248\u672c',
 }
 
+const CAUSAL_RESERVED_FIELDS = [
+  'causal_chain_id', 'causal_parent_event_id', 'causal_rule_id', 'causal_depth',
+]
+
 const EMPTY = {
   inventory: { entity_id: '', item_name: '', category: '', quantity: 0, description: '' },
   entity_values: { entity_id: '', name: '', kind: 'metric', value: 0, description: '' },
@@ -69,6 +75,7 @@ const EMPTY = {
   initial_events: { event_id: '', event_type: 'world_event', severity: 5, target_agents: [], initial_payload: {}, generated_at: 0 },
   ongoing_events: { event_id: '', entity_id: '', event_type: 'state_change', description: '', start_time: 0, end_time: 0, expected_result: {}, source_action_id: '' },
   random_events: { template_id: '', event_type: 'world_event', target_agents: [], initial_payload: {}, severity_min: 3, severity_max: 7, min_interval_days: 30, max_interval_days: 90, probability: 1, max_occurrences: 0, enabled: true },
+  causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
 }
 
@@ -79,6 +86,7 @@ const TITLES = {
   initial_events: T.initialEvents,
   ongoing_events: T.ongoingEvents,
   random_events: T.randomEvents,
+  causal_event_rules: T.causalEvents,
   time_rules: T.timeRules,
 }
 
@@ -101,9 +109,25 @@ function parseObject(value, label) {
   return parsed
 }
 
+function parseArray(value, label) {
+  let parsed
+  try {
+    parsed = JSON.parse(value || '[]')
+  } catch (error) {
+    throw new Error(`${label}: ${error.message}`)
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${label}: must be a JSON array`)
+  return parsed
+}
+
 function normalizedListForm(kind, value) {
   const source = value ? deepClone(value) : deepClone(EMPTY[kind])
-  if (kind === 'initial_events' || kind === 'random_events') source._payload_text = jsonText(source.initial_payload)
+  if (kind === 'initial_events' || kind === 'random_events' || kind === 'causal_event_rules') source._payload_text = jsonText(source.initial_payload)
+  if (kind === 'causal_event_rules') {
+    source._source_types_text = (source.source_event_types || ['*']).join(', ')
+    source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
+    source._conditions_text = JSON.stringify(source.conditions || [], null, 2)
+  }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
   return source
@@ -114,6 +138,8 @@ function serializeListForm(kind, form) {
   if (kind === 'initial_events') {
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
     delete data._payload_text
+    const reserved = CAUSAL_RESERVED_FIELDS.filter(key => Object.hasOwn(data.initial_payload, key))
+    if (reserved.length) throw new Error(`Reserved payload fields: ${reserved.join(', ')}`)
     data.target_agents = [...new Set(data.target_agents || [])]
     data.severity = Number(data.severity)
     data.generated_at = Number(data.generated_at || 0)
@@ -121,7 +147,7 @@ function serializeListForm(kind, form) {
   if (kind === 'random_events') {
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
     delete data._payload_text
-    const reserved = ['random_event_template_id', 'occurrence'].filter(key => Object.hasOwn(data.initial_payload, key))
+    const reserved = ['random_event_template_id', 'occurrence', ...CAUSAL_RESERVED_FIELDS].filter(key => Object.hasOwn(data.initial_payload, key))
     if (reserved.length) throw new Error(`Reserved payload fields: ${reserved.join(', ')}`)
     data.target_agents = [...new Set(data.target_agents || [])]
     data.severity_min = Number(data.severity_min)
@@ -140,6 +166,29 @@ function serializeListForm(kind, form) {
       || data.min_interval_days <= 0 || data.min_interval_days > data.max_interval_days) throw new Error('Interval days must be positive and min cannot exceed max.')
     if (!Number.isFinite(data.probability) || data.probability < 0 || data.probability > 1) throw new Error('Probability must be from 0 to 1.')
     if (!Number.isInteger(data.max_occurrences) || data.max_occurrences < 0) throw new Error('Max occurrences must be a non-negative integer.')
+  }
+  if (kind === 'causal_event_rules') {
+    data.initial_payload = parseObject(data._payload_text, T.initialPayload)
+    data.conditions = parseArray(data._conditions_text, 'Conditions')
+    delete data._payload_text
+    delete data._conditions_text
+    data.source_event_types = [...new Set(String(data._source_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
+    data.inherit_payload_keys = [...new Set(String(data._inherit_keys_text || '').split(',').map(value => value.trim()).filter(Boolean))]
+    delete data._source_types_text
+    delete data._inherit_keys_text
+    data.target_agents = [...new Set(data.target_agents || [])]
+    for (const field of ['delay_days', 'probability', 'severity_delta', 'max_depth', 'max_fires_per_chain', 'priority']) data[field] = Number(data[field])
+    data.enabled = Boolean(data.enabled)
+    const safeId = value => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value || '')
+    if (!safeId(data.rule_id) || !safeId(data.child_event_type)) throw new Error('Rule ID and child event type must be safe identifiers.')
+    if (!data.source_event_types.length || data.source_event_types.some(value => value !== '*' && !safeId(value))) throw new Error('Source event types must be safe identifiers or *.')
+    if (!Number.isFinite(data.delay_days) || data.delay_days < 0) throw new Error('Delay days must be finite and non-negative.')
+    if (!Number.isFinite(data.probability) || data.probability < 0 || data.probability > 1) throw new Error('Probability must be from 0 to 1.')
+    if (!Number.isInteger(data.severity_delta) || data.severity_delta < -9 || data.severity_delta > 9) throw new Error('Severity delta must be an integer from -9 to 9.')
+    if (!Number.isInteger(data.max_depth) || data.max_depth < 1 || data.max_depth > 16) throw new Error('Max depth must be an integer from 1 to 16.')
+    if (!Number.isInteger(data.max_fires_per_chain) || data.max_fires_per_chain < 1 || data.max_fires_per_chain > 64) throw new Error('Max fires per chain must be an integer from 1 to 64.')
+    if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
+    if (CAUSAL_RESERVED_FIELDS.some(key => Object.hasOwn(data.initial_payload, key) || data.inherit_payload_keys.includes(key))) throw new Error('Causal metadata fields are reserved.')
   }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -175,6 +224,7 @@ function listLabel(kind, item) {
   if (kind === 'relations') return [`${item.parent_id || '?'} \u2192 ${item.child_id || '?'}`, item.rel_type]
   if (kind === 'initial_events') return [item.event_id || T.eventId, `${item.event_type || ''} \u00b7 ${item.target_agents?.length || 0} agents`]
   if (kind === 'random_events') return [item.template_id || T.templateId, `${item.event_type || ''} \u00b7 ${item.target_agents?.length || 0} agents`]
+  if (kind === 'causal_event_rules') return [item.rule_id || T.ruleId, `${(item.source_event_types || []).join(', ')} \u2192 ${item.child_event_type || ''}`]
   if (kind === 'time_rules') return [item.rule_id || T.ruleId, `${(item.action_types || []).join(', ')} \u00b7 p${item.priority || 0}`]
   return [item.event_id || T.eventId, `${item.entity_id || ''} \u00b7 ${item.event_type || ''}`]
 }
@@ -186,6 +236,7 @@ function requiredKey(kind, form) {
   if (kind === 'initial_events') return form.event_id
   if (kind === 'ongoing_events') return form.event_id && form.entity_id
   if (kind === 'random_events') return form.template_id && form.event_type && (form.target_agents || []).length
+  if (kind === 'causal_event_rules') return form.rule_id && form.child_event_type && String(form._source_types_text || '').trim()
   if (kind === 'time_rules') return form.rule_id && String(form._action_types_text || '').trim()
   return false
 }
@@ -285,6 +336,20 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <div className="dlc-row"><label>{T.probability}<input type="number" min="0" max="1" step="0.01" value={form.probability ?? 1} onChange={event => set('probability', event.target.value)} /></label><label>{T.maxOccurrences}<input type="number" min="0" step="1" value={form.max_occurrences ?? 0} onChange={event => set('max_occurrences', event.target.value)} /></label></div>
         <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
         <label>{T.initialPayload}<textarea className="dlc-json-field" rows="9" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
+      </>}
+
+      {kind === 'causal_event_rules' && <>
+        <div className="dlc-row"><label>{T.ruleId}<input value={form.rule_id || ''} onChange={event => set('rule_id', event.target.value)} placeholder="drought_to_famine" /></label><label>Priority<input type="number" step="1" value={form.priority ?? 0} onChange={event => set('priority', event.target.value)} /></label></div>
+        <div className="dlc-row"><label>Source event types<input value={form._source_types_text || ''} onChange={event => set('_source_types_text', event.target.value)} placeholder="drought, crop_failure" /></label><label>{T.childEventType}<input value={form.child_event_type || ''} onChange={event => set('child_event_type', event.target.value)} placeholder="famine_risk" /></label></div>
+        <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
+        <div className="dlc-row"><label>Delay days<input type="number" min="0" step="any" value={form.delay_days ?? 0} onChange={event => set('delay_days', event.target.value)} /></label><label>{T.probability}<input type="number" min="0" max="1" step="0.01" value={form.probability ?? 1} onChange={event => set('probability', event.target.value)} /></label></div>
+        <div className="dlc-row"><label>Severity delta<input type="number" min="-9" max="9" step="1" value={form.severity_delta ?? 0} onChange={event => set('severity_delta', event.target.value)} /></label><label>Max chain depth<input type="number" min="1" max="16" step="1" value={form.max_depth ?? 4} onChange={event => set('max_depth', event.target.value)} /></label></div>
+        <label>Max fires per chain<input type="number" min="1" max="64" step="1" value={form.max_fires_per_chain ?? 1} onChange={event => set('max_fires_per_chain', event.target.value)} /></label>
+        <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
+        <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
+        <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
+        <label>Conditions JSON<textarea className="dlc-json-field" rows="8" spellCheck="false" value={form._conditions_text || ''} onChange={event => set('_conditions_text', event.target.value)} placeholder={'[{"kind":"anchored_inventory","entity_id":"city","name":"grain","operator":"lt","value":1000}]'} /></label>
+        <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
       </>}
 
       {kind === 'time_rules' && <>

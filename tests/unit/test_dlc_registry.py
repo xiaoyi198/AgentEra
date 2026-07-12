@@ -26,6 +26,7 @@ def valid_content(entity_id: str = "place", agent_id: str = "agent") -> dict:
         "agents": [{"id": agent_id, "name": agent_id, "location_id": entity_id}],
         "initial_events": [{"event_id": "intro", "target_agents": [agent_id]}],
         "random_events": [],
+        "causal_event_rules": [],
         "time_rules": [],
         "ongoing_events": [{"event_id": "work", "entity_id": entity_id}],
         "personas": {},
@@ -461,3 +462,94 @@ def test_time_rules_are_normalized_and_strictly_validated(registry: DLCRegistry)
     codes = {issue.code for issue in registry.validate("timepack")}
     assert "time_rules.duplicate" in codes
     assert "time_rule.invalid_rule" in codes
+
+
+
+def causal_rule(**overrides):
+    value = {
+        "rule_id": "shortage_chain",
+        "source_event_types": ["drought"],
+        "child_event_type": "shortage",
+        "target_agents": ["agent"],
+        "delay_days": 1,
+        "probability": 1,
+        "conditions": [
+            {"kind": "anchored_inventory", "entity_id": "place", "name": "coin", "operator": "lt", "value": 10},
+            {"kind": "metric", "entity_id": "place", "name": "morale", "operator": "lte", "value": 50},
+        ],
+    }
+    value.update(overrides)
+    return value
+
+
+def test_causal_event_rule_validation_accepts_valid_references(registry: DLCRegistry):
+    registry.create(manifest("sample"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule()]
+    registry.save_content("sample", content)
+    assert not registry.validate("sample")
+
+
+def test_causal_event_rule_validation_reports_duplicate_and_missing_references(registry: DLCRegistry):
+    registry.create(manifest("broken"))
+    content = valid_content()
+    broken = causal_rule(
+        target_agents=["missing-agent"],
+        conditions=[
+            {"kind": "anchored_inventory", "entity_id": "missing-place", "name": "missing-resource", "operator": "lt", "value": 1},
+        ],
+    )
+    content["causal_event_rules"] = [broken, dict(broken)]
+    registry.save_content("broken", content)
+    codes = {issue.code for issue in registry.validate("broken")}
+    assert {
+        "causal_events.duplicate",
+        "causal_event.missing_agent",
+        "causal_event.missing_entity",
+        "causal_event.missing_resource",
+    } <= codes
+
+
+@pytest.mark.parametrize("condition", [
+    {"kind": "anchored_inventory", "entity_id": "place", "name": "morale", "operator": "lt", "value": 1},
+    {"kind": "metric", "entity_id": "place", "name": "coin", "operator": "lt", "value": 1},
+    {"kind": "parameter", "entity_id": "place", "name": "morale", "operator": "lt", "value": 1},
+])
+def test_causal_event_condition_requires_matching_resource_kind(registry: DLCRegistry, condition):
+    registry.create(manifest("broken"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(conditions=[condition])]
+    registry.save_content("broken", content)
+    assert "causal_event.invalid_resource_kind" in {
+        issue.code for issue in registry.validate("broken")
+    }
+
+
+def test_causal_event_reserved_payload_is_rejected(registry: DLCRegistry):
+    registry.create(manifest("broken"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(initial_payload={"causal_depth": 99})]
+    registry.save_content("broken", content)
+    issues = registry.validate("broken")
+    assert any(
+        issue.code == "causal_event.invalid_rule" and "causal_payload_reserved" in issue.message
+        for issue in issues
+    )
+
+
+
+def test_initial_and_random_events_cannot_forge_causal_metadata(registry: DLCRegistry):
+    registry.create(manifest("forged-causality"))
+    content = valid_content()
+    content["initial_events"][0]["initial_payload"] = {"causal_depth": 1}
+    content["random_events"] = [{
+        "template_id": "storm", "event_type": "storm", "target_agents": ["agent"],
+        "initial_payload": {"causal_chain_id": "cause_deadbeefdeadbeef"},
+        "severity_min": 1, "severity_max": 2,
+        "min_interval_days": 1, "max_interval_days": 2,
+        "probability": 1, "max_occurrences": 1, "enabled": True,
+    }]
+    registry.save_content("forged-causality", content)
+    codes = {issue.code for issue in registry.validate("forged-causality")}
+    assert "event.reserved_payload_field" in codes
+    assert "random_event.reserved_payload_field" in codes

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRegistryError
+from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEventRule
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 
@@ -385,7 +386,7 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "agents", "initial_events", "ongoing_events", "random_events", "time_rules",
+            "agents", "initial_events", "ongoing_events", "random_events", "causal_event_rules", "time_rules",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -466,6 +467,7 @@ class DLCRegistry:
             "agents": officials.get("officials", officials.get("agents", [])),
             "initial_events": events.get("initial_events", []),
             "random_events": events.get("random_events", []),
+            "causal_event_rules": events.get("causal_event_rules", []),
             "time_rules": events.get("time_rules", []),
             "ongoing_events": world.get("ongoing_events", []),
             "personas": personas,
@@ -749,10 +751,37 @@ class DLCRegistry:
             except TimeRuleError as exc:
                 add("time_rule.invalid_rule", str(exc), path)
 
+        for duplicate in self._duplicates([item for item in content["causal_event_rules"] if isinstance(item, dict)], "rule_id"):
+            add("causal_events.duplicate", f"Duplicate rule_id: {duplicate}", "causal_event_rules")
+        for index, raw_rule in enumerate(content["causal_event_rules"]):
+            path = f"causal_event_rules[{index}]"
+            if not isinstance(raw_rule, dict):
+                add("causal_event.invalid_rule", "Causal event rule must be an object", path)
+                continue
+            try:
+                rule = CausalEventRule.from_mapping(raw_rule)
+            except CausalEventError as exc:
+                add("causal_event.invalid_rule", str(exc), path)
+                continue
+            for target in rule.target_agents:
+                if target not in agent_ids:
+                    add("causal_event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
+            for condition_index, condition in enumerate(rule.conditions):
+                condition_path = f"{path}.conditions[{condition_index}]"
+                if condition.entity_id not in entity_ids:
+                    add("causal_event.missing_entity", f"Unknown entity: {condition.entity_id}", f"{condition_path}.entity_id")
+                resource = resource_map.get(condition.name)
+                if resource is None:
+                    add("causal_event.missing_resource", f"Unknown resource: {condition.name}", f"{condition_path}.name")
+                elif condition.kind == "anchored_inventory" and resource.get("kind") != "asset":
+                    add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
+                elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
+                    add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+
         for duplicate in self._duplicates([item for item in content["random_events"] if isinstance(item, dict)], "template_id"):
             add("random_events.duplicate", f"Duplicate template_id: {duplicate}", "random_events")
 
-        reserved_payload_fields = {"random_event_template_id", "occurrence"}
+        reserved_payload_fields = {"random_event_template_id", "occurrence"} | set(CAUSAL_METADATA_FIELDS)
         for index, template in enumerate(content["random_events"]):
             path = f"random_events[{index}]"
             if not isinstance(template, dict):
@@ -845,8 +874,16 @@ class DLCRegistry:
                 for target in targets:
                     if str(target) not in agent_ids:
                         add("event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
-            if not isinstance(event.get("initial_payload", {}), dict):
+            payload = event.get("initial_payload", {})
+            if not isinstance(payload, dict):
                 add("event.invalid_payload", "initial_payload must be an object", f"{path}.initial_payload")
+            else:
+                for field_name in sorted(CAUSAL_METADATA_FIELDS & set(payload)):
+                    add(
+                        "event.reserved_payload_field",
+                        f"initial_payload cannot override runtime field: {field_name}",
+                        f"{path}.initial_payload.{field_name}",
+                    )
             generated_at = event.get("generated_at", 0.0)
             if not isinstance(generated_at, (int, float)) or isinstance(generated_at, bool) or not math.isfinite(generated_at):
                 add("event.invalid_generated_at", "generated_at must be finite", f"{path}.generated_at")

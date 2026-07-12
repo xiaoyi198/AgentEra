@@ -14,6 +14,7 @@ from .action_agent import ActionAgent
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
+from .causal_events import CausalEventEngine
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .fc_handlers import (
@@ -117,6 +118,7 @@ class Orchestrator:
         # 时间状态
         self._sim_time: float = 0.0
         self.random_event_generator = RandomEventGenerator(sim_time=self._sim_time)
+        self.causal_event_engine = CausalEventEngine()
         self.time_simulator = (
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
@@ -405,6 +407,20 @@ class Orchestrator:
         """Return scheduler metadata without payloads or Agent identifiers."""
         return self.random_event_generator.public_status()
 
+    def configure_causal_events(self, rules: list[dict[str, Any]]) -> None:
+        """Atomically publish causal rules for future source events.
+
+        Already materialized child events remain queued with their committed
+        semantics, so reload cannot rewrite work already caused by an event.
+        """
+        self.causal_event_engine.configure(rules)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def causal_event_status(self) -> dict[str, Any]:
+        """Return aggregate causal scheduler metadata without event payloads."""
+        return self.causal_event_engine.public_status()
+
     def configure_time_rules(self, rules: list[dict[str, Any]]) -> None:
         """Atomically publish DLC action-duration rules for future work."""
         if self.action_agent is not None:
@@ -425,6 +441,11 @@ class Orchestrator:
 
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
+        causal_scheduled = self.causal_event_engine.observe(
+            event, sim_time=self._sim_time, world_state=self.world_state,
+        )
+        if causal_scheduled and self.persistor:
+            self.persistor.mark_state_dirty()
         for agent_id in event.target_agents:
             self._pending_wakeups.append({
                 "target": agent_id,
@@ -478,6 +499,7 @@ class Orchestrator:
             "seconds_per_day": self._seconds_per_day,
             "timer_count": timer_count,
             "random_events": self.random_event_generator.snapshot(),
+            "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
             "agent_memories": agent_memories,
         }
@@ -490,6 +512,9 @@ class Orchestrator:
         self.router.update_time_scale(self._seconds_per_day)
         self.random_event_generator.restore(
             state.get("random_events", {}), sim_time=self._sim_time
+        )
+        self.causal_event_engine.restore(
+            state.get("causal_events", {}), sim_time=self._sim_time
         )
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})
@@ -617,6 +642,29 @@ class Orchestrator:
             })
         if random_poll.attempts and self.persistor:
             self.persistor.mark_state_dirty()
+
+        # Materialized causal events are processed oldest-first. Delay-zero chains
+        # may continue in this tick, but the shared budget prevents event storms.
+        causal_remaining = 128
+        while causal_remaining > 0:
+            causal_poll = self.causal_event_engine.poll(
+                self._sim_time, max_events=causal_remaining,
+            )
+            if not causal_poll.events:
+                break
+            causal_remaining -= causal_poll.due_count
+            for event in causal_poll.events:
+                self.inject_event(event)
+                result.generated_events.append({
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "target_count": len(event.target_agents),
+                    "generated_at": event.generated_at,
+                    "source": "causal",
+                })
+            if self.persistor:
+                self.persistor.mark_state_dirty()
 
         due_timers = self.timers.pop_due(self._sim_time)
         for timer in due_timers:

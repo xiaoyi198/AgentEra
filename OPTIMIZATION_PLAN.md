@@ -2,7 +2,7 @@
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
-> Status: Phases 0-7 core implementation, all core/advanced Studio workflows, dependency version constraints, migration assistance, deterministic Prompt contracts, and replay/live trajectory evaluation infrastructure complete; 198 Python tests plus 6 Studio tests pass. Deterministic scale testing is complete; credentialed live baselines, longer soak testing, and Phase 8 hardening remain ongoing.
+> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with anchored-value conditions, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 412 Python tests plus 12 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
 > 原则：先补基础设施与可观测性，再扩展 DLC 和 Agent 数量；所有核心改造必须可迁移、可回滚、可测试。
 
 ## 1. 总目标
@@ -1131,3 +1131,30 @@ Status: **implemented and locally verified; credentialed staging observation rem
 - Frontend: **11 tests passed**, lint passed, and production build passed.
 - Python compile and `git diff --check` passed. Prompt contracts and deterministic trajectory replay both scored **100%**.
 - Production use still requires credentialed staging promotion, protected operational observation, rollback rehearsal, independent review quorum, and environment-specific alert thresholds.
+
+
+## Phase checkpoint: deterministic causal event chains and anchored conditions (2026-07-12)
+
+Status: **implemented and locally verified; deeper economic propagation scenarios remain ongoing**.
+
+Completed in this checkpoint:
+
+- added deterministic DLC-defined source-to-child event rules with stable probability, delay, severity adjustment, target inheritance/override, payload-key inheritance, priorities, enablement, depth bounds, and per-chain fire limits;
+- added typed world conditions over anchored inventory base value, metrics, and parameters, with missing facts failing closed;
+- materialized complete child events at observation time so DLC reload and generation rollback cannot rewrite already committed causal outcomes;
+- added idempotent observation, deterministic child IDs, chronological polling, snapshot/restore, bounded retention, pending caps, dropped aggregates, and a shared 128-event per-Tick budget;
+- integrated causal rules into DLC normalization/validation, cross-DLC materialization, runtime generations, reload/rollback, startup restoration, persistence, aggregate status, and initial-event ordering;
+- added a DLC Studio causal-chain editor and included the new section in import/export, keyed Diff, history, counts, and frontend tests;
+- added focused tests for deterministic scheduling, conditions using `quantity * anchor_rate`, target and payload inheritance, limits, corrupt/oversized snapshots, committed-event reload semantics, Registry references, Runtime generation rollback, persistence, random-to-causal propagation, metadata redaction, and Tick budgeting;
+- synchronized release identity to `0.13.0` and updated the four maintained project documents;
+- completed **412 Python tests**, **12 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, Diff check, and maintained-document encoding checks.
+
+Next priorities:
+
+1. Build longer deterministic world scenarios that connect causal chains to ongoing events and transactional world commands, including economic balancing around the unified value anchor.
+2. Add Studio condition builders with resource/Agent/entity selectors so most rules require no raw JSON editing.
+3. Add causal-chain visualization, dry-run previews, conflict detection, and replay fixtures for DLC authors.
+4. Continue multi-turn Agent memory optimization, task/DLC/Agent model selection, Prompt evaluation, credentialed model matrices, promotion observation, and production rollback rehearsal.
+5. Complete credentialed staging evidence and longer soak/scale tests without weakening the existing secret-free management boundaries.
+
+The persistent product goal remains active. This checkpoint advances world-simulator causality and DLC authoring while preserving deterministic replay, reload atomicity, bounded execution, and unified-value semantics.

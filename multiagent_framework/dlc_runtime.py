@@ -60,6 +60,7 @@ class DLCLoadReport:
     agents: int = 0
     initial_events: int = 0
     random_events: int = 0
+    causal_event_rules: int = 0
     time_rules: int = 0
     seeded_world: bool = False
     model_profiles: dict[str, str] = field(default_factory=dict)
@@ -113,6 +114,7 @@ class _DLCMaterializedSnapshot:
     relations: list[dict[str, Any]]
     ongoing_events: list[OngoingEvent]
     random_event_templates: list[dict[str, Any]]
+    causal_event_rules: list[dict[str, Any]]
     time_rules: list[dict[str, Any]]
     primary_package_id: str
     global_prompts: dict[str, str]
@@ -490,7 +492,9 @@ class DLCBundleLoader:
             entity_values=len(values), relations=len(content["relations"]),
             ongoing_events=len(ongoing), officials=len(officials), agents=len(agents),
             initial_events=len(events) if seed_world else 0,
-            random_events=len(content["random_events"]), time_rules=len(content["time_rules"]),
+            random_events=len(content["random_events"]),
+            causal_event_rules=len(content["causal_event_rules"]),
+            time_rules=len(content["time_rules"]),
             seeded_world=seed_world,
             model_profiles=dict(self.agent_factory.last_bindings),
             prompt_hashes={
@@ -515,6 +519,8 @@ class DLCBundleLoader:
         relations: list[dict[str, Any]] = []
         ongoing_events: list[OngoingEvent] = []
         random_event_templates: list[dict[str, Any]] = []
+        causal_event_rules: list[dict[str, Any]] = []
+        causal_rule_ids: set[str] = set()
         time_rules: list[dict[str, Any]] = []
         global_prompts: dict[str, str] = {}
         global_prompt_hashes: dict[str, str] = {}
@@ -623,6 +629,12 @@ class DLCBundleLoader:
             ) for item in content["entity_values"])
             relations.extend(dict(item) for item in content["relations"])
             random_event_templates.extend(copy.deepcopy(content["random_events"]))
+            for causal_rule in content["causal_event_rules"]:
+                rule_id = str(causal_rule.get("rule_id", ""))
+                if rule_id in causal_rule_ids:
+                    raise DLCRegistryError(f"Duplicate active causal event rule id: {rule_id}")
+                causal_rule_ids.add(rule_id)
+                causal_event_rules.append(copy.deepcopy(causal_rule))
             time_rules.extend(copy.deepcopy(content["time_rules"]))
             ongoing_events.extend(OngoingEvent(
                 event_id=str(item["event_id"]), entity_id=str(item["entity_id"]),
@@ -651,6 +663,7 @@ class DLCBundleLoader:
             relations=relations,
             ongoing_events=ongoing_events,
             random_event_templates=random_event_templates,
+            causal_event_rules=causal_event_rules,
             time_rules=time_rules,
             primary_package_id=primary_package_id,
             global_prompts=global_prompts,
@@ -723,6 +736,7 @@ class DLCBundleLoader:
                 "relations_upserted": len(candidate.relations),
                 "ongoing_event_candidates": len(candidate.ongoing_events),
                 "random_event_templates": len(candidate.random_event_templates),
+                "causal_event_rules": len(candidate.causal_event_rules),
                 "time_rules": len(candidate.time_rules),
             },
             warnings=warnings,
@@ -767,6 +781,7 @@ class DLCBundleLoader:
             "relations": copy.deepcopy(snapshot.relations),
             "ongoing_events": [asdict(item) for item in snapshot.ongoing_events],
             "random_event_templates": copy.deepcopy(snapshot.random_event_templates),
+            "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
             "time_rules": copy.deepcopy(snapshot.time_rules),
             "primary_package_id": snapshot.primary_package_id,
             "global_prompts": dict(snapshot.global_prompts),
@@ -934,6 +949,9 @@ class DLCBundleLoader:
             random_event_templates=[
                 dict(item) for item in blueprint.get("random_event_templates", [])
             ],
+            causal_event_rules=[
+                dict(item) for item in blueprint.get("causal_event_rules", [])
+            ],
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
             primary_package_id=str(blueprint.get("primary_package_id", "")),
             global_prompts=global_prompts,
@@ -1010,6 +1028,7 @@ class DLCBundleLoader:
             relations=copy.deepcopy(snapshot.relations),
             ongoing_events=copy.deepcopy(snapshot.ongoing_events),
             random_event_templates=copy.deepcopy(snapshot.random_event_templates),
+            causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
             time_rules=copy.deepcopy(snapshot.time_rules),
             primary_package_id=snapshot.primary_package_id,
             global_prompts=dict(snapshot.global_prompts),
@@ -1318,6 +1337,8 @@ class DLCBundleLoader:
                     self.orchestrator.configure_random_events(
                         candidate.random_event_templates, preserve_state=True
                     )
+                if hasattr(self.orchestrator, "configure_causal_events"):
+                    self.orchestrator.configure_causal_events(candidate.causal_event_rules)
                 if hasattr(self.orchestrator, "configure_time_rules"):
                     self.orchestrator.configure_time_rules(candidate.time_rules)
 
@@ -1453,6 +1474,11 @@ class DLCBundleLoader:
             "retired_memory_archives": len(self._archived_agent_memory),
             "available_generations": self._public_generation_history(),
             "generation_archive": self._archive_public_status(),
+            "causal_events": (
+                self.orchestrator.causal_event_status()
+                if hasattr(self.orchestrator, "causal_event_status")
+                else {"rule_count": len(snapshot.causal_event_rules) if snapshot else 0}
+            ),
             "time_rules": (
                 self.orchestrator.time_rule_status()
                 if hasattr(self.orchestrator, "time_rule_status")
@@ -1469,6 +1495,10 @@ class DLCBundleLoader:
 
     def load_active(self, *, seed_world: bool = True) -> list[DLCLoadReport]:
         candidate = self._materialize_active()
+        # Configure causality before initial-event injection so authored opening
+        # events participate in the same deterministic chain semantics.
+        if hasattr(self.orchestrator, "configure_causal_events"):
+            self.orchestrator.configure_causal_events(candidate.causal_event_rules)
         reports = [
             self.load_package(package, seed_world=seed_world)
             for package in self.registry.ordered_active_packages()

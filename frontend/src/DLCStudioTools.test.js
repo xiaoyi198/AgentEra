@@ -29,6 +29,7 @@ const base = {
   initial_events: [],
   ongoing_events: [],
   random_events: [],
+  causal_event_rules: [],
   time_rules: [],
   personas: {},
   prompts: {},
@@ -248,4 +249,33 @@ test('generation status summary keeps operational aggregates and omits unsafe ex
   })
   assert.equal(JSON.stringify(summary).includes('unsafe'), false)
   assert.throws(() => summarizeGenerationStatus({ schema_version: '0.9' }), /schema_version/)
+})
+
+
+test('causal event rules normalize and diff by rule_id', () => {
+  const rule = {
+    rule_id: 'drought_to_shortage',
+    source_event_types: ['drought'],
+    child_event_type: 'shortage',
+    conditions: [{
+      kind: 'anchored_inventory', entity_id: 'city', name: 'grain',
+      operator: 'lt', value: 100,
+    }],
+  }
+  const imported = normalizeImportedContent({
+    ...base,
+    causal_event_rules: [rule],
+  })
+  assert.deepEqual(imported.causal_event_rules, [rule])
+
+  const changed = {
+    ...imported,
+    causal_event_rules: [{ ...rule, child_event_type: 'famine' }],
+  }
+  const diff = summarizeContentDiff(imported, changed)
+  assert.equal(diff.entries.some(item => (
+    item.section === 'causal_event_rules'
+    && item.type === 'changed'
+    && item.key === 'drought_to_shortage'
+  )), true)
 })

@@ -60,6 +60,11 @@ class RuntimePersistor:
                         if hasattr(self._orch, "random_event_generator")
                         else {}
                     ),
+                    "causal_events": (
+                        self._orch.causal_event_engine.snapshot()
+                        if hasattr(self._orch, "causal_event_engine")
+                        else {}
+                    ),
                     "time_rules": (
                         self._orch.time_rule_status()
                         if hasattr(self._orch, "time_rule_status")

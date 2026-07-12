@@ -26,11 +26,14 @@ class FakeOrchestrator:
         self.events = []
         self.random_event_configurations = []
         self.time_rule_configurations = []
+        self.causal_event_configurations = []
+        self.operations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
 
     def inject_event(self, event) -> None:
+        self.operations.append(("event", event.event_id))
         self.events.append(event)
 
     def configure_random_events(self, templates, *, preserve_state=True) -> None:
@@ -38,6 +41,10 @@ class FakeOrchestrator:
 
     def configure_time_rules(self, rules) -> None:
         self.time_rule_configurations.append(rules)
+
+    def configure_causal_events(self, rules) -> None:
+        self.operations.append(("causal", [item["rule_id"] for item in rules]))
+        self.causal_event_configurations.append(rules)
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -74,6 +81,15 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
             "rule_id": "policy_time", "action_types": ["execute_policy"],
             "base_days": 2, "min_days": 1, "max_days": 30,
         }],
+        "causal_event_rules": [{
+            "rule_id": "arrival_to_welcome", "source_event_types": ["arrival"],
+            "child_event_type": "welcome", "target_agents": ["mayor"],
+            "delay_days": 0, "probability": 1,
+            "conditions": [{
+                "kind": "anchored_inventory", "entity_id": "city", "name": "credits",
+                "operator": "gte", "value": 10,
+            }],
+        }],
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
         "personas": {"steady": "Stay calm."},
         "prompts": {"official_template": "You are {name} at {location}. {personality} Superior: {superior}."},
@@ -97,9 +113,12 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     report = reports[0]
     assert report.entities == 1 and report.agents == 2 and report.seeded_world
     assert report.random_events == 1 and report.time_rules == 1
+    assert report.causal_event_rules == 1
     assert orchestrator.random_event_configurations[-1][1] is False
     assert orchestrator.random_event_configurations[-1][0][0]["template_id"] == "market_cycle"
     assert orchestrator.time_rule_configurations[-1][0]["rule_id"] == "policy_time"
+    assert orchestrator.causal_event_configurations[-1][0]["rule_id"] == "arrival_to_welcome"
+    assert orchestrator.operations.index(("causal", ["arrival_to_welcome"])) < orchestrator.operations.index(("event", "evt"))
     item = world.get_inventory("city")[0]
     assert item.anchor_rate == 2.5 and item.base_value == 10
     values = {item.name: item.value for item in world.get_entity_values("city")}
@@ -254,6 +273,7 @@ def test_runtime_hot_reload_preserves_memory_world_state_and_initial_events(tmp_
         "location_id": "city", "superior_id": "mayor",
     })
     content["entities"][0]["current_status"] = "seed-status-must-not-overwrite"
+    content["causal_event_rules"][0]["child_event_type"] = "reloaded_welcome"
     content["entities"].append({
         "id": "harbor", "type": "location", "name": "Harbor",
         "current_status": "new-location-status",
@@ -287,6 +307,7 @@ def test_runtime_hot_reload_preserves_memory_world_state_and_initial_events(tmp_
     assert world.get_entity("harbor").current_status == "new-location-status"
     assert world.get_inventory("harbor")[0].quantity == 3
     assert len(orchestrator.events) == 1
+    assert orchestrator.causal_event_configurations[-1][0]["child_event_type"] == "reloaded_welcome"
     assert court.get_official("office") is None
     assert court.get_official("scribe") is not None
     status = loader.public_runtime()
@@ -322,6 +343,7 @@ def test_runtime_generation_rollback_replays_config_without_rewinding_world(tmp_
     content["prompts"]["official_template"] = (
         "Generation two {name} at {location}. Superior: {superior}."
     )
+    content["causal_event_rules"][0]["child_event_type"] = "generation_two_welcome"
     content["agents"] = [
         item for item in content["agents"] if item["id"] != "office"
     ]
@@ -357,6 +379,7 @@ def test_runtime_generation_rollback_replays_config_without_rewinding_world(tmp_
     assert result["generation"] == 3
     assert result["activation_kind"] == "rollback"
     assert result["source_generation"] == 1
+    assert orchestrator.causal_event_configurations[-1][0]["child_event_type"] == "welcome"
     assert set(orchestrator.agents) == {"mayor", "office"}
     assert "You are Mayor" in orchestrator.agents["mayor"].config.system_prompt
     mayor_memory = list(orchestrator.agents["mayor"].memory)
@@ -690,3 +713,37 @@ def test_runtime_hot_reload_updates_primary_task_model_binding(tmp_path: Path):
 
     assert orchestrator.router.llm.profile_override == "special"
     assert orchestrator.router.llm.agent_id == "router"
+
+
+
+def test_cross_dlc_duplicate_causal_rule_rejects_reload_without_partial_activation(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active(seed_world=True)
+    old_generation = loader.generation
+    old_rules = orchestrator.causal_event_configurations[-1]
+
+    registry.create({"id": "collision", "name": "Collision", "version": "1.0.0"})
+    registry.save_content("collision", {
+        "resources": [], "entities": [], "inventory": [], "entity_values": [],
+        "relations": [], "agents": [], "initial_events": [], "ongoing_events": [],
+        "random_events": [], "time_rules": [], "personas": {}, "prompts": {},
+        "causal_event_rules": [{
+            "rule_id": "arrival_to_welcome",
+            "source_event_types": ["other"],
+            "child_event_type": "collision_child",
+        }],
+    })
+    registry.publish("collision")
+    registry.set_enabled("collision", True)
+
+    with pytest.raises(DLCRegistryError, match="Duplicate active causal event rule id"):
+        loader.preview_reload()
+    with pytest.raises(DLCRegistryError, match="Duplicate active causal event rule id"):
+        asyncio.run(loader.reload_active())
+
+    assert loader.generation == old_generation
+    assert orchestrator.causal_event_configurations[-1] == old_rules
