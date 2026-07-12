@@ -1,69 +1,143 @@
-# 世界模拟器
+# AgentEra 世界模拟器
 
-基于 `FastAPI + React + SQLite + LLM Function Calling` 的多智能体朝堂模拟器。玩家扮演皇帝，基层官员接收灾情后逐级上报、隐瞒、越级、执行行动，Router 决定信息如何在朝廷体系中流转，ActionAgent 把行动落到世界状态上。支持延迟生效事件（OngoingEvent）、实体关系图、资源代币系统。Agent 记忆超阈值时自动 LLM 摘要压缩。
+> 当前版本：**v0.10.0**
 
-## 核心链路
+AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
-1. 初始事件注入基层官员
-2. 官员 Agent 调用 `submit_action`（上报/隐瞒/越级）或 `request_action`（触发行动）
-3. `RouterAgent` 解析意图，生成路由指令
-4. `TimerSystem` 延时送达，模拟古代文书传递
-5. 消息逐级上传，形成奏折送达皇帝
-6. 玩家批复或下旨，旨意通过太监逐级下达
-7. `ActionAgent` 执行实际操作：查询实体、更新状态、排队延迟事件、增减资源代币
-8. OngoingEvent 到期时自动落账（更新 current_status + 库存变化）
+项目不仅包含游戏运行时，也提供 DLC Studio、模型路由、多轮记忆、真实模型轨迹评测和安全晋级门禁，便于快速创建新的世界与 Agent 群体。
 
-## 当前场景
+## 核心能力
 
-皇帝、司礼监太监王振、内阁杨士奇、通政司、户部、吏部、礼部、兵部、刑部、工部、江南布政使周忱、苏州知府况钟、吴县知县张三、昆山知县李四。默认初始事件为苏州府蝗灾。
+- **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
+- **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
+- **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
+- **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
+- **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
+- **任务模型路由**：可按全局任务、DLC、Agent 和显式 Profile 选择不同模型。
+- **模型评测与晋级**：支持真实轨迹矩阵、独立人工评审、cohort 分区、环境门禁、安全预览、原子应用和失败回滚。
 
-## 技术栈
+## 模型路由优先级
 
-`Python 3.11+` / `FastAPI` / `uvicorn` / `React 19` / `Vite` / `SQLite` / `ReactFlow` / `@dagrejs/dagre` / OpenAI 兼容接口 + Function Calling
+从高到低：
+
+1. 调用方显式 Profile 覆盖
+2. Agent 源文件中的显式 `model_profile`
+3. DLC manifest 的 Agent 绑定
+4. DLC manifest 的任务绑定
+5. 中央 `agent_task_policies`
+6. 中央 `dlc_task_policies`
+7. 全局 `task_policies`
+8. 默认模型策略
+
+显式 Profile 可启用严格模式，禁止失败后回退到其他候选模型，适用于公平评测。
 
 ## 快速开始
 
-### 1. 安装依赖
+### 环境要求
 
-```bash
+- Python 3.11+
+- Node.js 20+
+- npm
+
+### 安装
+
+```powershell
 python -m pip install -r requirements.txt
-cd frontend && npm install
+cd frontend
+npm install
 ```
 
-### 2. 配置 LLM
+### 配置模型
 
-编辑 `config/llm.json`，填入 OpenAI 兼容接口地址和密钥。`api_key` 支持明文或 `${ENV_VAR_NAME}` 格式。
+复制模型配置示例：
 
-### 3. 启动
+```powershell
+Copy-Item config/models.example.json config/models.json
+```
 
-```bash
+在 `config/models.json` 中配置 Provider、模型 Profile 和任务策略。密钥必须通过 `api_key_env` 指向环境变量，不能把明文密钥写入配置文件。
+
+```powershell
+$env:WORLD_SIM_PRIMARY_API_KEY = "your-key"
+```
+
+兼容旧版 `config/llm.json`，但 DLC/Agent 分层模型策略和晋级应用要求使用 `config/models.json`。
+
+### 启动
+
+```powershell
 # 后端
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
 # 前端
-cd frontend && npm run dev -- --host
-# 或一键启动
-start.bat      # Windows
-sh start.sh    # macOS/Linux
+cd frontend
+npm run dev -- --host
 ```
 
-### 4. 打开页面
+也可以在 Windows 下运行 `start.bat`。
 
-- 皇帝视角：`http://localhost:3000`
-- 上帝视角：同页面 Tab 切换
+### 页面
+
+- 游戏主界面：`http://localhost:3000`
 - Agent 编辑器：`http://localhost:3000/editor.html`
-- 天玑 AI：`http://localhost:3000/tianji.html`
+- DLC Studio：`http://localhost:3000/dlc.html`
+- 天玑调试界面：`http://localhost:3000/tianji.html`
+- 后端 OpenAPI：`http://localhost:8000/docs`
 
-## 基本玩法
+## DLC 开发
 
-1. 点击"开始模拟"，蝗灾事件唤醒基层官员
-2. 等待奏折逐级传到皇帝视角
-3. 对奏折执行批准 / 驳回 / 留中，或直接下旨
-4. 切换上帝视角查看完整链路和信息失真
-5. 使用关系图查看实体间关系
+DLC 可以声明：
 
----
+- 实体与初始库存
+- Agent、机构和上下级关系
+- 人格与 Prompt 模板
+- 初始事件、随机事件和延迟事件
+- 资源定义与统一价值锚
+- 行动耗时规则
+- DLC/Agent 显式模型绑定
 
-更详细的文档：
+DLC Studio 支持草稿校验、发布、Generation 归档、热重载和回滚。运行时不会因为新版本发布而重算已经承诺的延迟结果。
 
-- **[PROJECT_DOC.md](PROJECT_DOC.md)** — 架构详解、数据流、核心模块、数据库结构、API 接口、配置说明
-- **[DEV_GUIDE.md](DEV_GUIDE.md)** — 开发指南、关键文件说明、代码级细节、如何添加官员/事件/世界状态实体、测试
+## 模型策略晋级
+
+生产模型策略采用分阶段流程：
+
+```text
+真实模型轨迹 → 自动检查 → 独立人工评审 → cohort 排名
+→ 环境规模/运行门禁 → Promotion Gate
+→ Preview → 指纹确认 → 原子 Apply → Generation 热重载
+```
+
+管理 API 默认关闭。启用时必须同时配置管理开关与管理令牌。预览和应用结果只返回安全标识、计数与 SHA-256 指纹，不返回 Provider 地址、环境变量名、凭据、Prompt 或消息正文。
+
+## 测试
+
+```powershell
+# 后端
+pytest -q
+
+# 前端
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+## 文档
+
+- [PROJECT_DOC.md](PROJECT_DOC.md)：架构、数据流、运行时和 API 说明
+- [DEV_GUIDE.md](DEV_GUIDE.md)：开发、配置、测试和扩展指南
+- [OPTIMIZATION_PLAN.md](OPTIMIZATION_PLAN.md)：长期优化计划与阶段检查点
+
+## 版本管理
+
+项目使用 GitHub 仓库 **xiaoyi198/AgentEra**。功能开发默认使用 `codex/...` 分支，通过阶段性提交和 Pull Request 合并到 `main`。
+
+版本号采用语义化版本：
+
+- `VERSION`：项目权威版本号
+- 后端 `multiagent_framework.version.__version__`
+- 前端 `frontend/package.json`
+
+发布时三处版本必须保持一致。

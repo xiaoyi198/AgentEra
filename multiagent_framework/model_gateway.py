@@ -74,6 +74,10 @@ class GatewayConfig:
     providers: dict[str, ProviderConfig]
     models: dict[str, ModelProfile]
     task_policies: dict[str, list[str]]
+    dlc_task_policies: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    agent_task_policies: dict[str, dict[str, dict[str, list[str]]]] = field(
+        default_factory=dict
+    )
     source_path: str = "config/models.json"
     legacy_mode: bool = False
 
@@ -116,19 +120,98 @@ class GatewayConfig:
             )
             for name, raw in dict(data.get("models", {})).items()
         }
-        task_policies = {
-            str(task): [str(profile) for profile in profiles]
-            for task, profiles in dict(data.get("task_policies", {})).items()
-        }
+        task_policies = cls._parse_task_policy_map(
+            data.get("task_policies", {}), "task_policies"
+        )
+        dlc_task_policies = cls._parse_scoped_task_policies(
+            data.get("dlc_task_policies", {}), "dlc_task_policies"
+        )
+        agent_task_policies = cls._parse_agent_task_policies(
+            data.get("agent_task_policies", {}), "agent_task_policies"
+        )
         config = cls(
             providers=providers,
             models=models,
             task_policies=task_policies,
+            dlc_task_policies=dlc_task_policies,
+            agent_task_policies=agent_task_policies,
             source_path=source_path,
             legacy_mode=False,
         )
         config.validate()
         return config
+
+
+    @staticmethod
+    def _validate_policy_id(value: Any, label: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{label} must be a string")
+        text = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", text):
+            raise ValueError(f"{label} is invalid")
+        return text
+
+    @classmethod
+    def _parse_task_policy_map(
+        cls, value: Any, label: str
+    ) -> dict[str, list[str]]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} must be an object")
+        result: dict[str, list[str]] = {}
+        for raw_task, raw_profiles in value.items():
+            task = cls._validate_policy_id(raw_task, f"{label} task")
+            if not isinstance(raw_profiles, list) or not raw_profiles:
+                raise ValueError(f"{label}.{task} must be a non-empty list")
+            profiles = [
+                cls._validate_policy_id(item, f"{label}.{task} profile")
+                for item in raw_profiles
+            ]
+            if len(set(profiles)) != len(profiles):
+                raise ValueError(f"{label}.{task} contains duplicate profiles")
+            result[task] = profiles
+        return result
+
+    @classmethod
+    def _parse_scoped_task_policies(
+        cls, value: Any, label: str
+    ) -> dict[str, dict[str, list[str]]]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} must be an object")
+        result: dict[str, dict[str, list[str]]] = {}
+        for raw_scope, raw_policies in value.items():
+            scope = cls._validate_policy_id(raw_scope, f"{label} scope")
+            policies = cls._parse_task_policy_map(raw_policies, f"{label}.{scope}")
+            if not policies:
+                raise ValueError(f"{label}.{scope} must not be empty")
+            result[scope] = policies
+        return result
+
+    @classmethod
+    def _parse_agent_task_policies(
+        cls, value: Any, label: str
+    ) -> dict[str, dict[str, dict[str, list[str]]]]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} must be an object")
+        result: dict[str, dict[str, dict[str, list[str]]]] = {}
+        for raw_dlc, raw_agents in value.items():
+            dlc_id = cls._validate_policy_id(raw_dlc, f"{label} DLC")
+            if not isinstance(raw_agents, dict) or not raw_agents:
+                raise ValueError(f"{label}.{dlc_id} must be a non-empty object")
+            agents: dict[str, dict[str, list[str]]] = {}
+            for raw_agent, raw_policies in raw_agents.items():
+                agent_id = cls._validate_policy_id(
+                    raw_agent, f"{label}.{dlc_id} Agent"
+                )
+                policies = cls._parse_task_policy_map(
+                    raw_policies, f"{label}.{dlc_id}.{agent_id}"
+                )
+                if not policies:
+                    raise ValueError(
+                        f"{label}.{dlc_id}.{agent_id} must not be empty"
+                    )
+                agents[agent_id] = policies
+            result[dlc_id] = agents
+        return result
 
     @classmethod
     def from_legacy(
@@ -170,17 +253,43 @@ class GatewayConfig:
                 )
             if not profile.model:
                 raise ValueError(f"Model profile {name!r} has an empty model id")
-        for task, profiles in self.task_policies.items():
-            if not profiles:
-                raise ValueError(f"Task policy {task!r} has no profiles")
-            unknown = [name for name in profiles if name not in self.models]
-            if unknown:
-                raise ValueError(f"Task policy {task!r} references unknown profiles: {unknown}")
+        normalized_global = self._parse_task_policy_map(
+            self.task_policies, "task_policies"
+        )
+        normalized_dlc = self._parse_scoped_task_policies(
+            self.dlc_task_policies, "dlc_task_policies"
+        )
+        normalized_agent = self._parse_agent_task_policies(
+            self.agent_task_policies, "agent_task_policies"
+        )
+        if normalized_global != self.task_policies:
+            raise ValueError("task_policies contains non-canonical identifiers")
+        if normalized_dlc != self.dlc_task_policies:
+            raise ValueError("dlc_task_policies contains non-canonical identifiers")
+        if normalized_agent != self.agent_task_policies:
+            raise ValueError("agent_task_policies contains non-canonical identifiers")
+        policy_groups: list[tuple[str, dict[str, list[str]]]] = [
+            ("task_policies", normalized_global),
+            *(
+                (f"dlc_task_policies.{dlc_id}", policies)
+                for dlc_id, policies in normalized_dlc.items()
+            ),
+            *(
+                (f"agent_task_policies.{dlc_id}.{agent_id}", policies)
+                for dlc_id, agents in normalized_agent.items()
+                for agent_id, policies in agents.items()
+            ),
+        ]
+        for label, policies in policy_groups:
+            for task, profiles in policies.items():
+                unknown = [name for name in profiles if name not in self.models]
+                if unknown:
+                    raise ValueError(
+                        f"{label}.{task} references unknown profiles: {unknown}"
+                    )
 
-    def save_to_file(self, path: str | None = None) -> None:
-        target = Path(path or self.source_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        data = {
+    def to_dict(self) -> dict[str, Any]:
+        return {
             "providers": {
                 name: {
                     "base_url": provider.base_url,
@@ -200,8 +309,16 @@ class GatewayConfig:
                 for name, profile in self.models.items()
             },
             "task_policies": self.task_policies,
+            "dlc_task_policies": self.dlc_task_policies,
+            "agent_task_policies": self.agent_task_policies,
         }
-        target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def save_to_file(self, path: str | None = None) -> None:
+        target = Path(path or self.source_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def to_display_dict(self) -> dict[str, Any]:
         return {
@@ -229,6 +346,8 @@ class GatewayConfig:
                 for name, profile in self.models.items()
             },
             "task_policies": self.task_policies,
+            "dlc_task_policies": self.dlc_task_policies,
+            "agent_task_policies": self.agent_task_policies,
         }
 
 
@@ -464,11 +583,23 @@ class ModelGateway:
         task_type: str,
         profile_override: str = "",
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ) -> list[str]:
         profiles: list[str] = []
         if profile_override:
             profiles.append(profile_override)
         if not (strict_profile and profile_override):
+            if dlc_id and agent_id:
+                profiles.extend(
+                    config.agent_task_policies.get(dlc_id, {})
+                    .get(agent_id, {})
+                    .get(task_type, ())
+                )
+            if dlc_id:
+                profiles.extend(
+                    config.dlc_task_policies.get(dlc_id, {}).get(task_type, ())
+                )
             profiles.extend(config.task_policies.get(task_type, ()))
         if not profiles:
             profiles.extend(config.task_policies.get("default", ()))
@@ -485,6 +616,8 @@ class ModelGateway:
         task_type: str,
         profile_override: str = "",
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ) -> tuple[int, GatewayConfig, dict[str, LLMClient], list[str]]:
         with self._state_lock:
             if self._closed:
@@ -494,7 +627,7 @@ class ModelGateway:
             config = self.config
             clients = self._clients
             candidates = self._candidate_names(
-                config, task_type, profile_override, strict_profile
+                config, task_type, profile_override, strict_profile, dlc_id, agent_id
             )
             return generation, config, clients, candidates
 
@@ -522,6 +655,7 @@ class ModelGateway:
         task_type: str,
         *,
         agent_id: str = "",
+        dlc_id: str = "",
         profile_override: str = "",
         strict_profile: bool = False,
     ) -> "TaskLLMClient":
@@ -529,6 +663,7 @@ class ModelGateway:
             gateway=self,
             task_type=task_type,
             agent_id=agent_id,
+            dlc_id=dlc_id,
             profile_override=profile_override,
             strict_profile=strict_profile,
         )
@@ -562,17 +697,24 @@ class ModelGateway:
         with self._state_lock:
             return self._generation
 
+    def configuration_snapshot(self) -> tuple[int, GatewayConfig]:
+        """Return one generation-consistent configuration copy for admin planning."""
+        with self._state_lock:
+            return self._generation, copy.deepcopy(self.config)
+
     def credentials_available(
         self,
         task_type: str,
         profile_override: str = "",
         *,
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ) -> bool:
         """Return whether any candidate has a runtime credential, without exposing it."""
         with self._state_lock:
             candidates = self._candidate_names(
-                self.config, task_type, profile_override, strict_profile
+                self.config, task_type, profile_override, strict_profile, dlc_id, agent_id
             )
             return any(
                 bool(self._clients[name].config.api_key)
@@ -586,10 +728,12 @@ class ModelGateway:
         profile_override: str = "",
         *,
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ) -> list[str]:
         with self._state_lock:
             return self._candidate_names(
-                self.config, task_type, profile_override, strict_profile
+                self.config, task_type, profile_override, strict_profile, dlc_id, agent_id
             )
 
     def selected_client_config(
@@ -598,10 +742,12 @@ class ModelGateway:
         profile_override: str = "",
         *,
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ) -> LLMConfig:
         with self._state_lock:
             candidates = self._candidate_names(
-                self.config, task_type, profile_override, strict_profile
+                self.config, task_type, profile_override, strict_profile, dlc_id, agent_id
             )
             if not candidates:
                 raise ModelGatewayError(f"No model candidates for task {task_type!r}")
@@ -613,10 +759,12 @@ class ModelGateway:
         profile_override: str = "",
         *,
         strict_profile: bool = False,
+        dlc_id: str = "",
+        agent_id: str = "",
     ):
         with self._state_lock:
             candidates = self._candidate_names(
-                self.config, task_type, profile_override, strict_profile
+                self.config, task_type, profile_override, strict_profile, dlc_id, agent_id
             )
             if not candidates:
                 raise ModelGatewayError(f"No model candidates for task {task_type!r}")
@@ -643,12 +791,13 @@ class ModelGateway:
         trace_context: TraceContext | dict[str, Any] | None = None,
         profile_override: str = "",
         agent_id: str = "",
+        dlc_id: str = "",
         strict_profile: bool = False,
     ) -> LLMResponse:
         context = self._prepare_context(trace_context, task_type, agent_id)
         failures: list[str] = []
         generation, config, clients, candidates = self._acquire_runtime(
-            task_type, profile_override, strict_profile,
+            task_type, profile_override, strict_profile, dlc_id, agent_id,
         )
         try:
             for index, profile_name in enumerate(candidates):
@@ -730,12 +879,13 @@ class ModelGateway:
         trace_context: TraceContext | dict[str, Any] | None = None,
         profile_override: str = "",
         agent_id: str = "",
+        dlc_id: str = "",
         strict_profile: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         context = self._prepare_context(trace_context, task_type, agent_id)
         failures: list[str] = []
         generation, config, clients, candidates = self._acquire_runtime(
-            task_type, profile_override, strict_profile,
+            task_type, profile_override, strict_profile, dlc_id, agent_id,
         )
         try:
             for index, profile_name in enumerate(candidates):
@@ -841,6 +991,27 @@ class ModelGateway:
             for name in old_tasks | new_tasks
             if current.task_policies.get(name) != candidate.task_policies.get(name)
         )
+        changed_dlc_policies = sorted(
+            dlc_id
+            for dlc_id in set(current.dlc_task_policies) | set(candidate.dlc_task_policies)
+            if current.dlc_task_policies.get(dlc_id)
+            != candidate.dlc_task_policies.get(dlc_id)
+        )
+        old_agent_scopes = {
+            f"{dlc_id}:{agent_id}": policies
+            for dlc_id, agents in current.agent_task_policies.items()
+            for agent_id, policies in agents.items()
+        }
+        new_agent_scopes = {
+            f"{dlc_id}:{agent_id}": policies
+            for dlc_id, agents in candidate.agent_task_policies.items()
+            for agent_id, policies in agents.items()
+        }
+        changed_agent_policies = sorted(
+            scope
+            for scope in set(old_agent_scopes) | set(new_agent_scopes)
+            if old_agent_scopes.get(scope) != new_agent_scopes.get(scope)
+        )
         return {
             "current_generation": generation,
             "next_generation": generation + 1,
@@ -850,6 +1021,8 @@ class ModelGateway:
                 "changed": changed_profiles,
             },
             "task_policies_changed": changed_tasks,
+            "dlc_task_policies_changed": changed_dlc_policies,
+            "agent_task_policies_changed": changed_agent_policies,
             "provider_count": len(candidate.providers),
             "providers": {
                 name: {
@@ -867,6 +1040,7 @@ class ModelGateway:
         new_config: GatewayConfig,
         *,
         runtime_keys: dict[str, str] | None = None,
+        expected_generation: int | None = None,
     ) -> dict[str, Any]:
         """Validate, prebuild, and atomically activate a configuration generation."""
         candidate = copy.deepcopy(new_config)
@@ -876,6 +1050,11 @@ class ModelGateway:
             with self._state_lock:
                 if self._closed:
                     raise ModelGatewayError("Model gateway is closed")
+                if (
+                    expected_generation is not None
+                    and self._generation != expected_generation
+                ):
+                    raise ModelGatewayError("Model gateway generation is stale")
                 previous_keys = dict(self._runtime_keys)
             next_runtime_keys = dict(previous_keys if runtime_keys is None else runtime_keys)
             next_runtime_keys = {
@@ -906,6 +1085,10 @@ class ModelGateway:
                         "generation": self._generation,
                         "profile_count": len(candidate.models),
                         "task_policy_count": len(candidate.task_policies),
+                        "dlc_policy_count": len(candidate.dlc_task_policies),
+                        "agent_policy_count": sum(
+                            len(agents) for agents in candidate.agent_task_policies.values()
+                        ),
                         "provider_count": len(candidate.providers),
                     }
             closed_during_build = close_now is new_clients
@@ -919,11 +1102,18 @@ class ModelGateway:
             source_path = path or self.config.source_path
         return self.preview_config(GatewayConfig.from_file(source_path))
 
-    async def reload_from_file(self, path: str | None = None) -> dict[str, Any]:
+    async def reload_from_file(
+        self,
+        path: str | None = None,
+        *,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
         with self._state_lock:
             source_path = path or self.config.source_path
         candidate = GatewayConfig.from_file(source_path)
-        return await self.replace_config(candidate)
+        return await self.replace_config(
+            candidate, expected_generation=expected_generation
+        )
 
     def save_configuration(self) -> None:
         with self._state_lock:
@@ -988,6 +1178,8 @@ class ModelGateway:
                 for name, profile in config.models.items()
             },
             "task_policies": copy.deepcopy(config.task_policies),
+            "dlc_task_policies": copy.deepcopy(config.dlc_task_policies),
+            "agent_task_policies": copy.deepcopy(config.agent_task_policies),
         }
 
     def metrics_snapshot(self) -> dict[str, Any]:
@@ -1094,12 +1286,14 @@ class TaskLLMClient:
         gateway: ModelGateway,
         task_type: str,
         agent_id: str = "",
+        dlc_id: str = "",
         profile_override: str = "",
         strict_profile: bool = False,
     ) -> None:
         self.gateway = gateway
         self.task_type = task_type
         self.agent_id = agent_id
+        self.dlc_id = dlc_id
         self.profile_override = profile_override
         self.strict_profile = bool(strict_profile)
 
@@ -1120,6 +1314,7 @@ class TaskLLMClient:
             trace_context=trace_context,
             profile_override=self.profile_override,
             agent_id=self.agent_id,
+            dlc_id=self.dlc_id,
             strict_profile=self.strict_profile,
         )
 
@@ -1138,6 +1333,7 @@ class TaskLLMClient:
             trace_context=trace_context,
             profile_override=self.profile_override,
             agent_id=self.agent_id,
+            dlc_id=self.dlc_id,
             strict_profile=self.strict_profile,
         ):
             yield chunk
@@ -1152,9 +1348,20 @@ class TaskLLMClient:
             gateway=self.gateway,
             task_type=self.task_type,
             agent_id=agent_id,
+            dlc_id=self.dlc_id,
             profile_override=(
                 self.profile_override if profile_override is None else profile_override
             ),
+            strict_profile=self.strict_profile,
+        )
+
+    def for_dlc(self, dlc_id: str) -> "TaskLLMClient":
+        return TaskLLMClient(
+            gateway=self.gateway,
+            task_type=self.task_type,
+            agent_id=self.agent_id,
+            dlc_id=dlc_id,
+            profile_override=self.profile_override,
             strict_profile=self.strict_profile,
         )
 
@@ -1168,6 +1375,7 @@ class TaskLLMClient:
             gateway=self.gateway,
             task_type=self.task_type,
             agent_id=self.agent_id,
+            dlc_id=self.dlc_id,
             profile_override=profile_name,
             strict_profile=strict,
         )
@@ -1178,6 +1386,8 @@ class TaskLLMClient:
             self.task_type,
             self.profile_override,
             strict_profile=self.strict_profile,
+            dlc_id=self.dlc_id,
+            agent_id=self.agent_id,
         )
         if not candidates:
             raise ModelGatewayError(f"No model candidates for task {self.task_type!r}")
@@ -1189,6 +1399,8 @@ class TaskLLMClient:
             self.task_type,
             self.profile_override,
             strict_profile=self.strict_profile,
+            dlc_id=self.dlc_id,
+            agent_id=self.agent_id,
         )
 
     @property
@@ -1197,6 +1409,8 @@ class TaskLLMClient:
             self.task_type,
             self.profile_override,
             strict_profile=self.strict_profile,
+            dlc_id=self.dlc_id,
+            agent_id=self.agent_id,
         )
 
     async def update_config(self, new_config: LLMConfig) -> None:

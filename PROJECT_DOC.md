@@ -1549,3 +1549,39 @@ Current acceptance evidence:
 - Frontend: **6 tests passed**, lint passed, and production build passed.
 - Prompt contracts and deterministic trajectory replay remain **100%**; Diff check passed.
 - Actual promotion remains blocked until credentialed live matrix reviews plus same-environment signed staging scale and operational gate artifacts are supplied.
+
+## Phase checkpoint: generation-safe model-policy promotion apply (2026-07-12)
+
+Status: **implemented and locally verified; credentialed staging approval remains pending**.
+
+### Central scoped policy layers
+
+- `GatewayConfig` now persists `dlc_task_policies` and `agent_task_policies` in addition to global `task_policies`.
+- Central resolution order is explicit profile override, Agent scoped policy, DLC scoped policy, global task policy, default policy, then available models.
+- Runtime bindings remain stronger than central policy: Agent source `model_profile`, manifest Agent binding, and manifest task binding are resolved before the central Agent/DLC/global layers.
+- `TaskLLMClient` carries both `dlc_id` and `agent_id` through candidate selection, credential availability, chat, streaming, token counting, and compatibility adapters.
+- DLC materialized generations archive the package ID for every Agent so rollback preserves scoped model-routing semantics.
+
+### Approved promotion preview and apply
+
+- `ModelPromotionApplier` accepts only an approved Promotion Gate artifact whose matrix and policy SHA-256 fingerprints match a strict cohort-to-target mapping.
+- Every promoted profile must exist, every mapped DLC/Agent must be present in the active DLC runtime, and mappings must be complete, non-overlapping, and bound to the current Gateway generation.
+- Preview emits only safe identifiers, counts, generation numbers, and canonical fingerprints. It does not expose Provider URLs, credential metadata, Prompt/message/memory bodies, paths, trace identifiers, or raw errors.
+- Apply recomputes the plan, verifies the caller-supplied plan fingerprint, rereads the source configuration, rejects external edits since preview, writes through a flushed/fsynced temporary file, atomically replaces the source, and activates the exact candidate with optimistic generation checking.
+- If Gateway activation fails, the original configuration file is restored atomically. Existing calls retain their captured clients and old generation; new calls resolve through the newly activated scoped policy.
+- Authenticated endpoints are `POST /api/debug/model-promotion/preview` and `POST /api/debug/model-promotion/apply`. They use the same opt-in admin boundary as model reload.
+
+### Version identity
+
+- Release identity is now `0.10.0` and is synchronized across `VERSION`, `multiagent_framework.version.__version__`, FastAPI OpenAPI metadata, and the frontend package manifest.
+- `tests/unit/test_version_consistency.py` prevents backend/frontend version drift.
+
+Acceptance evidence:
+
+- Complete Python suite: **360 passed**.
+- Python compile completed successfully.
+- Frontend: **6 tests passed**, lint passed, and production build passed.
+- Prompt contracts and deterministic trajectory replay both scored **100%**.
+- External-file-change and in-flight-generation regression tests passed; `git diff --check` passed.
+
+Production activation is still pending credentialed live-model runs, independent review quorum, and same-environment staging scale/operational evidence.
