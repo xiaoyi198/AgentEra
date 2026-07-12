@@ -396,6 +396,11 @@ class DLCRegistry:
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
         return normalized
+    def normalize_content_document(self, content: dict[str, Any]) -> dict[str, Any]:
+        """Normalize an in-memory draft without writing it to the package."""
+
+        return self._normalize_content(content)
+
     def _load_legacy_content(self, package: DLCPackage) -> dict[str, Any]:
         entries = package.manifest.entrypoints
 

@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from multiagent_framework.causal_analysis import dry_run_causal_rules
+from multiagent_framework.causal_events import CausalEventError
 from multiagent_framework.dlc_registry import DLCRegistry, DLCRegistryError
 from routers import _state as state
 
@@ -57,6 +59,13 @@ class KeyedObjectRequest(BaseModel):
     data: dict[str, Any]
 
 
+class CausalDryRunRequest(BaseModel):
+    content: dict[str, Any] | None = None
+    source_event: dict[str, Any]
+    horizon_days: float = Field(default=365.0, ge=0, le=3650)
+    max_events: int = Field(default=128, ge=1, le=256)
+
+
 def _registry() -> DLCRegistry:
     orchestrator = state.orchestrator
     registry = getattr(orchestrator, "dlc_registry", None) if orchestrator else None
@@ -68,7 +77,7 @@ def _registry() -> DLCRegistry:
 def _call(operation):
     try:
         return operation()
-    except DLCRegistryError as exc:
+    except (DLCRegistryError, CausalEventError) as exc:
         message = str(exc)
         status = 404 if message.startswith("Unknown DLC:") else 400
         raise HTTPException(status_code=status, detail=message) from exc
@@ -147,6 +156,28 @@ async def apply_dlc_migration(dlc_id: str, request: MigrationRequest):
     ))
     report["package"] = _call(lambda: _package_payload(registry, dlc_id, content=True))
     return report
+
+
+@router.post("/{dlc_id}/causal-events/dry-run")
+async def dry_run_dlc_causal_events(dlc_id: str, request: CausalDryRunRequest):
+    registry = _registry()
+
+    def operation():
+        # Accept an unsaved Studio draft without mutating the package on disk.
+        registry.get(dlc_id)
+        content = (
+            registry.normalize_content_document(request.content)
+            if request.content is not None
+            else registry.load_content(dlc_id)
+        )
+        return dry_run_causal_rules(
+            content,
+            request.source_event,
+            horizon_days=request.horizon_days,
+            max_events=request.max_events,
+        )
+
+    return _call(operation)
 
 
 @router.post("/{dlc_id}/publish")

@@ -2,7 +2,7 @@
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
-> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with anchored-value conditions, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 412 Python tests plus 12 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
+> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with anchored-value conditions, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 419 Python tests plus 13 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
 > 原则：先补基础设施与可观测性，再扩展 DLC 和 Agent 数量；所有核心改造必须可迁移、可回滚、可测试。
 
 ## 1. 总目标
@@ -1158,3 +1158,29 @@ Next priorities:
 5. Complete credentialed staging evidence and longer soak/scale tests without weakening the existing secret-free management boundaries.
 
 The persistent product goal remains active. This checkpoint advances world-simulator causality and DLC authoring while preserving deterministic replay, reload atomicity, bounded execution, and unified-value semantics.
+
+## Phase checkpoint: causal rule workbench and deterministic unsaved-draft preview (2026-07-12)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added a side-effect-free causal analysis layer over DLC seed facts;
+- added stable graph fingerprints, event nodes/edges, producer origins, duplicate semantics, cycles, zero-delay/wildcard-loop risks, high fanout, external sources, and draft reference diagnostics;
+- added a bounded deterministic dry-run using the production causal engine and unified anchored-value condition semantics;
+- added a draft-safe DLC API that accepts unsaved normalized content without persisting or activating it;
+- rejected spoofed causal metadata, malformed source events, invalid horizons, and oversized event budgets;
+- replaced causal Conditions JSON with structured entity/resource/kind/operator/value rows;
+- added compatible resource selectors, anchor-rate context, source event catalog, diagnostics summary, pending/truncation state, and event timeline preview;
+- synchronized release identity to `0.14.0` and maintained README plus the three project documents;
+- completed **419 Python tests**, **13 frontend tests**, frontend lint/build, and Python compile.
+
+Next priorities:
+
+1. Connect causal outcomes to transactional `WorldCommand` plans and ongoing-event commitments in longer deterministic economic scenarios.
+2. Add graph-layout visualization with rule-edge selection, per-rule probability/condition explanations, and replay fixture export/import.
+3. Continue multi-turn Agent memory retrieval/compression evaluation and task/DLC/Agent model-selection refinement.
+4. Run credentialed staging matrices, independent reviews, rollback rehearsals, and longer soak/scale tests.
+5. Add authoring support for reusable condition groups and causal-rule templates across DLC packages without weakening package isolation.
+
+The persistent product goal remains active.

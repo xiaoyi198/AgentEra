@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from multiagent_framework.causal_analysis import analyze_causal_rules, dry_run_causal_rules
+from multiagent_framework.causal_events import CausalEventError
+
+
+def _content() -> dict:
+    return {
+        "schema_version": "1.0",
+        "resources": [
+            {"name": "grain", "kind": "asset", "anchor_rate": 2},
+            {"name": "stability", "kind": "metric"},
+        ],
+        "entities": [{"id": "city", "type": "location", "name": "City"}],
+        "inventory": [{"entity_id": "city", "item_name": "grain", "quantity": 40}],
+        "entity_values": [{"entity_id": "city", "name": "stability", "kind": "metric", "value": 3}],
+        "agents": [{"id": "governor", "name": "Governor"}],
+        "initial_events": [{"event_id": "seed", "event_type": "shortage", "severity": 4, "target_agents": ["governor"]}],
+        "random_events": [],
+        "ongoing_events": [],
+        "relations": [],
+        "time_rules": [],
+        "personas": {},
+        "prompts": {},
+        "causal_event_rules": [
+            {
+                "rule_id": "shortage_to_unrest",
+                "source_event_types": ["shortage"],
+                "child_event_type": "unrest",
+                "delay_days": 2,
+                "probability": 1,
+                "severity_delta": 2,
+                "conditions": [{
+                    "kind": "anchored_inventory", "entity_id": "city", "name": "grain",
+                    "operator": "lt", "value": 100,
+                }],
+                "inherit_payload_keys": ["region"],
+                "max_depth": 4,
+                "max_fires_per_chain": 1,
+            },
+            {
+                "rule_id": "unrest_to_crisis",
+                "source_event_types": ["unrest"],
+                "child_event_type": "crisis",
+                "delay_days": 1,
+                "probability": 1,
+                "conditions": [{
+                    "kind": "metric", "entity_id": "city", "name": "stability",
+                    "operator": "lte", "value": 3,
+                }],
+                "max_depth": 4,
+                "max_fires_per_chain": 1,
+            },
+        ],
+    }
+
+
+def test_analysis_builds_stable_graph_and_origin_metadata():
+    first = analyze_causal_rules(_content())
+    second = analyze_causal_rules(_content())
+
+    assert first == second
+    assert first["summary"] == {
+        "rule_count": 2,
+        "enabled_count": 2,
+        "event_type_count": 3,
+        "edge_count": 2,
+        "cycle_count": 0,
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 0,
+    }
+    assert [node["event_type"] for node in first["nodes"]] == ["crisis", "shortage", "unrest"]
+    shortage = next(node for node in first["nodes"] if node["event_type"] == "shortage")
+    assert shortage["origins"] == ["initial"]
+
+
+def test_analysis_reports_duplicate_semantics_cycles_and_external_sources():
+    content = _content()
+    content["initial_events"] = []
+    content["causal_event_rules"].extend([
+        {**content["causal_event_rules"][0], "rule_id": "duplicate"},
+        {
+            "rule_id": "crisis_to_shortage", "source_event_types": ["crisis"],
+            "child_event_type": "shortage", "delay_days": 0, "probability": 1,
+        },
+        {
+            "rule_id": "wildcard", "source_event_types": ["*"],
+            "child_event_type": "audit", "delay_days": 0, "probability": 1,
+        },
+    ])
+    report = analyze_causal_rules(content)
+    codes = [item["code"] for item in report["issues"]]
+
+    assert "causal_analysis.duplicate_semantics" in codes
+    assert "causal_analysis.cycle" in codes
+    assert "causal_analysis.immediate_wildcard_loop" in codes
+
+
+def test_dry_run_uses_anchored_seed_facts_and_is_deterministic():
+    request = {
+        "event_id": "manual_shortage",
+        "event_type": "shortage",
+        "severity": 4,
+        "target_agents": ["governor"],
+        "initial_payload": {"region": "north"},
+    }
+    first = dry_run_causal_rules(_content(), request, horizon_days=10, max_events=16)
+    second = dry_run_causal_rules(_content(), request, horizon_days=10, max_events=16)
+
+    assert first == second
+    assert [node["event_type"] for node in first["nodes"]] == ["shortage", "unrest", "crisis"]
+    assert [node["day"] for node in first["nodes"]] == [0, 2, 3]
+    assert first["nodes"][1]["severity"] == 6
+    assert first["nodes"][1]["initial_payload"]["region"] == "north"
+    assert first["summary"]["generated_count"] == 2
+    assert first["summary"]["truncated"] is False
+
+
+def test_dry_run_respects_horizon_and_failed_conditions():
+    short = dry_run_causal_rules(
+        _content(), {"event_type": "shortage", "severity": 5}, horizon_days=1,
+    )
+    assert [node["event_type"] for node in short["nodes"]] == ["shortage"]
+    assert short["pending"][0]["within_horizon"] is False
+
+    content = _content()
+    content["inventory"][0]["quantity"] = 60  # base value 120, so the <100 condition fails
+    failed = dry_run_causal_rules(content, {"event_type": "shortage", "severity": 5})
+    assert failed["summary"]["generated_count"] == 0
+
+
+def test_dry_run_rejects_spoofed_causal_metadata_and_invalid_limits():
+    content = _content()
+    try:
+        dry_run_causal_rules(content, {
+            "event_type": "shortage",
+            "initial_payload": {"causal_chain_id": "cause_fake"},
+        })
+    except CausalEventError as exc:
+        assert str(exc) == "causal_dry_run_source_invalid"
+    else:
+        raise AssertionError("expected spoofed metadata rejection")
+
+    try:
+        dry_run_causal_rules(content, {"event_type": "shortage"}, max_events=257)
+    except CausalEventError as exc:
+        assert str(exc) == "causal_dry_run_max_events_invalid"
+    else:
+        raise AssertionError("expected max-event rejection")
+
+
+
+def test_analysis_reports_draft_reference_errors_before_save():
+    content = _content()
+    rule = content["causal_event_rules"][0]
+    rule["target_agents"] = ["missing_agent"]
+    rule["conditions"] = [
+        {"kind": "anchored_inventory", "entity_id": "missing_city", "name": "stability", "operator": "lt", "value": 1},
+        {"kind": "metric", "entity_id": "city", "name": "missing_metric", "operator": "gt", "value": 0},
+    ]
+    report = analyze_causal_rules(content)
+    codes = {item["code"] for item in report["issues"]}
+    assert report["summary"]["error_count"] == 4
+    assert codes == {
+        "causal_analysis.missing_agent",
+        "causal_analysis.missing_entity",
+        "causal_analysis.missing_resource",
+        "causal_analysis.resource_kind",
+    }

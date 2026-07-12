@@ -235,3 +235,45 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-promotion-summary { grid-template-columns: repeat(3, minmax(125px, 1fr)); }
   .dlc-generation-rollback { grid-template-columns: 1fr; }
 }
+
+
+/* Causal rule condition builder and deterministic draft preview */
+.dlc-condition-builder, .dlc-causal-preview { display: grid; gap: 11px; margin-top: 7px; padding: 13px; border: 1px solid #34445a; border-radius: 7px; background: #0c141f; }
+.dlc-condition-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dlc-condition-header > div { display: grid; gap: 4px; }
+.dlc-condition-header strong { color: #d5dfeb; font-size: 13px; }
+.dlc-condition-header small { color: #75869d; font-size: 11px; }
+.dlc-condition-header button { padding: 7px 10px; color: #c8d6e7; border: 1px solid #40516a; border-radius: 5px; background: #162233; }
+.dlc-condition-empty { padding: 11px; color: #728197; border: 1px dashed #344157; border-radius: 5px; text-align: center; font-size: 11px; }
+.dlc-condition-row { display: grid; grid-template-columns: 1.15fr 1.15fr 1.15fr 80px 100px auto; align-items: end; gap: 8px; padding: 10px; border: 1px solid #29374a; border-radius: 6px; background: #0a111a; }
+.dlc-condition-row > label { display: grid; gap: 5px; min-width: 0; color: #8493a7; font-size: 10px; }
+.dlc-condition-row select, .dlc-condition-row input { width: 100%; min-width: 0; padding: 8px; color: #dce5f0; border: 1px solid #35445a; border-radius: 4px; background: #080e16; }
+.dlc-condition-row > button { padding: 8px 10px; }
+.dlc-condition-anchor { grid-column: 1 / -1; color: #79a7dd; font: 10px Consolas, monospace; }
+.dlc-causal-preview-controls { display: grid; grid-template-columns: minmax(180px, 1fr) 100px 110px auto; align-items: end; gap: 9px; }
+.dlc-causal-preview-controls label { display: grid; gap: 5px; color: #8493a7; font-size: 10px; }
+.dlc-causal-preview-controls input { width: 100%; padding: 8px; color: #dce5f0; border: 1px solid #35445a; border-radius: 4px; background: #080e16; }
+.dlc-causal-preview-controls button { min-height: 34px; padding: 8px 12px; }
+.dlc-causal-summary { display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr)); gap: 8px; }
+.dlc-causal-summary article { padding: 10px; border: 1px solid #2c3c51; border-radius: 5px; background: #09111b; }
+.dlc-causal-summary span { display: block; margin-bottom: 5px; color: #718198; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+.dlc-causal-summary strong { color: #d6e2ef; font: 600 19px Georgia, serif; }
+.dlc-causal-issues { display: grid; gap: 6px; }
+.dlc-causal-issues > div { display: grid; grid-template-columns: 58px minmax(190px, auto) 1fr; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #3b4555; border-radius: 5px; color: #aebdce; background: #111821; font-size: 10px; }
+.dlc-causal-issues > div.warning { border-color: #6f5a29; background: #241e10; }
+.dlc-causal-issues > div.info { border-color: #2e536f; background: #0e1c27; }
+.dlc-causal-issues strong { text-transform: uppercase; }
+.dlc-causal-issues code { color: #8fb6e8; }
+.dlc-causal-issues small { grid-column: 2 / -1; color: #76879d; }
+.dlc-causal-timeline { display: flex; gap: 8px; overflow-x: auto; padding: 5px 2px 9px; }
+.dlc-causal-node { position: relative; display: grid; flex: 0 0 190px; gap: 4px; padding: 10px; border: 1px solid #345072; border-radius: 6px; background: #0d1b2a; }
+.dlc-causal-node span { color: #73a5df; font-size: 10px; }
+.dlc-causal-node strong { color: #dbe6f2; font-size: 13px; }
+.dlc-causal-node code { overflow: hidden; color: #71849c; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.dlc-causal-node small { color: #8697ac; font-size: 9px; }
+.dlc-causal-node i { position: absolute; right: -13px; top: 42%; z-index: 2; color: #6f91b8; font-style: normal; }
+@media (max-width: 1100px) {
+  .dlc-condition-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dlc-condition-anchor { grid-column: 1 / -1; }
+  .dlc-causal-preview-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

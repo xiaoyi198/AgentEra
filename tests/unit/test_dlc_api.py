@@ -69,3 +69,68 @@ def test_dlc_migration_preview_and_apply_api(tmp_path: Path):
             assert "changed since preview" in stale.json()["detail"]
     finally:
         state.orchestrator = previous
+
+
+
+def test_causal_dry_run_api_accepts_unsaved_draft_without_mutating_package(tmp_path: Path):
+    registry = DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
+    registry.create({"id": "causal_draft", "name": "Causal Draft", "version": "0.1.0"})
+    saved = registry.load_content("causal_draft")
+    draft = {
+        **saved,
+        "resources": [{"name": "grain", "kind": "asset", "anchor_rate": 2}],
+        "entities": [{"id": "city", "type": "location", "name": "City"}],
+        "inventory": [{"entity_id": "city", "item_name": "grain", "quantity": 20}],
+        "agents": [{"id": "governor", "name": "Governor"}],
+        "causal_event_rules": [{
+            "rule_id": "low_grain",
+            "source_event_types": ["shortage"],
+            "child_event_type": "unrest",
+            "target_agents": ["governor"],
+            "delay_days": 1,
+            "probability": 1,
+            "conditions": [{
+                "kind": "anchored_inventory",
+                "entity_id": "city",
+                "name": "grain",
+                "operator": "lt",
+                "value": 50,
+            }],
+        }],
+    }
+    orchestrator = type("Orchestrator", (), {"dlc_registry": registry})()
+    app = FastAPI()
+    app.include_router(router)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/dlcs/causal_draft/causal-events/dry-run",
+                json={
+                    "content": draft,
+                    "source_event": {"event_type": "shortage", "severity": 4},
+                    "horizon_days": 10,
+                    "max_events": 16,
+                },
+            )
+            assert response.status_code == 200
+            report = response.json()
+            assert [item["event_type"] for item in report["nodes"]] == ["shortage", "unrest"]
+            assert report["analysis"]["summary"]["rule_count"] == 1
+            assert registry.load_content("causal_draft")["causal_event_rules"] == []
+
+            invalid = client.post(
+                "/api/dlcs/causal_draft/causal-events/dry-run",
+                json={
+                    "content": draft,
+                    "source_event": {
+                        "event_type": "shortage",
+                        "initial_payload": {"causal_depth": 1},
+                    },
+                },
+            )
+            assert invalid.status_code == 400
+            assert invalid.json()["detail"] == "causal_dry_run_source_invalid"
+    finally:
+        state.orchestrator = previous
