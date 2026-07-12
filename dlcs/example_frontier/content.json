@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0",
+  "resources": [
+    {
+      "name": "边境银券",
+      "unit": "券",
+      "kind": "asset",
+      "default_quantity": 0,
+      "min_quantity": 0,
+      "max_quantity": null,
+      "anchor_rate": 0.5,
+      "metadata": {}
+    },
+    {
+      "name": "警戒度",
+      "unit": "%",
+      "kind": "metric",
+      "default_quantity": 50,
+      "min_quantity": 0,
+      "max_quantity": 100,
+      "anchor_rate": null,
+      "metadata": {}
+    }
+  ],
+  "entities": [
+    {
+      "id": "边境哨站",
+      "type": "location",
+      "name": "边境哨站",
+      "description": "一个可独立加载的最小示例世界。",
+      "current_status": "戒备",
+      "metadata": {
+        "x": 1200,
+        "y": 200
+      }
+    }
+  ],
+  "inventory": [
+    {
+      "entity_id": "边境哨站",
+      "category": "边境银券",
+      "item_name": "边境银券",
+      "quantity": 200,
+      "description": "哨站流通券"
+    }
+  ],
+  "entity_values": [
+    {
+      "entity_id": "边境哨站",
+      "name": "警戒度",
+      "kind": "metric",
+      "value": 65,
+      "description": "当前防务警戒"
+    }
+  ],
+  "relations": [],
+  "agents": [
+    {
+      "id": "边境指挥官",
+      "name": "边境指挥官",
+      "rank": 10,
+      "location_id": "边境哨站",
+      "role": "player",
+      "agent_type": "official",
+      "superior_id": null,
+      "personality_seed": "沉着",
+      "enabled": true
+    },
+    {
+      "id": "哨站守备官",
+      "name": "守备官",
+      "rank": 2,
+      "location_id": "边境哨站",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "边境指挥官",
+      "personality_seed": "沉着",
+      "enabled": true
+    }
+  ],
+  "initial_events": [
+    {
+      "event_id": "frontier_patrol",
+      "event_type": "patrol_report",
+      "severity": 3,
+      "target_agents": [
+        "哨站守备官"
+      ],
+      "initial_payload": {
+        "description": "北侧出现不明踪迹，请巡查并上报。"
+      }
+    }
+  ],
+  "ongoing_events": [],
+  "personas": {
+    "沉着": "你沉着谨慎，先核实情报，再采取可执行的防务行动。"
+  },
+  "prompts": {
+    "official_template": "你是{name}，驻守{location}。{personality}\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
+  },
+  "random_events": [],
+  "time_rules": [
+    {
+      "rule_id": "frontier_default",
+      "action_types": [
+        "*"
+      ],
+      "base_days": 0.25,
+      "min_days": 0.25,
+      "max_days": 90,
+      "severity_factor": 2,
+      "workload_factor": 1,
+      "resource_factor": 0.01,
+      "distance_factor": 1,
+      "success_factor": 0.8,
+      "priority": 0,
+      "enabled": true
+    }
+  ]
+}

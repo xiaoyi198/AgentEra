@@ -1,0 +1,62 @@
+{
+  "providers": {
+    "primary": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "WORLD_SIM_PRIMARY_API_KEY",
+      "timeout_s": 45
+    }
+  },
+  "models": {
+    "fast_tools": {
+      "provider": "primary",
+      "model": "your-fast-tool-model",
+      "capabilities": [
+        "tools",
+        "json",
+        "stream"
+      ],
+      "max_concurrent": 4,
+      "max_retries": 2
+    },
+    "deep_sim": {
+      "provider": "primary",
+      "model": "your-reasoning-model",
+      "capabilities": [
+        "tools",
+        "json",
+        "long_context",
+        "stream"
+      ],
+      "max_concurrent": 2,
+      "max_retries": 2
+    }
+  },
+  "task_policies": {
+    "router.simple": [
+      "fast_tools"
+    ],
+    "router.ambiguous": [
+      "deep_sim",
+      "fast_tools"
+    ],
+    "agent.turn": [
+      "fast_tools",
+      "deep_sim"
+    ],
+    "action.simulation": [
+      "deep_sim",
+      "fast_tools"
+    ],
+    "memory.compress": [
+      "fast_tools"
+    ],
+    "tianji.chat": [
+      "deep_sim",
+      "fast_tools"
+    ],
+    "default": [
+      "fast_tools",
+      "deep_sim"
+    ]
+  }
+}

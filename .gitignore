@@ -24,6 +24,7 @@ frontend/dist/
 
 # Config (contains API keys - use config/*.example.json as templates)
 config/llm.json
+config/models.json
 
 # Environment
 .env

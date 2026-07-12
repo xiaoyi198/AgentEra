@@ -4,12 +4,109 @@
       "event_id": "evt_001",
       "event_type": "locust_plague",
       "severity": 8,
-      "target_agents": ["吴县知县_张三", "昆山知县_李四"],
+      "target_agents": [
+        "吴县知县_张三",
+        "昆山知县_李四"
+      ],
       "initial_payload": {
         "area": "苏州府",
         "coverage": 0.6,
         "description": "苏州府下辖吴县、昆山县爆发严重蝗灾，田地被毁六成，百姓流离失所。"
       }
+    }
+  ],
+  "random_events": [
+    {
+      "template_id": "jiangnan_locust_cycle",
+      "event_type": "locust_plague",
+      "target_agents": [
+        "吴县知县_张三",
+        "昆山知县_李四"
+      ],
+      "initial_payload": {
+        "area": "苏州府",
+        "description": "江南虫情扩散，地方官须核查粮情、灾损与赈济需求。"
+      },
+      "severity_min": 4,
+      "severity_max": 8,
+      "min_interval_days": 120,
+      "max_interval_days": 300,
+      "probability": 0.35,
+      "max_occurrences": 0,
+      "enabled": true
+    },
+    {
+      "template_id": "canal_grain_disruption",
+      "event_type": "grain_transport_disruption",
+      "target_agents": [
+        "江南布政使_周忱",
+        "户部"
+      ],
+      "initial_payload": {
+        "area": "江南漕运",
+        "description": "漕运出现延误迹象，需协调地方仓储、运输与朝廷调度。"
+      },
+      "severity_min": 3,
+      "severity_max": 7,
+      "min_interval_days": 90,
+      "max_interval_days": 240,
+      "probability": 0.28,
+      "max_occurrences": 0,
+      "enabled": true
+    }
+  ],
+  "time_rules": [
+    {
+      "rule_id": "relief_operations",
+      "action_types": [
+        "relief",
+        "disaster_relief",
+        "open_granary"
+      ],
+      "base_days": 0.5,
+      "min_days": 0.5,
+      "max_days": 60,
+      "severity_factor": 4,
+      "workload_factor": 0.8,
+      "resource_factor": 0.04,
+      "distance_factor": 1,
+      "success_factor": 0.8,
+      "priority": 20,
+      "enabled": true
+    },
+    {
+      "rule_id": "grain_transport",
+      "action_types": [
+        "grain_transport",
+        "resource_transfer",
+        "execute_policy"
+      ],
+      "base_days": 1,
+      "min_days": 1,
+      "max_days": 120,
+      "severity_factor": 2,
+      "workload_factor": 0.7,
+      "resource_factor": 0.02,
+      "distance_factor": 1.5,
+      "success_factor": 0.9,
+      "priority": 10,
+      "enabled": true
+    },
+    {
+      "rule_id": "court_safe_default",
+      "action_types": [
+        "*"
+      ],
+      "base_days": 0,
+      "min_days": 0.1,
+      "max_days": 180,
+      "severity_factor": 1,
+      "workload_factor": 1,
+      "resource_factor": 0,
+      "distance_factor": 1,
+      "success_factor": 0.75,
+      "priority": 0,
+      "enabled": true
     }
   ]
 }

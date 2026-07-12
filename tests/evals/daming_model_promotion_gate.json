@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "gate_id": "daming-model-promotion-staging-v1",
+  "environment_id": "staging",
+  "required_matrix_id": "daming-live-model-matrix-v1",
+  "required_suite_id": "daming-live-trajectories-v1",
+  "minimum_repetitions": 3,
+  "minimum_reviewers_per_target": 2,
+  "minimum_review_coverage": 1.0,
+  "maximum_review_disagreement": 15,
+  "required_targets": [
+    {
+      "cohort": "daming-core",
+      "task": "agent.turn"
+    },
+    {
+      "cohort": "daming-core",
+      "task": "router.ambiguous"
+    },
+    {
+      "cohort": "daming-core",
+      "task": "action.simulation"
+    },
+    {
+      "cohort": "daming-core",
+      "task": "memory.compress"
+    },
+    {
+      "cohort": "daming-core",
+      "task": "tianji.chat"
+    }
+  ],
+  "allow_additional_targets": false,
+  "require_scale_gate": true,
+  "require_operational_gate": true
+}

@@ -32,22 +32,10 @@ QUERY_ENTITY_TOOL = {
     "type": "function",
     "function": {
         "name": "query_entity",
-        "description": "查询一个实体（地点/人物/机构/组织）的描述与当前状况。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string", "description": "实体 ID"},
-            },
-            "required": ["entity_id"],
-        },
-    },
-}
-
-QUERY_INVENTORY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "query_inventory",
-        "description": "查询实体的资源代币和核心参数（金钱/粮草/工料/科技点/兵力/满意度/人口/生活质量/税率/生产系数）。",
+        "description": (
+            "一次性查询实体的全部状态：基本情况、当前状况、库存（含资源代币与核心参数）、"
+            "以及正在发生的事情列表（每条含 event_id、描述、剩余时间、预期结果）。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -97,21 +85,127 @@ UPDATE_INVENTORY_TOOL = {
     },
 }
 
+ADD_ONGOING_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "add_ongoing_event",
+        "description": (
+            "在指定实体上排队一条『正在发生的事情』，到期由系统自动落账（写入 current_status 与库存）。"
+            "用于目标侧的延迟变化（如拨款 N 天后到达、赈灾 M 天后完成）。"
+            "执行者自身的钱粮已经发出脱手 → 用 update_inventory 立即扣除，不要排队。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "事件归属实体 ID（通常是目标地点）"},
+                "event_type": {
+                    "type": "string",
+                    "enum": ["state_change", "inventory_arrival"],
+                    "description": "state_change=状态变化（如赈灾完成）；inventory_arrival=物资到账。仅作分类。",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "事件简述，如『户部拨款 3000 两运输中』『正在开粥铺赈灾』",
+                },
+                "duration_days": {
+                    "type": "number",
+                    "description": "距离当前还需多少天才到期生效",
+                },
+                "expected_result": {
+                    "type": "object",
+                    "description": (
+                        "到期时要应用的变化。可包含："
+                        "new_status（字符串，覆盖 current_status）；"
+                        "inventory_deltas（数组，每项 {resource, delta, reason}，对该实体增减资源）。"
+                    ),
+                    "properties": {
+                        "new_status": {"type": "string"},
+                        "inventory_deltas": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "resource": {
+                                        "type": "string",
+                                        "enum": ["金钱", "粮草", "工料", "科技点", "兵力",
+                                                 "满意度", "人口", "生活质量", "税率", "生产系数"],
+                                    },
+                                    "delta": {"type": "number"},
+                                    "reason": {"type": "string"},
+                                },
+                                "required": ["resource", "delta"],
+                            },
+                        },
+                    },
+                },
+            },
+            "required": ["entity_id", "description", "duration_days", "expected_result"],
+        },
+    },
+}
+
+MODIFY_ONGOING_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "modify_ongoing_event",
+        "description": (
+            "修改一条已存在的『正在发生的事情』。用于事件叠加：如开粥铺进行中收到拨款 → "
+            "缩短 duration_days、增强 expected_result。也可改描述。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "要修改的事件 ID"},
+                "description": {"type": "string", "description": "（可选）新的事件描述"},
+                "duration_days": {
+                    "type": "number",
+                    "description": "（可选）新的剩余天数（从当前 sim_time 起算）",
+                },
+                "expected_result": {
+                    "type": "object",
+                    "description": "（可选）整体替换 expected_result（同 add 的结构）",
+                },
+            },
+            "required": ["event_id"],
+        },
+    },
+}
+
+DELETE_ONGOING_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_ongoing_event",
+        "description": "取消一条进行中的事件（如灾情突变中止赈灾）。被删事件的 expected_result 不会被应用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "要取消的事件 ID"},
+            },
+            "required": ["event_id"],
+        },
+    },
+}
+
 COMPLETE_ACTION_TOOL = {
     "type": "function",
     "function": {
         "name": "complete_action",
-        "description": "结束本次行动模拟，返回结果、耗时和对执行者的重要发现。必须作为最后一次工具调用。",
+        "description": (
+            "结束本次行动 FC 循环。只负责两件事：①终止循环 ②返回回执（result_description 在 "
+            "duration_days 后由 orchestrator 定时送达发起者）。"
+            "**不再承担任何状态变更**——执行者侧用 update_*，目标侧用 add_ongoing_event。"
+            "必须作为最后一次工具调用。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "result_description": {
                     "type": "string",
-                    "description": "行动结果描述，将作为消息送回执行者。简明扼要、聚焦关键发现。",
+                    "description": "行动回执，duration_days 后送回发起者。应基于实际执行结果（已扣资源+排队事件）。",
                 },
                 "duration_days": {
                     "type": "number",
-                    "description": "行动耗时（模拟天数）",
+                    "description": "回执送达发起者的延迟（模拟天数）。通常 = 行动+回程时间。",
                 },
                 "success": {
                     "type": "boolean",
@@ -243,6 +337,12 @@ REQUEST_ACTION_TOOL = {
                     "type": "string",
                     "description": "投入的资源描述（可选，如 粮食1000石、官兵50人）",
                 },
+                "severity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Optional problem severity; omit when unknown.",
+                },
             },
             "required": ["action_type", "target_location", "description"],
         },
@@ -297,18 +397,39 @@ SUBMIT_ACTION_TOOL = {
 
 # ── 预组合工具集（各 Agent 按需取用）────────────────────────────────────────
 
-# ActionAgent 使用：世界状态读写 + Agent 列表查询 + 结束行动
+# ActionAgent 使用：世界状态读写 + 事件队列 CRUD + Agent 列表查询 + 结束行动
+FINISH_TURN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "finish_turn",
+        "description": "Finish the multi-round turn after all intended actions have been submitted.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Briefly summarize why the turn is complete and what was submitted.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+# ActionAgent: world read/write tools and explicit completion.
 ACTION_AGENT_TOOLS = [
     LIST_ENTITIES_TOOL,
     QUERY_ENTITY_TOOL,
-    QUERY_INVENTORY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
     UPDATE_INVENTORY_TOOL,
+    ADD_ONGOING_EVENT_TOOL,
+    MODIFY_ONGOING_EVENT_TOOL,
+    DELETE_ONGOING_EVENT_TOOL,
     LIST_AGENTS_TOOL,
     COMPLETE_ACTION_TOOL,
 ]
 
-# Router 使用
+# Router tools.
 ROUTER_TOOLS = [
     LIST_AGENTS_TOOL,
     WAKE_AGENT_TOOL,
@@ -316,27 +437,35 @@ ROUTER_TOOLS = [
     RELAY_DECREE_TOOL,
 ]
 
-# OfficialAgent / InstitutionAgent 使用
-AGENT_TOOLS = [
-    SUBMIT_ACTION_TOOL,
-    REQUEST_ACTION_TOOL,
-]
-
-# 天玑 / 调试接口：全量工具（手写去重，避免 + 拼接产生 LIST_AGENTS_TOOL 这类重复）
-ALL_TOOLS = [
-    # 世界状态读写
+# Ordinary agents: read-only context, intent submission, explicit finish.
+AGENT_READ_TOOLS = [
     LIST_ENTITIES_TOOL,
     QUERY_ENTITY_TOOL,
-    QUERY_INVENTORY_TOOL,
+    LIST_AGENTS_TOOL,
+]
+
+AGENT_TOOLS = [
+    *AGENT_READ_TOOLS,
+    SUBMIT_ACTION_TOOL,
+    REQUEST_ACTION_TOOL,
+    FINISH_TURN_TOOL,
+]
+
+# Tianji/debug aggregate tool set.
+ALL_TOOLS = [
+    LIST_ENTITIES_TOOL,
+    QUERY_ENTITY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
     UPDATE_INVENTORY_TOOL,
-    # Agent 调度
+    ADD_ONGOING_EVENT_TOOL,
+    MODIFY_ONGOING_EVENT_TOOL,
+    DELETE_ONGOING_EVENT_TOOL,
     LIST_AGENTS_TOOL,
     WAKE_AGENT_TOOL,
     EXECUTE_POLICY_TOOL,
     RELAY_DECREE_TOOL,
-    # Agent 行动
     SUBMIT_ACTION_TOOL,
     REQUEST_ACTION_TOOL,
+    FINISH_TURN_TOOL,
     COMPLETE_ACTION_TOOL,
 ]

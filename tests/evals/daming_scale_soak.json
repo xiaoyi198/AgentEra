@@ -1,0 +1,23 @@
+{
+  "dlc_count": 6,
+  "agents_per_dlc": 20,
+  "router_agent_count": 240,
+  "router_action_count": 600,
+  "router_fanout": 20,
+  "world_entity_count": 40,
+  "world_command_count": 600,
+  "world_batch_size": 100,
+  "memory_store_count": 40,
+  "memory_records_per_store": 60,
+  "memory_query_count": 120,
+  "soak_cycles": 100,
+  "soak_commands_per_cycle": 25,
+  "soak_memory_records_per_cycle": 30,
+  "thresholds_ms": {
+    "dlc": 30000,
+    "router": 30000,
+    "world": 30000,
+    "memory": 30000,
+    "soak": 120000
+  }
+}

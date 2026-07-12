@@ -89,18 +89,58 @@ class RouterCommandType(str, Enum):
 
 
 @dataclass
+class IntentEnvelope:
+    """标准化的路由意图信封，将 AgentAction 转换为可追踪的链路输入。"""
+    intent_id: str = ""
+    chain_id: str = ""
+    source_agent_id: str = ""
+    action_type: str = ""
+    target_hint: str = ""
+    urgency: str = "normal"
+    payload: dict[str, Any] = field(default_factory=dict)
+    parent_chain_ids: list[str] = field(default_factory=list)
+    hop_count: int = 0
+    schema_version: str = "2.0"
+    idempotency_key: str = ""
+
+    @classmethod
+    def from_action(cls, action: AgentAction) -> "IntentEnvelope":
+        metadata = dict(action.metadata or {})
+        return cls(
+            intent_id=str(metadata.get("intent_id", "")),
+            chain_id=str(metadata.get("chain_id", "")),
+            source_agent_id=action.agent_id,
+            action_type=action.action,
+            target_hint=str(metadata.get("target_hint", "")),
+            urgency=action.urgency,
+            payload={"content": action.content, "original_intent": action.original_intent, **metadata},
+            parent_chain_ids=[str(item) for item in metadata.get("parent_chain_ids", []) if item],
+            hop_count=int(metadata.get("hop_count", 0) or 0),
+            schema_version=str(metadata.get("schema_version", "2.0")),
+            idempotency_key=str(metadata.get("idempotency_key", "")),
+        )
+
+
+@dataclass
 class RouterCommand:
-    """Router 解析 submit_action 后生成的指令."""
+    """Router 对 submit_action 归一化后产生的可执行命令。"""
     command_type: RouterCommandType = RouterCommandType.NO_OP
     target: str | None = None
-    targets: list[str] = field(default_factory=list)  # broadcast 用
+    targets: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
-    delay_seconds: float = 0.0    # 模拟时间延迟
+    delay_seconds: float = 0.0
     chain_id: str = ""
     source_action: AgentAction | None = None
+    command_id: str = ""
+    intent_id: str = ""
+    source_agent_id: str = ""
+    hop_count: int = 0
+    schema_version: str = "2.0"
+    idempotency_key: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# ── 行动结果（Action Agent 输出）──
+# ── 行动结果（Action Agent 返回）──
 
 @dataclass
 class ActionResult:
@@ -109,7 +149,13 @@ class ActionResult:
     executor_id: str = ""
     target_location: str = ""
     result_description: str = ""            # 行动结果文本（会送回发起者）
-    duration_days: float = 1.0              # 行动耗时（模拟天数）
+    duration_days: float = 1.0              # authoritative simulated days
+    duration_source: str = "fallback"
+    duration_rule_id: str = "builtin.safe_fallback"
+    duration_components: dict[str, Any] = field(default_factory=dict)
+    duration_clamped: bool = False
+    runtime_generation: int = 0
+    time_rule_fingerprint: str = ""
     changes_made: list[dict[str, Any]] = field(default_factory=list)  # 世界状态变更记录
     success: bool = True
     error: str | None = None
@@ -126,6 +172,7 @@ class TickResult:
     in_transit: list[dict[str, Any]] = field(default_factory=list)
     chain_entries: list[ChainLogEntry] = field(default_factory=list)
     agent_errors: list[dict[str, Any]] = field(default_factory=list)
+    generated_events: list[dict[str, Any]] = field(default_factory=list)
     token_usage: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

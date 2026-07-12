@@ -8,29 +8,48 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
+import math
 import sqlite3
+import threading
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+from .world_commands import (
+    WorldCommand,
+    WorldCommandBus,
+    WorldCommandError,
+    WorldCommandResult,
+    WorldCommandType,
+)
 
 
 # ── 资源代币定义 ──
 
+# ── 权威资源目录 ──
+
+# ``type`` remains for older prompts/UI code. ``kind`` is authoritative:
+# assets live in inventory and carry an anchor rate; metrics/parameters live in
+# entity_values and cannot be spent or transferred as inventory.
 RESOURCE_TOKENS: list[dict[str, Any]] = [
-    {"name": "金钱", "unit": "两", "default": 0, "min": 0, "max": None, "type": "resource"},
-    {"name": "粮草", "unit": "石", "default": 0, "min": 0, "max": None, "type": "resource"},
-    {"name": "工料", "unit": "工日", "default": 0, "min": 0, "max": None, "type": "resource"},
-    {"name": "科技点", "unit": "点", "default": 0, "min": 0, "max": 200, "type": "data"},
-    {"name": "兵力", "unit": "人", "default": 0, "min": 0, "max": None, "type": "resource"},
-    {"name": "满意度", "unit": "", "default": 50, "min": -1, "max": 100, "type": "data"},
-    {"name": "人口", "unit": "人", "default": 0, "min": -1, "max": None, "type": "resource"},
-    # ── 核心参数 ──
-    {"name": "生活质量", "unit": "", "default": 1.0, "min": 0.2, "max": 1.5, "type": "param"},
-    {"name": "税率", "unit": "%", "default": 0.08, "min": 0, "max": 0.5, "type": "param"},
-    {"name": "生产系数", "unit": "", "default": 1.0, "min": 0.5, "max": 2.5, "type": "param"},
+    {"name": "\u91d1\u94b1", "unit": "\u4e24", "default": 0, "min": 0, "max": None, "type": "resource", "kind": "asset", "anchor_rate": 1.0},
+    {"name": "\u7cae\u8349", "unit": "\u77f3", "default": 0, "min": 0, "max": None, "type": "resource", "kind": "asset", "anchor_rate": 1.0},
+    {"name": "\u5de5\u6599", "unit": "\u5de5\u65e5", "default": 0, "min": 0, "max": None, "type": "resource", "kind": "asset", "anchor_rate": 1.0},
+    {"name": "\u5175\u529b", "unit": "\u4eba", "default": 0, "min": 0, "max": None, "type": "resource", "kind": "asset", "anchor_rate": 1.0},
+    {"name": "\u79d1\u6280\u70b9", "unit": "\u70b9", "default": 0, "min": 0, "max": 200, "type": "data", "kind": "metric", "anchor_rate": None},
+    {"name": "\u6ee1\u610f\u5ea6", "unit": "", "default": 50, "min": -1, "max": 100, "type": "data", "kind": "metric", "anchor_rate": None},
+    {"name": "\u4eba\u53e3", "unit": "\u4eba", "default": 0, "min": -1, "max": None, "type": "data", "kind": "metric", "anchor_rate": None},
+    {"name": "\u751f\u6d3b\u8d28\u91cf", "unit": "", "default": 1.0, "min": 0.2, "max": 1.5, "type": "param", "kind": "parameter", "anchor_rate": None},
+    {"name": "\u7a0e\u7387", "unit": "%", "default": 0.08, "min": 0, "max": 0.5, "type": "param", "kind": "parameter", "anchor_rate": None},
+    {"name": "\u751f\u4ea7\u7cfb\u6570", "unit": "", "default": 1.0, "min": 0.5, "max": 2.5, "type": "param", "kind": "parameter", "anchor_rate": None},
 ]
 RESOURCE_NAMES: set[str] = {t["name"] for t in RESOURCE_TOKENS}
 RESOURCE_META: dict[str, dict[str, Any]] = {t["name"]: t for t in RESOURCE_TOKENS}
+ASSET_NAMES: set[str] = {t["name"] for t in RESOURCE_TOKENS if t["kind"] == "asset"}
+VALUE_NAMES: set[str] = RESOURCE_NAMES - ASSET_NAMES
 
 
 RELATION_TYPES: set[str] = {"subordinate", "affiliated"}
@@ -40,24 +59,75 @@ RELATION_TYPES: set[str] = {"subordinate", "affiliated"}
 
 @dataclass
 class Entity:
-    """世界中的一个实体（地点/人物/机构/组织/物品）."""
+    """A versioned world entity."""
     id: str
-    type: str                                   # location / person / institution / organization / object
+    type: str
     name: str
-    description: str = ""                       # 基本情况简介（相对静态）
-    current_status: str = ""                    # 目前状况（动态更新）
-    updated_at: float = 0.0                     # 最后更新的 sim_time
+    description: str = ""
+    current_status: str = ""
+    updated_at: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    version: int = 0
 
 
 @dataclass
 class InventoryItem:
-    """实体的一项库存."""
+    """An anchored asset held by an entity."""
     entity_id: str
-    category: str                               # 粮食 / 货币 / 兵力 / 物资
-    item_name: str                              # 稻米 / 白银 / 官兵
+    category: str
+    item_name: str
     quantity: float = 0.0
-    description: str = ""                       # 单位/补充说明
+    description: str = ""
+    version: int = 0
+    anchor_rate: float = 1.0
+
+    @property
+    def base_value(self) -> float:
+        if self.quantity == -1:
+            return 0.0
+        return float(self.quantity) * float(self.anchor_rate)
+
+
+@dataclass
+class EntityValue:
+    """A non-spendable metric or parameter, stored outside inventory."""
+    entity_id: str
+    name: str
+    kind: str
+    value: float = 0.0
+    description: str = ""
+    version: int = 0
+
+
+@dataclass
+class ResourceDefinition:
+    name: str
+    unit: str = ""
+    kind: str = "asset"
+    default_quantity: float = 0.0
+    min_quantity: float | None = 0.0
+    max_quantity: float | None = None
+    anchor_rate: float | None = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OngoingEvent:
+    """实体正在发生的事情（延迟落账的状态/库存变化）.
+
+    event_type 暂时只用 "state_change"；预留 "info_transit" 等以便未来与
+    TimerSystem 合并。expected_result 形如：
+        {"new_status": "...", "inventory_deltas": [{"resource": "金钱", "delta": -3000, "reason": "..."}]}
+    end_time 到达时由 orchestrator 自动应用 expected_result。
+    """
+    event_id: str
+    entity_id: str
+    event_type: str = "state_change"
+    description: str = ""
+    start_time: float = 0.0
+    end_time: float = 0.0
+    expected_result: dict[str, Any] = field(default_factory=dict)
+    source_action_id: str = ""
 
 
 # ── 主类 ──
@@ -67,10 +137,32 @@ class WorldState:
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
+        self._write_lock = threading.RLock()
         self._init_db()
+        self.command_bus = WorldCommandBus(self)
+
+    @staticmethod
+    def _configure_conn(conn: sqlite3.Connection) -> sqlite3.Connection:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        return conn
+
+    @staticmethod
+    def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    @classmethod
+    def _ensure_column(
+        cls, conn: sqlite3.Connection, table: str, column: str, ddl: str,
+    ) -> None:
+        if column not in cls._column_names(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with closing(sqlite3.connect(self._db_path)) as raw_conn, raw_conn:
+            conn = self._configure_conn(raw_conn)
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS entities (
                     id TEXT PRIMARY KEY,
@@ -79,7 +171,8 @@ class WorldState:
                     description TEXT DEFAULT '',
                     current_status TEXT DEFAULT '',
                     updated_at REAL DEFAULT 0,
-                    metadata TEXT DEFAULT '{}'
+                    metadata TEXT DEFAULT '{}',
+                    version INTEGER NOT NULL DEFAULT 0
                 )
             """)
             conn.execute("""
@@ -89,134 +182,294 @@ class WorldState:
                     item_name TEXT NOT NULL,
                     quantity REAL DEFAULT 0,
                     description TEXT DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (entity_id, category, item_name),
                     FOREIGN KEY (entity_id) REFERENCES entities(id)
                 )
             """)
+            self._ensure_column(conn, "entities", "version", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "inventory", "version", "INTEGER NOT NULL DEFAULT 0")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_catalog (
+                    name TEXT PRIMARY KEY,
+                    unit TEXT DEFAULT '',
+                    kind TEXT NOT NULL,
+                    default_quantity REAL DEFAULT 0,
+                    min_quantity REAL,
+                    max_quantity REAL,
+                    anchor_rate REAL,
+                    metadata TEXT DEFAULT '{}',
+                    updated_at REAL DEFAULT 0
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_values (
+                    entity_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value REAL DEFAULT 0,
+                    description TEXT DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (entity_id, name),
+                    FOREIGN KEY (entity_id) REFERENCES entities(id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS inventory_ledger (
+                    entry_id TEXT PRIMARY KEY,
+                    command_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    resource_name TEXT NOT NULL,
+                    sequence INTEGER NOT NULL DEFAULT 0,
+                    quantity_delta REAL NOT NULL,
+                    anchor_rate REAL NOT NULL,
+                    base_value_delta REAL NOT NULL,
+                    balance_after REAL NOT NULL,
+                    reason TEXT DEFAULT '',
+                    sim_time REAL DEFAULT 0,
+                    chain_id TEXT DEFAULT '',
+                    metadata TEXT DEFAULT '{}',
+                    created_at REAL NOT NULL,
+                    UNIQUE(command_id, entity_id, resource_name, sequence)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS world_commands (
+                    command_id TEXT PRIMARY KEY,
+                    command_type TEXT NOT NULL,
+                    entity_id TEXT DEFAULT '',
+                    payload_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT DEFAULT '{}',
+                    error_code TEXT DEFAULT '',
+                    error_message TEXT DEFAULT '',
+                    chain_id TEXT DEFAULT '',
+                    intent_id TEXT DEFAULT '',
+                    schema_version TEXT DEFAULT '1.0',
+                    sim_time REAL DEFAULT 0,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_entity ON inventory_ledger(entity_id, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_command ON inventory_ledger(command_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_world_command_chain ON world_commands(chain_id, created_at)")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS entity_relations (
                     parent_id TEXT NOT NULL,
-                    child_id  TEXT NOT NULL,
-                    rel_type  TEXT NOT NULL,
-                    note      TEXT DEFAULT '',
+                    child_id TEXT NOT NULL,
+                    rel_type TEXT NOT NULL,
+                    note TEXT DEFAULT '',
                     PRIMARY KEY (parent_id, child_id, rel_type)
                 )
             """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rel_child  ON entity_relations(child_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rel_parent ON entity_relations(parent_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_child ON entity_relations(child_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_parent ON entity_relations(parent_id)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ongoing_events (
+                    event_id TEXT PRIMARY KEY,
+                    entity_id TEXT NOT NULL,
+                    event_type TEXT DEFAULT 'state_change',
+                    description TEXT DEFAULT '',
+                    start_time REAL DEFAULT 0,
+                    end_time REAL DEFAULT 0,
+                    expected_result TEXT DEFAULT '{}',
+                    source_action_id TEXT DEFAULT '',
+                    FOREIGN KEY (entity_id) REFERENCES entities(id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_entity ON ongoing_events(entity_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_endtime ON ongoing_events(end_time)")
+
+            for token in RESOURCE_TOKENS:
+                conn.execute(
+                    """INSERT OR IGNORE INTO resource_catalog
+                       (name, unit, kind, default_quantity, min_quantity,
+                        max_quantity, anchor_rate, metadata, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        token["name"], token.get("unit", ""), token["kind"],
+                        float(token.get("default", 0)), token.get("min"),
+                        token.get("max"), token.get("anchor_rate"),
+                        json.dumps({"legacy_type": token.get("type", "")}),
+                        0.0,
+                    ),
+                )
+
+            # One-time, idempotent migration: metrics and parameters no longer
+            # share the spendable inventory table.
+            for token in RESOURCE_TOKENS:
+                if token["kind"] == "asset":
+                    continue
+                conn.execute(
+                    """INSERT INTO entity_values
+                       (entity_id, name, kind, value, description, version)
+                       SELECT entity_id, item_name, ?, quantity, description,
+                              COALESCE(version, 0)
+                       FROM inventory WHERE item_name = ?
+                       ON CONFLICT(entity_id, name) DO NOTHING""",
+                    (token["kind"], token["name"]),
+                )
+                conn.execute("DELETE FROM inventory WHERE item_name = ?", (token["name"],))
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    # ── 实体 CRUD ──
+        return self._configure_conn(sqlite3.connect(self._db_path, timeout=5.0))
 
     def _row_to_entity(self, row: sqlite3.Row) -> Entity:
-        meta_raw = row["metadata"] or "{}"
         try:
-            meta = json.loads(meta_raw)
-        except json.JSONDecodeError:
-            meta = {}
+            metadata = json.loads(row["metadata"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
         return Entity(
-            id=row["id"],
-            type=row["type"],
-            name=row["name"],
+            id=row["id"], type=row["type"], name=row["name"],
             description=row["description"] or "",
             current_status=row["current_status"] or "",
-            updated_at=row["updated_at"] or 0.0,
-            metadata=meta,
+            updated_at=float(row["updated_at"] or 0.0), metadata=metadata,
+            version=int(row["version"] or 0),
         )
 
     def get_entity(self, entity_id: str) -> Entity | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM entities WHERE id = ?", (entity_id,)
-            ).fetchone()
+        with closing(self._conn()) as conn, conn:
+            row = conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)).fetchone()
         return self._row_to_entity(row) if row else None
 
     def get_coordinates(self, entity_id: str) -> tuple[float, float, str] | None:
-        """从实体 metadata 提取坐标 (x, y, region)，不存在则返回 None."""
         entity = self.get_entity(entity_id)
-        if not entity:
+        if not entity or ("x" not in entity.metadata and "y" not in entity.metadata):
             return None
-        meta = entity.metadata
-        if "x" not in meta and "y" not in meta:
-            return None
-        return (float(meta.get("x", 0.0)), float(meta.get("y", 0.0)), str(meta.get("region", "")))
+        return (
+            float(entity.metadata.get("x", 0.0)),
+            float(entity.metadata.get("y", 0.0)),
+            str(entity.metadata.get("region", "")),
+        )
 
     def get_entities_by_type(self, entity_type: str) -> list[Entity]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM entities WHERE type = ?", (entity_type,)
-            ).fetchall()
-        return [self._row_to_entity(r) for r in rows]
+        with closing(self._conn()) as conn, conn:
+            rows = conn.execute("SELECT * FROM entities WHERE type=?", (entity_type,)).fetchall()
+        return [self._row_to_entity(row) for row in rows]
 
     def get_all_entities(self) -> list[Entity]:
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute("SELECT * FROM entities").fetchall()
-        return [self._row_to_entity(r) for r in rows]
+        return [self._row_to_entity(row) for row in rows]
 
-    def upsert_entity(self, entity: Entity) -> None:
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO entities
-                   (id, type, name, description, current_status, updated_at, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    entity.id, entity.type, entity.name,
-                    entity.description, entity.current_status,
-                    entity.updated_at,
-                    json.dumps(entity.metadata, ensure_ascii=False),
-                ),
-            )
-        self.init_default_inventory(entity.id, entity.type)
+    @staticmethod
+    def _upsert_entity_conn(
+        conn: sqlite3.Connection, entity: Entity, *, preserve_version: bool = False,
+    ) -> None:
+        version_sql = "excluded.version" if preserve_version else "entities.version + 1"
+        conn.execute(
+            f"""INSERT INTO entities
+                (id,type,name,description,current_status,updated_at,metadata,version)
+                VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                  type=excluded.type,name=excluded.name,description=excluded.description,
+                  current_status=excluded.current_status,updated_at=excluded.updated_at,
+                  metadata=excluded.metadata,version={version_sql}""",
+            (
+                entity.id, entity.type, entity.name, entity.description,
+                entity.current_status, entity.updated_at,
+                json.dumps(entity.metadata, ensure_ascii=False), max(0, int(entity.version)),
+            ),
+        )
 
-    def init_default_inventory(self, entity_id: str, entity_type: str = "") -> None:
-        """为实体补齐 7 个标准资源代币（INSERT OR IGNORE，不覆盖已有值）."""
-        with sqlite3.connect(self._db_path) as conn:
-            for token in RESOURCE_TOKENS:
-                default_qty = token["default"]
-                if entity_type == "institution" and token["name"] in (
-                    "满意度", "人口", "生活质量", "税率", "生产系数",
-                ):
-                    default_qty = -1
+    @staticmethod
+    def _not_applicable_default(entity_type: str, name: str) -> bool:
+        return entity_type == "institution" and name in {
+            "\u6ee1\u610f\u5ea6", "\u4eba\u53e3", "\u751f\u6d3b\u8d28\u91cf",
+            "\u7a0e\u7387", "\u751f\u4ea7\u7cfb\u6570",
+        }
+
+    def _init_default_resources_conn(
+        self, conn: sqlite3.Connection, entity_id: str, entity_type: str = "",
+    ) -> None:
+        for row in conn.execute("SELECT * FROM resource_catalog ORDER BY name").fetchall():
+            value = float(row["default_quantity"] or 0.0)
+            if self._not_applicable_default(entity_type, row["name"]):
+                value = -1.0
+            if row["kind"] == "asset":
                 conn.execute(
                     """INSERT OR IGNORE INTO inventory
-                       (entity_id, category, item_name, quantity, description)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (entity_id, token["name"], token["name"],
-                     default_qty, token["unit"]),
+                       (entity_id,category,item_name,quantity,description,version)
+                       VALUES (?,?,?,?,?,0)""",
+                    (entity_id, row["name"], row["name"], value, row["unit"] or ""),
+                )
+            else:
+                conn.execute(
+                    """INSERT OR IGNORE INTO entity_values
+                       (entity_id,name,kind,value,description,version)
+                       VALUES (?,?,?,?,?,0)""",
+                    (entity_id, row["name"], row["kind"], value, row["unit"] or ""),
                 )
 
-    def update_status(self, entity_id: str, new_status: str, sim_time: float) -> None:
-        """增量更新实体的 current_status 字段."""
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                "UPDATE entities SET current_status = ?, updated_at = ? WHERE id = ?",
-                (new_status, sim_time, entity_id),
-            )
+    def upsert_entity(self, entity: Entity) -> None:
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._upsert_entity_conn(conn, entity)
+                self._init_default_resources_conn(conn, entity.id, entity.type)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def init_default_inventory(self, entity_id: str, entity_type: str = "") -> None:
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_entity(conn, entity_id)
+                self._init_default_resources_conn(conn, entity_id, entity_type)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def update_status(
+        self, entity_id: str, new_status: str, sim_time: float, *,
+        command_id: str | None = None, expected_version: int | None = None,
+        chain_id: str = "", intent_id: str = "",
+    ) -> dict[str, Any]:
+        return self.command_bus.execute_or_raise(WorldCommand(
+            command_type=WorldCommandType.UPDATE_STATUS,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}",
+            entity_id=entity_id, expected_version=expected_version,
+            chain_id=chain_id, intent_id=intent_id, sim_time=sim_time,
+            payload={"new_status": str(new_status)},
+        ))
 
     def delete_entity(self, entity_id: str) -> bool:
-        """删除实体（级联删除其库存与关系）。返回是否存在并删除。"""
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute("DELETE FROM inventory WHERE entity_id = ?", (entity_id,))
-            conn.execute(
-                "DELETE FROM entity_relations WHERE parent_id = ? OR child_id = ?",
-                (entity_id, entity_id),
-            )
-            cur = conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
-        return cur.rowcount > 0
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM inventory WHERE entity_id=?", (entity_id,))
+                conn.execute("DELETE FROM entity_values WHERE entity_id=?", (entity_id,))
+                conn.execute(
+                    "DELETE FROM entity_relations WHERE parent_id=? OR child_id=?",
+                    (entity_id, entity_id),
+                )
+                conn.execute("DELETE FROM ongoing_events WHERE entity_id=?", (entity_id,))
+                cur = conn.execute("DELETE FROM entities WHERE id=?", (entity_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def delete_inventory_item(self, entity_id: str, category: str, item_name: str) -> bool:
-        """删除单条库存记录。标准资源代币不可删除。"""
-        if item_name in RESOURCE_NAMES:
+        if self.get_resource_definition(item_name) is not None:
             return False
-        with sqlite3.connect(self._db_path) as conn:
+        with self._write_lock, self._conn() as conn:
             cur = conn.execute(
                 "DELETE FROM inventory WHERE entity_id=? AND category=? AND item_name=?",
                 (entity_id, category, item_name),
@@ -224,105 +477,330 @@ class WorldState:
         return cur.rowcount > 0
 
     def search_entities(self, keyword: str) -> list[Entity]:
-        """在 id/name/description 中模糊搜索."""
         pattern = f"%{keyword}%"
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
-                """SELECT * FROM entities
-                   WHERE id LIKE ? OR name LIKE ? OR description LIKE ?""",
+                "SELECT * FROM entities WHERE id LIKE ? OR name LIKE ? OR description LIKE ?",
                 (pattern, pattern, pattern),
             ).fetchall()
-        return [self._row_to_entity(r) for r in rows]
+        return [self._row_to_entity(row) for row in rows]
 
-    # ── 库存 CRUD ──
+    # Resource read models.
 
     def _row_to_item(self, row: sqlite3.Row) -> InventoryItem:
+        anchor_rate = row["anchor_rate"] if "anchor_rate" in row.keys() else 1.0
         return InventoryItem(
-            entity_id=row["entity_id"],
-            category=row["category"],
-            item_name=row["item_name"],
-            quantity=row["quantity"] or 0.0,
-            description=row["description"] or "",
+            entity_id=row["entity_id"], category=row["category"], item_name=row["item_name"],
+            quantity=float(row["quantity"] if row["quantity"] is not None else 0.0),
+            description=row["description"] or "", version=int(row["version"] or 0),
+            anchor_rate=float(anchor_rate if anchor_rate is not None else 1.0),
+        )
+
+    @staticmethod
+    def _row_to_value(row: sqlite3.Row) -> EntityValue:
+        return EntityValue(
+            entity_id=row["entity_id"], name=row["name"], kind=row["kind"],
+            value=float(row["value"] if row["value"] is not None else 0.0),
+            description=row["description"] or "", version=int(row["version"] or 0),
+        )
+
+    @staticmethod
+    def _row_to_resource_definition(row: sqlite3.Row) -> ResourceDefinition:
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        return ResourceDefinition(
+            name=row["name"], unit=row["unit"] or "", kind=row["kind"],
+            default_quantity=float(row["default_quantity"] or 0.0),
+            min_quantity=float(row["min_quantity"]) if row["min_quantity"] is not None else None,
+            max_quantity=float(row["max_quantity"]) if row["max_quantity"] is not None else None,
+            anchor_rate=float(row["anchor_rate"]) if row["anchor_rate"] is not None else None,
+            metadata=metadata,
         )
 
     def get_inventory(self, entity_id: str) -> list[InventoryItem]:
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
-                "SELECT * FROM inventory WHERE entity_id = ?", (entity_id,)
+                """SELECT i.*,COALESCE(rc.anchor_rate,1.0) AS anchor_rate
+                   FROM inventory i LEFT JOIN resource_catalog rc ON rc.name=i.item_name
+                   WHERE i.entity_id=? ORDER BY i.item_name""", (entity_id,),
             ).fetchall()
-        return [self._row_to_item(r) for r in rows]
+        return [self._row_to_item(row) for row in rows]
+
+    def get_entity_values(self, entity_id: str, kind: str | None = None) -> list[EntityValue]:
+        with closing(self._conn()) as conn, conn:
+            if kind:
+                rows = conn.execute(
+                    "SELECT * FROM entity_values WHERE entity_id=? AND kind=? ORDER BY name",
+                    (entity_id, kind),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM entity_values WHERE entity_id=? ORDER BY kind,name",
+                    (entity_id,),
+                ).fetchall()
+        return [self._row_to_value(row) for row in rows]
+
+    def get_resource_definition(self, name: str) -> ResourceDefinition | None:
+        with closing(self._conn()) as conn, conn:
+            row = conn.execute("SELECT * FROM resource_catalog WHERE name=?", (name,)).fetchone()
+        return self._row_to_resource_definition(row) if row else None
+
+    def list_resource_definitions(self) -> list[ResourceDefinition]:
+        with closing(self._conn()) as conn, conn:
+            rows = conn.execute("SELECT * FROM resource_catalog ORDER BY kind,name").fetchall()
+        return [self._row_to_resource_definition(row) for row in rows]
+
+    def get_inventory_valuation(self, entity_id: str) -> dict[str, Any]:
+        items = [item for item in self.get_inventory(entity_id) if item.quantity != -1]
+        return {
+            "entity_id": entity_id,
+            "base_value": sum(item.base_value for item in items),
+            "items": [{
+                "name": item.item_name, "quantity": item.quantity,
+                "anchor_rate": item.anchor_rate, "base_value": item.base_value,
+                "version": item.version,
+            } for item in items],
+        }
+
+    def get_inventory_ledger(
+        self, entity_id: str | None = None, *, command_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if entity_id:
+            clauses.append("entity_id=?")
+            params.append(entity_id)
+        if command_id:
+            clauses.append("command_id=?")
+            params.append(command_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 1000)))
+        with closing(self._conn()) as conn, conn:
+            rows = conn.execute(
+                f"SELECT * FROM inventory_ledger{where} ORDER BY created_at DESC,sequence DESC LIMIT ?",
+                params,
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.get("metadata") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item["metadata"] = {}
+            result.append(item)
+        return result
+
+    def get_world_command(self, command_id: str) -> dict[str, Any] | None:
+        with closing(self._conn()) as conn, conn:
+            row = conn.execute("SELECT * FROM world_commands WHERE command_id=?", (command_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        for key in ("payload_json", "result_json"):
+            try:
+                item[key] = json.loads(item.get(key) or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item[key] = {}
+        return item
+
+    # Transactional reducers.
 
     @staticmethod
-    def _clamp_resource(name: str, value: float) -> float:
-        """根据资源代币的 min/max 约束裁剪数值。-1 表示不适用，不参与约束。"""
-        if value == -1:
-            return -1
-        meta = RESOURCE_META.get(name)
-        if not meta:
-            return value
-        lo = meta["min"] if meta["min"] is not None else float("-inf")
-        if lo == -1:
-            lo = 0
-        hi = meta["max"] if meta["max"] is not None else float("inf")
-        return max(lo, min(hi, value))
+    def _finite_number(value: Any, field_name: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise WorldCommandError("invalid_number", f"{field_name} must be numeric", {"field": field_name}) from exc
+        if not math.isfinite(number):
+            raise WorldCommandError("invalid_number", f"{field_name} must be finite", {"field": field_name})
+        return number
+
+    @staticmethod
+    def _require_entity(conn: sqlite3.Connection, entity_id: str) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)).fetchone()
+        if row is None:
+            raise WorldCommandError("entity_not_found", f"entity does not exist: {entity_id}", {"entity_id": entity_id})
+        return row
+
+    @staticmethod
+    def _resource_definition_conn(conn: sqlite3.Connection, name: str) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM resource_catalog WHERE name=?", (name,)).fetchone()
+        if row is None:
+            raise WorldCommandError("resource_not_found", f"resource is not registered: {name}", {"resource_name": name})
+        return row
+
+    @staticmethod
+    def _check_version(
+        expected: int | None, actual: int, *, target: str, details: dict[str, Any],
+    ) -> None:
+        if expected is not None and int(expected) != int(actual):
+            raise WorldCommandError(
+                "version_conflict", f"{target} version conflict",
+                {**details, "expected_version": int(expected), "actual_version": int(actual)},
+            )
+
+    def _reduce_world_command(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        reducer = {
+            WorldCommandType.UPDATE_STATUS: self._reduce_update_status,
+            WorldCommandType.ADJUST_RESOURCE: self._reduce_resource,
+            WorldCommandType.SET_RESOURCE: self._reduce_resource,
+            WorldCommandType.CREATE_EVENT: self._reduce_create_event,
+            WorldCommandType.UPDATE_EVENT: self._reduce_update_event,
+            WorldCommandType.DELETE_EVENT: self._reduce_delete_event,
+            WorldCommandType.APPLY_MATURED_EVENT: self._reduce_apply_matured_event,
+        }.get(command.command_type)
+        if reducer is None:
+            raise WorldCommandError("unsupported_command", f"unsupported command: {command.command_type}")
+        return reducer(conn, command)
+
+    def _reduce_update_status(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        row = self._require_entity(conn, command.entity_id)
+        self._check_version(command.expected_version, int(row["version"] or 0), target="entity", details={"entity_id": command.entity_id})
+        new_status = str(command.payload.get("new_status", ""))
+        conn.execute(
+            "UPDATE entities SET current_status=?,updated_at=?,version=version+1 WHERE id=?",
+            (new_status, float(command.sim_time), command.entity_id),
+        )
+        return {"entity_id": command.entity_id, "new_status": new_status, "version": int(row["version"] or 0) + 1}
+
+    def _mutate_resource_conn(
+        self, conn: sqlite3.Connection, command: WorldCommand, *, entity_id: str,
+        resource_name: str, mode: str, value: Any, expected_version: int | None = None,
+        reason: str = "", sequence: int = 0,
+    ) -> dict[str, Any]:
+        self._require_entity(conn, entity_id)
+        definition = self._resource_definition_conn(conn, resource_name)
+        numeric = self._finite_number(value, "quantity" if mode == "set" else "quantity_delta")
+        kind = str(definition["kind"])
+        if kind == "asset":
+            row = conn.execute(
+                "SELECT quantity,description,version FROM inventory WHERE entity_id=? AND item_name=?",
+                (entity_id, resource_name),
+            ).fetchone()
+            old = float(row["quantity"] if row and row["quantity"] is not None else definition["default_quantity"] or 0.0)
+            version = int(row["version"] or 0) if row else 0
+            description = (row["description"] if row else None) or definition["unit"] or ""
+            self._check_version(expected_version, version, target="inventory", details={"entity_id": entity_id, "resource_name": resource_name})
+            if old == -1:
+                raise WorldCommandError("resource_not_applicable", f"resource is not applicable: {resource_name}")
+            new = numeric if mode == "set" else old + numeric
+            minimum, maximum = definition["min_quantity"], definition["max_quantity"]
+            if minimum is not None and new < float(minimum):
+                raise WorldCommandError(
+                    "insufficient_balance", f"insufficient {resource_name}",
+                    {"entity_id": entity_id, "resource_name": resource_name, "balance": old, "requested": numeric},
+                )
+            if maximum is not None and new > float(maximum):
+                raise WorldCommandError("resource_out_of_range", f"resource exceeds maximum: {resource_name}")
+            conn.execute(
+                """INSERT INTO inventory(entity_id,category,item_name,quantity,description,version)
+                   VALUES (?,?,?,?,?,?) ON CONFLICT(entity_id,category,item_name) DO UPDATE SET
+                   quantity=excluded.quantity,description=excluded.description,version=inventory.version+1""",
+                (entity_id, resource_name, resource_name, new, description, version + 1),
+            )
+            delta = new - old
+            rate = float(definition["anchor_rate"] or 1.0)
+            self._append_inventory_ledger(
+                conn, command, entity_id=entity_id, resource_name=resource_name,
+                sequence=sequence, quantity_delta=delta, anchor_rate=rate,
+                balance_after=new, reason=reason,
+            )
+            return {
+                "entity_id": entity_id, "resource_name": resource_name, "kind": kind,
+                "quantity": new, "quantity_delta": delta, "version": version + 1,
+                "anchor_rate": rate, "base_value": new * rate,
+                "base_value_delta": delta * rate,
+            }
+
+        row = conn.execute(
+            "SELECT value,description,version FROM entity_values WHERE entity_id=? AND name=?",
+            (entity_id, resource_name),
+        ).fetchone()
+        old = float(row["value"] if row and row["value"] is not None else definition["default_quantity"] or 0.0)
+        version = int(row["version"] or 0) if row else 0
+        description = (row["description"] if row else None) or definition["unit"] or ""
+        self._check_version(expected_version, version, target="entity_value", details={"entity_id": entity_id, "resource_name": resource_name})
+        if old == -1:
+            raise WorldCommandError("resource_not_applicable", f"value is not applicable: {resource_name}")
+        new = numeric if mode == "set" else old + numeric
+        minimum, maximum = definition["min_quantity"], definition["max_quantity"]
+        if minimum is not None:
+            new = max(0.0 if float(minimum) == -1 else float(minimum), new)
+        if maximum is not None:
+            new = min(float(maximum), new)
+        conn.execute(
+            """INSERT INTO entity_values(entity_id,name,kind,value,description,version)
+               VALUES (?,?,?,?,?,?) ON CONFLICT(entity_id,name) DO UPDATE SET
+               kind=excluded.kind,value=excluded.value,description=excluded.description,
+               version=entity_values.version+1""",
+            (entity_id, resource_name, kind, new, description, version + 1),
+        )
+        return {
+            "entity_id": entity_id, "resource_name": resource_name, "kind": kind,
+            "value": new, "value_delta": new - old, "version": version + 1,
+        }
+
+    def _reduce_resource(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        name = str(command.payload.get("resource_name") or command.payload.get("item_name") or "")
+        mode = "set" if command.command_type == WorldCommandType.SET_RESOURCE else "adjust"
+        key = "quantity" if mode == "set" else "quantity_delta"
+        return self._mutate_resource_conn(
+            conn, command, entity_id=command.entity_id, resource_name=name,
+            mode=mode, value=command.payload.get(key), expected_version=command.expected_version,
+            reason=str(command.payload.get("reason", "")),
+        )
+
+    def _append_inventory_ledger(
+        self, conn: sqlite3.Connection, command: WorldCommand, *, entity_id: str,
+        resource_name: str, sequence: int, quantity_delta: float, anchor_rate: float,
+        balance_after: float, reason: str,
+    ) -> None:
+        conn.execute(
+            """INSERT INTO inventory_ledger
+               (entry_id,command_id,entity_id,resource_name,sequence,quantity_delta,
+                anchor_rate,base_value_delta,balance_after,reason,sim_time,chain_id,metadata,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"ledger_{command.command_id}_{sequence}_{resource_name}", command.command_id,
+                entity_id, resource_name, sequence, quantity_delta, anchor_rate,
+                quantity_delta * anchor_rate, balance_after, reason, float(command.sim_time),
+                command.chain_id, json.dumps(command.metadata, ensure_ascii=False), time.time(),
+            ),
+        )
 
     def set_inventory(
-        self,
-        entity_id: str,
-        category: str,
-        item_name: str,
-        quantity: float,
-        description: str = "",
-    ) -> None:
-        """绝对赋值：覆盖数量. 仅允许标准资源代币。"""
-        if item_name not in RESOURCE_NAMES:
-            raise ValueError(f"不允许操作非标准资源代币: {item_name}")
-        category = item_name
-        quantity = self._clamp_resource(item_name, quantity)
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO inventory
-                   (entity_id, category, item_name, quantity, description)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (entity_id, category, item_name, quantity, description),
-            )
+        self, entity_id: str, category: str, item_name: str, quantity: float,
+        description: str = "", *, command_id: str | None = None,
+        expected_version: int | None = None, chain_id: str = "", intent_id: str = "",
+        sim_time: float = 0.0, reason: str = "",
+    ) -> float:
+        result = self.command_bus.execute_or_raise(WorldCommand(
+            command_type=WorldCommandType.SET_RESOURCE,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}", entity_id=entity_id,
+            expected_version=expected_version, chain_id=chain_id, intent_id=intent_id,
+            sim_time=sim_time, payload={"resource_name": item_name, "quantity": quantity,
+                                        "description": description, "reason": reason},
+        ))
+        return float(result.get("quantity", result.get("value", 0.0)))
 
     def update_inventory(
-        self,
-        entity_id: str,
-        category: str,
-        item_name: str,
-        quantity_delta: float,
-        reason: str = "",
+        self, entity_id: str, category: str, item_name: str, quantity_delta: float,
+        reason: str = "", *, command_id: str | None = None,
+        expected_version: int | None = None, chain_id: str = "", intent_id: str = "",
+        sim_time: float = 0.0,
     ) -> float:
-        """相对增减：返回变更后的新数量. 仅允许标准资源代币。"""
-        if item_name not in RESOURCE_NAMES:
-            raise ValueError(f"不允许操作非标准资源代币: {item_name}")
-        category = item_name
-        with sqlite3.connect(self._db_path) as conn:
-            row = conn.execute(
-                """SELECT quantity, description FROM inventory
-                   WHERE entity_id = ? AND category = ? AND item_name = ?""",
-                (entity_id, category, item_name),
-            ).fetchone()
-            if row:
-                old_qty = row[0] or 0.0
-                desc = row[1] or ""
-            else:
-                old_qty = 0.0
-                desc = ""
-            if old_qty == -1:
-                raise ValueError(f"实体 {entity_id} 的 {item_name} 不适用（值为 -1），不可修改")
-            new_qty = self._clamp_resource(item_name, old_qty + quantity_delta)
-            conn.execute(
-                """INSERT OR REPLACE INTO inventory
-                   (entity_id, category, item_name, quantity, description)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (entity_id, category, item_name, new_qty, desc),
-            )
-        return new_qty
+        result = self.command_bus.execute_or_raise(WorldCommand(
+            command_type=WorldCommandType.ADJUST_RESOURCE,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}", entity_id=entity_id,
+            expected_version=expected_version, chain_id=chain_id, intent_id=intent_id,
+            sim_time=sim_time, payload={"resource_name": item_name,
+                                        "quantity_delta": quantity_delta, "reason": reason},
+        ))
+        return float(result.get("quantity", result.get("value", 0.0)))
 
-    # ── 关系 CRUD ──
+    # Relation CRUD.
 
     def add_relation(
         self,
@@ -334,11 +812,13 @@ class WorldState:
         """创建或覆盖一条实体关系边。rel_type 必须是标准类型。"""
         if rel_type not in RELATION_TYPES:
             raise ValueError(f"未知关系类型: {rel_type}")
-        with sqlite3.connect(self._db_path) as conn:
+        with self._write_lock, self._conn() as conn:
+            self._require_entity(conn, parent_id)
+            self._require_entity(conn, child_id)
             conn.execute(
-                """INSERT OR REPLACE INTO entity_relations
-                   (parent_id, child_id, rel_type, note)
-                   VALUES (?, ?, ?, ?)""",
+                """INSERT INTO entity_relations(parent_id,child_id,rel_type,note)
+                   VALUES (?,?,?,?) ON CONFLICT(parent_id,child_id,rel_type)
+                   DO UPDATE SET note=excluded.note""",
                 (parent_id, child_id, rel_type, note),
             )
 
@@ -349,7 +829,7 @@ class WorldState:
         rel_type: str,
     ) -> bool:
         """删除一条边。返回是否存在并删除。"""
-        with sqlite3.connect(self._db_path) as conn:
+        with self._write_lock, self._conn() as conn:
             cur = conn.execute(
                 """DELETE FROM entity_relations
                    WHERE parent_id=? AND child_id=? AND rel_type=?""",
@@ -359,7 +839,7 @@ class WorldState:
 
     def get_parents(self, child_id: str) -> list[dict[str, str]]:
         """返回指向 child_id 的所有父节点。"""
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
                 """SELECT parent_id, rel_type, note FROM entity_relations
                    WHERE child_id = ?""",
@@ -372,7 +852,7 @@ class WorldState:
 
     def get_children(self, parent_id: str) -> list[dict[str, str]]:
         """返回 parent_id 的所有子节点。"""
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
                 """SELECT child_id, rel_type, note FROM entity_relations
                    WHERE parent_id = ?""",
@@ -385,7 +865,7 @@ class WorldState:
 
     def get_siblings(self, entity_id: str) -> list[dict[str, str]]:
         """返回所有"同父同 rel_type"的兄弟节点，带上 via_parent_id 说明来源。"""
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
                 """SELECT r2.child_id AS sibling_id, r.parent_id AS via_parent_id, r.rel_type
                    FROM entity_relations r
@@ -405,7 +885,7 @@ class WorldState:
 
     def get_all_relations(self) -> list[dict[str, str]]:
         """整图导出所有关系边。"""
-        with self._conn() as conn:
+        with closing(self._conn()) as conn, conn:
             rows = conn.execute(
                 "SELECT parent_id, child_id, rel_type, note FROM entity_relations"
             ).fetchall()
@@ -419,122 +899,775 @@ class WorldState:
             for r in rows
         ]
 
-    # ── 批量操作 ──
+    # ── 正在发生的事情（OngoingEvent）CRUD ──
 
-    def bulk_load(
+    def _row_to_event(self, row: sqlite3.Row) -> OngoingEvent:
+        try:
+            expected = json.loads(row["expected_result"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            expected = {}
+        return OngoingEvent(
+            event_id=row["event_id"], entity_id=row["entity_id"],
+            event_type=row["event_type"] or "state_change",
+            description=row["description"] or "",
+            start_time=float(row["start_time"] or 0.0),
+            end_time=float(row["end_time"] or 0.0), expected_result=expected,
+            source_action_id=row["source_action_id"] or "",
+        )
+
+    def _reduce_create_event(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        payload = command.payload
+        event_id = str(payload.get("event_id") or f"evt_{uuid.uuid4().hex[:10]}")
+        entity_id = command.entity_id or str(payload.get("entity_id") or "")
+        self._require_entity(conn, entity_id)
+        start_time = self._finite_number(payload.get("start_time", command.sim_time), "start_time")
+        end_time = self._finite_number(payload.get("end_time", start_time), "end_time")
+        expected = payload.get("expected_result") or {}
+        if not isinstance(expected, dict):
+            raise WorldCommandError("invalid_event", "expected_result must be an object")
+        conn.execute(
+            """INSERT INTO ongoing_events
+               (event_id,entity_id,event_type,description,start_time,end_time,
+                expected_result,source_action_id)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(event_id) DO UPDATE SET
+                 entity_id=excluded.entity_id,event_type=excluded.event_type,
+                 description=excluded.description,start_time=excluded.start_time,
+                 end_time=excluded.end_time,expected_result=excluded.expected_result,
+                 source_action_id=excluded.source_action_id""",
+            (
+                event_id, entity_id, str(payload.get("event_type") or "state_change"),
+                str(payload.get("description") or ""), start_time, end_time,
+                json.dumps(expected, ensure_ascii=False),
+                str(payload.get("source_action_id") or command.chain_id),
+            ),
+        )
+        return {"event_id": event_id, "entity_id": entity_id, "end_time": end_time}
+
+    def _reduce_update_event(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        event_id = str(command.payload.get("event_id") or "")
+        row = conn.execute("SELECT * FROM ongoing_events WHERE event_id=?", (event_id,)).fetchone()
+        if row is None:
+            raise WorldCommandError("event_not_found", f"event does not exist: {event_id}", {"event_id": event_id})
+        allowed = {"description", "end_time", "expected_result", "event_type"}
+        changes = {key: value for key, value in command.payload.items() if key in allowed and value is not None}
+        if "end_time" in changes:
+            changes["end_time"] = self._finite_number(changes["end_time"], "end_time")
+        if "expected_result" in changes:
+            if not isinstance(changes["expected_result"], dict):
+                raise WorldCommandError("invalid_event", "expected_result must be an object")
+            changes["expected_result"] = json.dumps(changes["expected_result"], ensure_ascii=False)
+        if changes:
+            assignments = ",".join(f"{key}=?" for key in changes)
+            conn.execute(
+                f"UPDATE ongoing_events SET {assignments} WHERE event_id=?",
+                (*changes.values(), event_id),
+            )
+        return {"event_id": event_id, "updated_fields": list(changes)}
+
+    def _reduce_delete_event(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        event_id = str(command.payload.get("event_id") or "")
+        cur = conn.execute("DELETE FROM ongoing_events WHERE event_id=?", (event_id,))
+        if cur.rowcount == 0:
+            raise WorldCommandError("event_not_found", f"event does not exist: {event_id}", {"event_id": event_id})
+        return {"event_id": event_id, "deleted": True}
+
+    def _reduce_apply_matured_event(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        event_id = str(command.payload.get("event_id") or "")
+        row = conn.execute("SELECT * FROM ongoing_events WHERE event_id=?", (event_id,)).fetchone()
+        if row is None:
+            raise WorldCommandError("event_not_found", f"event does not exist: {event_id}", {"event_id": event_id})
+        event = self._row_to_event(row)
+        if event.end_time > float(command.sim_time):
+            raise WorldCommandError(
+                "event_not_matured", f"event has not matured: {event_id}",
+                {"event_id": event_id, "end_time": event.end_time, "sim_time": command.sim_time},
+            )
+        expected = event.expected_result or {}
+        changes: list[dict[str, Any]] = []
+        new_status = expected.get("new_status")
+        if isinstance(new_status, str) and new_status:
+            entity = self._require_entity(conn, event.entity_id)
+            conn.execute(
+                "UPDATE entities SET current_status=?,updated_at=?,version=version+1 WHERE id=?",
+                (new_status, float(command.sim_time), event.entity_id),
+            )
+            changes.append({
+                "type": "status", "new_status": new_status,
+                "version": int(entity["version"] or 0) + 1,
+            })
+        deltas = expected.get("inventory_deltas") or []
+        if not isinstance(deltas, list):
+            raise WorldCommandError("invalid_event", "inventory_deltas must be an array")
+        for sequence, delta in enumerate(deltas):
+            if not isinstance(delta, dict):
+                raise WorldCommandError("invalid_event", "inventory delta must be an object")
+            resource = str(delta.get("resource") or delta.get("resource_name") or "")
+            changed = self._mutate_resource_conn(
+                conn, command, entity_id=event.entity_id, resource_name=resource,
+                mode="adjust", value=delta.get("delta"),
+                reason=str(delta.get("reason") or event.description), sequence=sequence,
+            )
+            changes.append({"type": "resource", **changed})
+        conn.execute("DELETE FROM ongoing_events WHERE event_id=?", (event_id,))
+        return {
+            "event_id": event_id, "entity_id": event.entity_id,
+            "description": event.description, "changes": changes, "deleted": True,
+        }
+
+    def add_ongoing_event(
+        self, event: OngoingEvent, *, command_id: str | None = None,
+        chain_id: str = "", intent_id: str = "",
+    ) -> str:
+        result = self.command_bus.execute_or_raise(WorldCommand(
+            command_type=WorldCommandType.CREATE_EVENT,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}",
+            entity_id=event.entity_id, chain_id=chain_id or event.source_action_id,
+            intent_id=intent_id, sim_time=event.start_time,
+            payload={
+                "event_id": event.event_id, "event_type": event.event_type,
+                "description": event.description, "start_time": event.start_time,
+                "end_time": event.end_time, "expected_result": event.expected_result,
+                "source_action_id": event.source_action_id,
+            },
+        ))
+        return str(result["event_id"])
+
+    def get_ongoing_event(self, event_id: str) -> OngoingEvent | None:
+        with closing(self._conn()) as conn, conn:
+            row = conn.execute("SELECT * FROM ongoing_events WHERE event_id=?", (event_id,)).fetchone()
+        return self._row_to_event(row) if row else None
+
+    def list_ongoing_events(self, entity_id: str | None = None) -> list[OngoingEvent]:
+        with closing(self._conn()) as conn, conn:
+            if entity_id:
+                rows = conn.execute(
+                    "SELECT * FROM ongoing_events WHERE entity_id=? ORDER BY end_time", (entity_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM ongoing_events ORDER BY end_time").fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def update_ongoing_event(
+        self, event_id: str, *, description: str | None = None,
+        end_time: float | None = None, expected_result: dict[str, Any] | None = None,
+        event_type: str | None = None, command_id: str | None = None,
+        chain_id: str = "", intent_id: str = "", sim_time: float = 0.0,
+    ) -> bool:
+        payload: dict[str, Any] = {"event_id": event_id}
+        for key, value in {
+            "description": description, "end_time": end_time,
+            "expected_result": expected_result, "event_type": event_type,
+        }.items():
+            if value is not None:
+                payload[key] = value
+        result = self.command_bus.execute(WorldCommand(
+            command_type=WorldCommandType.UPDATE_EVENT,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}", chain_id=chain_id,
+            intent_id=intent_id, sim_time=sim_time, payload=payload,
+        ))
+        if not result.ok and result.error_code == "event_not_found":
+            return False
+        result.require_ok()
+        return True
+
+    def delete_ongoing_event(
+        self, event_id: str, *, command_id: str | None = None,
+        chain_id: str = "", intent_id: str = "", sim_time: float = 0.0,
+    ) -> bool:
+        result = self.command_bus.execute(WorldCommand(
+            command_type=WorldCommandType.DELETE_EVENT,
+            command_id=command_id or f"wcmd_{uuid.uuid4().hex}", chain_id=chain_id,
+            intent_id=intent_id, sim_time=sim_time, payload={"event_id": event_id},
+        ))
+        if not result.ok and result.error_code == "event_not_found":
+            return False
+        result.require_ok()
+        return True
+
+    def get_matured_event_ids(self, sim_time: float) -> list[str]:
+        with closing(self._conn()) as conn, conn:
+            rows = conn.execute(
+                "SELECT event_id FROM ongoing_events WHERE end_time<=? ORDER BY end_time,event_id",
+                (sim_time,),
+            ).fetchall()
+        return [str(row["event_id"]) for row in rows]
+
+    def apply_matured_event(self, event_id: str, sim_time: float) -> WorldCommandResult:
+        return self.command_bus.execute(WorldCommand(
+            command_type=WorldCommandType.APPLY_MATURED_EVENT,
+            command_id=f"mature:{event_id}", sim_time=sim_time,
+            payload={"event_id": event_id}, metadata={"source": "world_tick"},
+        ))
+
+    def apply_matured_events(self, sim_time: float) -> list[WorldCommandResult]:
+        commands = [
+            WorldCommand(
+                command_type=WorldCommandType.APPLY_MATURED_EVENT,
+                command_id=f"mature:{event_id}",
+                sim_time=sim_time,
+                payload={"event_id": event_id},
+                metadata={"source": "world_tick"},
+            )
+            for event_id in self.get_matured_event_ids(sim_time)
+        ]
+        return self.command_bus.execute_batch(commands, atomic=False).results
+
+    def pop_matured_events(self, sim_time: float) -> list[OngoingEvent]:
+        """Compatibility read: return matured events without deleting or applying them."""
+        ids = self.get_matured_event_ids(sim_time)
+        return [event for event_id in ids if (event := self.get_ongoing_event(event_id))]
+
+    # Bulk operations.
+
+    @staticmethod
+    def _upsert_resource_definition_conn(
+        conn: sqlite3.Connection, definition: ResourceDefinition,
+    ) -> None:
+        if definition.kind not in {"asset", "metric", "parameter"}:
+            raise ValueError(f"invalid resource kind: {definition.kind}")
+        rate = definition.anchor_rate
+        if definition.kind == "asset":
+            rate = 1.0 if rate is None else float(rate)
+            if not math.isfinite(rate) or rate <= 0:
+                raise ValueError(f"invalid anchor_rate for {definition.name}")
+        else:
+            rate = None
+        conn.execute(
+            """INSERT INTO resource_catalog
+               (name,unit,kind,default_quantity,min_quantity,max_quantity,
+                anchor_rate,metadata,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(name) DO UPDATE SET
+                 unit=excluded.unit,kind=excluded.kind,
+                 default_quantity=excluded.default_quantity,
+                 min_quantity=excluded.min_quantity,max_quantity=excluded.max_quantity,
+                 anchor_rate=excluded.anchor_rate,metadata=excluded.metadata,
+                 updated_at=excluded.updated_at""",
+            (
+                definition.name, definition.unit, definition.kind,
+                float(definition.default_quantity), definition.min_quantity,
+                definition.max_quantity, rate,
+                json.dumps(definition.metadata, ensure_ascii=False), time.time(),
+            ),
+        )
+
+    def upsert_resource_definition(self, definition: ResourceDefinition) -> None:
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._upsert_resource_definition_conn(conn, definition)
+                for entity in conn.execute("SELECT id,type FROM entities").fetchall():
+                    self._init_default_resources_conn(conn, entity["id"], entity["type"])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def _write_loaded_item_conn(
+        self, conn: sqlite3.Connection, item: InventoryItem, *, preserve_version: bool,
+    ) -> None:
+        self._require_entity(conn, item.entity_id)
+        definition = conn.execute(
+            "SELECT * FROM resource_catalog WHERE name=?", (item.item_name,),
+        ).fetchone()
+        if definition is not None and definition["kind"] != "asset":
+            version_sql = "excluded.version" if preserve_version else "entity_values.version + 1"
+            conn.execute(
+                f"""INSERT INTO entity_values(entity_id,name,kind,value,description,version)
+                    VALUES (?,?,?,?,?,?) ON CONFLICT(entity_id,name) DO UPDATE SET
+                    kind=excluded.kind,value=excluded.value,description=excluded.description,
+                    version={version_sql}""",
+                (
+                    item.entity_id, item.item_name, definition["kind"], item.quantity,
+                    item.description or definition["unit"] or "", max(0, int(item.version)),
+                ),
+            )
+            conn.execute(
+                "DELETE FROM inventory WHERE entity_id=? AND item_name=?",
+                (item.entity_id, item.item_name),
+            )
+            return
+        version_sql = "excluded.version" if preserve_version else "inventory.version + 1"
+        conn.execute(
+            f"""INSERT INTO inventory
+                (entity_id,category,item_name,quantity,description,version)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(entity_id,category,item_name) DO UPDATE SET
+                  quantity=excluded.quantity,description=excluded.description,
+                  version={version_sql}""",
+            (
+                item.entity_id, item.category or item.item_name, item.item_name,
+                item.quantity, item.description, max(0, int(item.version)),
+            ),
+        )
+
+    @staticmethod
+    def _write_loaded_value_conn(
+        conn: sqlite3.Connection, value: EntityValue, *, preserve_version: bool,
+    ) -> None:
+        version_sql = "excluded.version" if preserve_version else "entity_values.version + 1"
+        conn.execute(
+            f"""INSERT INTO entity_values(entity_id,name,kind,value,description,version)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(entity_id,name) DO UPDATE SET
+                  kind=excluded.kind,value=excluded.value,description=excluded.description,
+                  version={version_sql}""",
+            (
+                value.entity_id, value.name, value.kind, value.value,
+                value.description, max(0, int(value.version)),
+            ),
+        )
+
+    def _bulk_load_conn(
+        self, conn: sqlite3.Connection, entities: list[Entity],
+        inventory: list[InventoryItem], relations: list[dict[str, str]] | None,
+        ongoing_events: list[OngoingEvent] | None,
+        entity_values: list[EntityValue] | None,
+        resource_definitions: list[ResourceDefinition] | None,
+        *, preserve_versions: bool,
+    ) -> tuple[int, int, int]:
+        for definition in resource_definitions or []:
+            self._upsert_resource_definition_conn(conn, definition)
+        entity_types: dict[str, str] = {}
+        for entity in entities:
+            entity_types[entity.id] = entity.type
+            self._upsert_entity_conn(conn, entity, preserve_version=preserve_versions)
+        known_ids = {str(row["id"]) for row in conn.execute("SELECT id FROM entities")}
+        for item in inventory:
+            if item.entity_id not in known_ids:
+                raise ValueError(f"inventory references missing entity: {item.entity_id}")
+            self._write_loaded_item_conn(conn, item, preserve_version=preserve_versions)
+        for value in entity_values or []:
+            if value.entity_id not in known_ids:
+                raise ValueError(f"entity value references missing entity: {value.entity_id}")
+            definition = conn.execute(
+                "SELECT kind FROM resource_catalog WHERE name=?", (value.name,),
+            ).fetchone()
+            if definition is not None and definition["kind"] == "asset":
+                raise ValueError(f"asset cannot be loaded as entity value: {value.name}")
+            self._write_loaded_value_conn(conn, value, preserve_version=preserve_versions)
+        rel_count = 0
+        for relation in relations or []:
+            rel_type = relation.get("rel_type", "")
+            if rel_type not in RELATION_TYPES:
+                continue
+            parent_id, child_id = relation["parent_id"], relation["child_id"]
+            if parent_id not in known_ids or child_id not in known_ids:
+                raise ValueError(f"relation references missing entity: {parent_id}->{child_id}")
+            conn.execute(
+                """INSERT INTO entity_relations(parent_id,child_id,rel_type,note)
+                   VALUES (?,?,?,?) ON CONFLICT(parent_id,child_id,rel_type)
+                   DO UPDATE SET note=excluded.note""",
+                (parent_id, child_id, rel_type, relation.get("note", "")),
+            )
+            rel_count += 1
+        for entity in entities:
+            self._init_default_resources_conn(conn, entity.id, entity_types[entity.id])
+        for event in ongoing_events or []:
+            if event.entity_id not in known_ids:
+                raise ValueError(f"event references missing entity: {event.entity_id}")
+            conn.execute(
+                """INSERT INTO ongoing_events
+                   (event_id,entity_id,event_type,description,start_time,end_time,
+                    expected_result,source_action_id)
+                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET
+                     entity_id=excluded.entity_id,event_type=excluded.event_type,
+                     description=excluded.description,start_time=excluded.start_time,
+                     end_time=excluded.end_time,expected_result=excluded.expected_result,
+                     source_action_id=excluded.source_action_id""",
+                (
+                    event.event_id, event.entity_id, event.event_type,
+                    event.description, event.start_time, event.end_time,
+                    json.dumps(event.expected_result, ensure_ascii=False),
+                    event.source_action_id,
+                ),
+            )
+        return len(entities), len(inventory) + len(entity_values or []), rel_count
+
+    def apply_dlc_schema_update(
         self,
         entities: list[Entity],
         inventory: list[InventoryItem],
         relations: list[dict[str, str]] | None = None,
-    ) -> tuple[int, int, int]:
-        """批量导入实体、库存与关系（INSERT OR REPLACE 语义，安全重入）.
+        ongoing_events: list[OngoingEvent] | None = None,
+        entity_values: list[EntityValue] | None = None,
+        resource_definitions: list[ResourceDefinition] | None = None,
+        officials: list[Any] | None = None,
+        replace_official_ids: set[str] | None = None,
+    ) -> dict[str, int]:
+        """Apply additive DLC schema changes without replaying dynamic world state.
 
-        导入后自动补齐每个实体的 7 个标准资源代币。
-        返回 (实体数, 库存数, 关系数)。
+        Existing entity status, inventory quantities, entity values, event progress, and
+        versions are preserved. Resource anchor changes and resource kind changes are
+        rejected because either would reinterpret live balances.
         """
-        entity_types: dict[str, str] = {}
-        with sqlite3.connect(self._db_path) as conn:
-            for e in entities:
-                entity_types[e.id] = e.type
-                conn.execute(
-                    """INSERT OR REPLACE INTO entities
-                       (id, type, name, description, current_status, updated_at, metadata)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                resources_added = 0
+                resources_updated = 0
+                for definition in resource_definitions or []:
+                    existing = conn.execute(
+                        "SELECT kind,anchor_rate FROM resource_catalog WHERE name=?",
+                        (definition.name,),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing["kind"] != definition.kind:
+                            raise ValueError(
+                                f"resource kind change requires migration: {definition.name}"
+                            )
+                        if definition.kind == "asset":
+                            old_rate = float(existing["anchor_rate"] or 1.0)
+                            new_rate = float(definition.anchor_rate or 1.0)
+                            if not math.isclose(old_rate, new_rate, rel_tol=0.0, abs_tol=1e-12):
+                                raise ValueError(
+                                    f"anchor_rate change requires migration: {definition.name}"
+                                )
+                        resources_updated += 1
+                    else:
+                        resources_added += 1
+                    self._upsert_resource_definition_conn(conn, definition)
+
+                known_before = {
+                    str(row["id"]) for row in conn.execute("SELECT id FROM entities")
+                }
+                entities_added = 0
+                entities_updated = 0
+                for entity in entities:
+                    if entity.id in known_before:
+                        conn.execute(
+                            """UPDATE entities SET type=?,name=?,description=?,metadata=?
+                               WHERE id=?""",
+                            (
+                                entity.type, entity.name, entity.description,
+                                json.dumps(entity.metadata, ensure_ascii=False), entity.id,
+                            ),
+                        )
+                        entities_updated += 1
+                    else:
+                        conn.execute(
+                            """INSERT INTO entities
+                               (id,type,name,description,current_status,updated_at,metadata,version)
+                               VALUES (?,?,?,?,?,?,?,?)""",
+                            (
+                                entity.id, entity.type, entity.name, entity.description,
+                                entity.current_status, entity.updated_at,
+                                json.dumps(entity.metadata, ensure_ascii=False),
+                                max(0, int(entity.version)),
+                            ),
+                        )
+                        known_before.add(entity.id)
+                        entities_added += 1
+
+                inventory_added = 0
+                values_added = 0
+                for item in inventory:
+                    self._require_entity(conn, item.entity_id)
+                    definition = conn.execute(
+                        "SELECT kind,unit FROM resource_catalog WHERE name=?",
+                        (item.item_name,),
+                    ).fetchone()
+                    if definition is not None and definition["kind"] != "asset":
+                        cursor = conn.execute(
+                            """INSERT OR IGNORE INTO entity_values
+                               (entity_id,name,kind,value,description,version)
+                               VALUES (?,?,?,?,?,?)""",
+                            (
+                                item.entity_id, item.item_name, definition["kind"],
+                                item.quantity, item.description or definition["unit"] or "",
+                                max(0, int(item.version)),
+                            ),
+                        )
+                        values_added += max(0, cursor.rowcount)
+                    else:
+                        cursor = conn.execute(
+                            """INSERT OR IGNORE INTO inventory
+                               (entity_id,category,item_name,quantity,description,version)
+                               VALUES (?,?,?,?,?,?)""",
+                            (
+                                item.entity_id, item.category or item.item_name, item.item_name,
+                                item.quantity, item.description, max(0, int(item.version)),
+                            ),
+                        )
+                        inventory_added += max(0, cursor.rowcount)
+
+                for value in entity_values or []:
+                    self._require_entity(conn, value.entity_id)
+                    definition = conn.execute(
+                        "SELECT kind FROM resource_catalog WHERE name=?", (value.name,),
+                    ).fetchone()
+                    if definition is not None and definition["kind"] == "asset":
+                        raise ValueError(f"asset cannot be loaded as entity value: {value.name}")
+                    cursor = conn.execute(
+                        """INSERT OR IGNORE INTO entity_values
+                           (entity_id,name,kind,value,description,version)
+                           VALUES (?,?,?,?,?,?)""",
+                        (
+                            value.entity_id, value.name, value.kind, value.value,
+                            value.description, max(0, int(value.version)),
+                        ),
+                    )
+                    values_added += max(0, cursor.rowcount)
+
+                relations_upserted = 0
+                known_ids = {
+                    str(row["id"]) for row in conn.execute("SELECT id FROM entities")
+                }
+                for relation in relations or []:
+                    rel_type = relation.get("rel_type", "")
+                    if rel_type not in RELATION_TYPES:
+                        continue
+                    parent_id = str(relation["parent_id"])
+                    child_id = str(relation["child_id"])
+                    if parent_id not in known_ids or child_id not in known_ids:
+                        raise ValueError(
+                            f"relation references missing entity: {parent_id}->{child_id}"
+                        )
+                    conn.execute(
+                        """INSERT INTO entity_relations(parent_id,child_id,rel_type,note)
+                           VALUES (?,?,?,?) ON CONFLICT(parent_id,child_id,rel_type)
+                           DO UPDATE SET note=excluded.note""",
+                        (parent_id, child_id, rel_type, relation.get("note", "")),
+                    )
+                    relations_upserted += 1
+
+                events_added = 0
+                for event in ongoing_events or []:
+                    if event.entity_id not in known_ids:
+                        raise ValueError(
+                            f"event references missing entity: {event.entity_id}"
+                        )
+                    cursor = conn.execute(
+                        """INSERT OR IGNORE INTO ongoing_events
+                           (event_id,entity_id,event_type,description,start_time,end_time,
+                            expected_result,source_action_id)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        (
+                            event.event_id, event.entity_id, event.event_type,
+                            event.description, event.start_time, event.end_time,
+                            json.dumps(event.expected_result, ensure_ascii=False),
+                            event.source_action_id,
+                        ),
+                    )
+                    events_added += max(0, cursor.rowcount)
+
+                official_rows = [
                     (
-                        e.id, e.type, e.name, e.description,
-                        e.current_status, e.updated_at,
-                        json.dumps(e.metadata, ensure_ascii=False),
-                    ),
+                        official.id, official.name, official.rank, official.location_id,
+                        official.role, official.agent_type, official.superior_id,
+                        official.personality_seed, int(official.enabled), official.extra_prompt,
+                    )
+                    for official in officials or []
+                ]
+                next_official_ids = {str(official.id) for official in officials or []}
+                stale_official_ids = sorted(
+                    set(replace_official_ids or set()) - next_official_ids
                 )
-            for it in inventory:
-                conn.execute(
-                    """INSERT OR REPLACE INTO inventory
-                       (entity_id, category, item_name, quantity, description)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (it.entity_id, it.category, it.item_name,
-                     it.quantity, it.description),
+                if stale_official_ids:
+                    conn.executemany(
+                        "DELETE FROM officials WHERE id=?",
+                        [(official_id,) for official_id in stale_official_ids],
+                    )
+                if official_rows:
+                    conn.executemany(
+                        """INSERT OR REPLACE INTO officials
+                           (id,name,rank,location_id,role,agent_type,superior_id,
+                            personality_seed,enabled,extra_prompt)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        official_rows,
+                    )
+
+                conn.commit()
+                return {
+                    "resources_added": resources_added,
+                    "resources_updated": resources_updated,
+                    "entities_added": entities_added,
+                    "entities_updated": entities_updated,
+                    "inventory_added": inventory_added,
+                    "entity_values_added": values_added,
+                    "relations_upserted": relations_upserted,
+                    "ongoing_events_added": events_added,
+                    "officials_upserted": len(official_rows),
+                    "officials_removed": len(stale_official_ids),
+                }
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def bulk_load(
+        self, entities: list[Entity], inventory: list[InventoryItem],
+        relations: list[dict[str, str]] | None = None,
+        ongoing_events: list[OngoingEvent] | None = None,
+        entity_values: list[EntityValue] | None = None,
+        resource_definitions: list[ResourceDefinition] | None = None,
+    ) -> tuple[int, int, int]:
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                result = self._bulk_load_conn(
+                    conn, entities, inventory, relations, ongoing_events,
+                    entity_values, resource_definitions, preserve_versions=False,
                 )
-            rel_count = 0
-            for r in (relations or []):
-                rel_type = r.get("rel_type", "")
-                if rel_type not in RELATION_TYPES:
-                    continue
-                conn.execute(
-                    """INSERT OR REPLACE INTO entity_relations
-                       (parent_id, child_id, rel_type, note)
-                       VALUES (?, ?, ?, ?)""",
-                    (r["parent_id"], r["child_id"], rel_type, r.get("note", "")),
-                )
-                rel_count += 1
-        for e in entities:
-            self.init_default_inventory(e.id, entity_types.get(e.id, ""))
-        return len(entities), len(inventory), rel_count
+                conn.commit()
+                return result
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def restore_all(self, data: dict[str, Any]) -> tuple[int, int, int]:
-        """清空并从导出数据完整恢复世界状态（读档用）.
-
-        恢复后自动补齐每个实体的 7 个标准资源代币。
-        """
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute("DELETE FROM entity_relations")
-            conn.execute("DELETE FROM inventory")
-            conn.execute("DELETE FROM entities")
-        entities = [
-            Entity(
-                id=e["id"], type=e["type"], name=e["name"],
-                description=e.get("description", ""),
-                current_status=e.get("current_status", ""),
-                updated_at=e.get("updated_at", 0.0),
-                metadata=e.get("metadata", {}),
-            )
-            for e in data.get("entities", [])
-        ]
-        inventory = [
-            InventoryItem(
-                entity_id=i["entity_id"], category=i["category"],
-                item_name=i["item_name"], quantity=i.get("quantity", 0.0),
-                description=i.get("description", ""),
-            )
-            for i in data.get("inventory", [])
-        ]
-        relations = list(data.get("relations", []))
-        return self.bulk_load(entities, inventory, relations)
+        entities = [Entity(
+            id=e["id"], type=e["type"], name=e["name"],
+            description=e.get("description", ""), current_status=e.get("current_status", ""),
+            updated_at=e.get("updated_at", 0.0), metadata=e.get("metadata", {}),
+            version=e.get("version", 0),
+        ) for e in data.get("entities", [])]
+        inventory = [InventoryItem(
+            entity_id=i["entity_id"], category=i.get("category", i["item_name"]),
+            item_name=i["item_name"], quantity=i.get("quantity", 0.0),
+            description=i.get("description", ""), version=i.get("version", 0),
+            anchor_rate=i.get("anchor_rate", 1.0),
+        ) for i in data.get("inventory", [])]
+        values = [EntityValue(
+            entity_id=v["entity_id"], name=v["name"], kind=v["kind"],
+            value=v.get("value", 0.0), description=v.get("description", ""),
+            version=v.get("version", 0),
+        ) for v in data.get("entity_values", [])]
+        events = [OngoingEvent(
+            event_id=e["event_id"], entity_id=e["entity_id"],
+            event_type=e.get("event_type", "state_change"),
+            description=e.get("description", ""), start_time=e.get("start_time", 0.0),
+            end_time=e.get("end_time", 0.0), expected_result=e.get("expected_result", {}),
+            source_action_id=e.get("source_action_id", ""),
+        ) for e in data.get("ongoing_events", [])]
+        catalog = [ResourceDefinition(
+            name=r["name"], unit=r.get("unit", ""), kind=r.get("kind", "asset"),
+            default_quantity=r.get("default_quantity", 0.0),
+            min_quantity=r.get("min_quantity"), max_quantity=r.get("max_quantity"),
+            anchor_rate=r.get("anchor_rate"), metadata=r.get("metadata", {}),
+        ) for r in data.get("resource_catalog", [])]
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for table in (
+                    "ongoing_events", "entity_relations", "inventory", "entity_values",
+                    "inventory_ledger", "world_commands", "entities",
+                ):
+                    conn.execute(f"DELETE FROM {table}")
+                if catalog:
+                    conn.execute("DELETE FROM resource_catalog")
+                result = self._bulk_load_conn(
+                    conn, entities, inventory, list(data.get("relations", [])),
+                    events, values, catalog, preserve_versions=True,
+                )
+                for row in data.get("inventory_ledger", []):
+                    conn.execute(
+                        """INSERT INTO inventory_ledger
+                           (entry_id,command_id,entity_id,resource_name,sequence,
+                            quantity_delta,anchor_rate,base_value_delta,balance_after,
+                            reason,sim_time,chain_id,metadata,created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            row["entry_id"], row["command_id"], row["entity_id"],
+                            row["resource_name"], row.get("sequence", 0),
+                            row["quantity_delta"], row["anchor_rate"],
+                            row["base_value_delta"], row["balance_after"],
+                            row.get("reason", ""), row.get("sim_time", 0.0),
+                            row.get("chain_id", ""),
+                            json.dumps(row.get("metadata", {}), ensure_ascii=False),
+                            row.get("created_at", time.time()),
+                        ),
+                    )
+                conn.commit()
+                return result
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def export_all(self) -> dict[str, Any]:
-        """导出为 JSON 友好结构."""
-        entities = self.get_all_entities()
-        with self._conn() as conn:
-            inv_rows = conn.execute("SELECT * FROM inventory").fetchall()
+        with closing(self._conn()) as conn, conn:
+            entity_rows = conn.execute("SELECT * FROM entities ORDER BY id").fetchall()
+            inv_rows = conn.execute(
+                """SELECT i.*,COALESCE(rc.anchor_rate,1.0) anchor_rate
+                   FROM inventory i LEFT JOIN resource_catalog rc ON rc.name=i.item_name
+                   ORDER BY i.entity_id,i.item_name"""
+            ).fetchall()
+            value_rows = conn.execute(
+                "SELECT * FROM entity_values ORDER BY entity_id,kind,name"
+            ).fetchall()
+            catalog_rows = conn.execute(
+                "SELECT * FROM resource_catalog ORDER BY kind,name"
+            ).fetchall()
+            event_rows = conn.execute("SELECT * FROM ongoing_events ORDER BY end_time").fetchall()
+            ledger_rows = conn.execute(
+                "SELECT * FROM inventory_ledger ORDER BY created_at,sequence"
+            ).fetchall()
+        entities = [self._row_to_entity(row) for row in entity_rows]
+        inventory = [self._row_to_item(row) for row in inv_rows]
+        values = [self._row_to_value(row) for row in value_rows]
+        catalog = [self._row_to_resource_definition(row) for row in catalog_rows]
         return {
-            "entities": [
-                {
-                    "id": e.id, "type": e.type, "name": e.name,
-                    "description": e.description,
-                    "current_status": e.current_status,
-                    "updated_at": e.updated_at,
-                    "metadata": e.metadata,
-                }
-                for e in entities
-            ],
-            "inventory": [
-                {
-                    "entity_id": r["entity_id"],
-                    "category": r["category"],
-                    "item_name": r["item_name"],
-                    "quantity": r["quantity"],
-                    "description": r["description"],
-                }
-                for r in inv_rows
-            ],
+            "schema_version": "2.0",
+            "entities": [{
+                "id": e.id, "type": e.type, "name": e.name,
+                "description": e.description, "current_status": e.current_status,
+                "updated_at": e.updated_at, "metadata": e.metadata, "version": e.version,
+            } for e in entities],
+            "inventory": [{
+                "entity_id": i.entity_id, "category": i.category,
+                "item_name": i.item_name, "quantity": i.quantity,
+                "description": i.description, "version": i.version,
+                "anchor_rate": i.anchor_rate, "base_value": i.base_value,
+            } for i in inventory],
+            "entity_values": [{
+                "entity_id": v.entity_id, "name": v.name, "kind": v.kind,
+                "value": v.value, "description": v.description, "version": v.version,
+            } for v in values],
+            "resource_catalog": [{
+                "name": r.name, "unit": r.unit, "kind": r.kind,
+                "default_quantity": r.default_quantity,
+                "min_quantity": r.min_quantity, "max_quantity": r.max_quantity,
+                "anchor_rate": r.anchor_rate, "metadata": r.metadata,
+            } for r in catalog],
             "relations": self.get_all_relations(),
+            "ongoing_events": [{
+                "event_id": e.event_id, "entity_id": e.entity_id,
+                "event_type": e.event_type, "description": e.description,
+                "start_time": e.start_time, "end_time": e.end_time,
+                "expected_result": e.expected_result,
+                "source_action_id": e.source_action_id,
+            } for e in (self._row_to_event(row) for row in event_rows)],
+            "inventory_ledger": [self._ledger_row_to_dict(row) for row in ledger_rows],
         }
 
-    # ── Action Agent 专用：动态上下文 ──
+    @staticmethod
+    def _ledger_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.get("metadata") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            item["metadata"] = {}
+        return item
+
+    # Action context.
 
     def get_context_for_action(
         self,
         location_id: str,
         executor_id: str | None = None,
+        sim_time: float = 0.0,
+        seconds_per_day: float = 86400.0,
     ) -> str:
         """拼接地点描述+现状+库存+执行者信息，供 ActionAgent 注入 prompt.
 
@@ -550,32 +1683,39 @@ class WorldState:
                 lines.append(f"- 基本情况：{loc.description}")
             if loc.current_status:
                 lines.append(f"- 当前状况：{loc.current_status}")
-            inv = self.get_inventory(location_id)
-            resource_items = [
-                it for it in inv
-                if it.quantity != -1
-                and RESOURCE_META.get(it.item_name, {}).get("type") == "resource"
-            ]
-            if resource_items:
-                lines.append("- 库存：")
-                for it in resource_items:
-                    qty = f"{it.quantity:g}"
-                    unit = f" {it.description}" if it.description else ""
-                    lines.append(f"  · {it.item_name}：{qty}{unit}")
+            inv = [item for item in self.get_inventory(location_id) if item.quantity != -1]
+            if inv:
+                lines.append("- \u5e93\u5b58\uff1a")
+                for item in inv:
+                    unit = f" {item.description}" if item.description else ""
+                    lines.append(
+                        f"  \u00b7 {item.item_name}\uff1a{item.quantity:g}{unit}"
+                        f"\uff08\u951a\u5b9a\u4ef7\u503c {item.base_value:g}\uff09"
+                    )
             else:
-                lines.append("- 库存：（无记录）")
-            # 展示核心参数（type=param）
-            param_items = [
-                it for it in inv
-                if it.quantity != -1
-                and RESOURCE_META.get(it.item_name, {}).get("type") == "param"
-            ]
-            if param_items:
-                lines.append("- 核心参数：")
-                for it in param_items:
-                    qty = f"{it.quantity:g}"
-                    unit = f" {it.description}" if it.description else ""
-                    lines.append(f"  · {it.item_name}：{qty}{unit}")
+                lines.append("- \u5e93\u5b58\uff1a\uff08\u65e0\u8bb0\u5f55\uff09")
+            values = [value for value in self.get_entity_values(location_id) if value.value != -1]
+            metrics = [value for value in values if value.kind == "metric"]
+            parameters = [value for value in values if value.kind == "parameter"]
+            if metrics:
+                lines.append("- \u4e16\u754c\u6307\u6807\uff1a")
+                for value in metrics:
+                    unit = f" {value.description}" if value.description else ""
+                    lines.append(f"  \u00b7 {value.name}\uff1a{value.value:g}{unit}")
+            if parameters:
+                lines.append("- \u6838\u5fc3\u53c2\u6570\uff1a")
+                for value in parameters:
+                    unit = f" {value.description}" if value.description else ""
+                    lines.append(f"  \u00b7 {value.name}\uff1a{value.value:g}{unit}")
+            ongoing = self.list_ongoing_events(location_id)
+            if ongoing:
+                lines.append("- 正在发生的事情：")
+                for ev in ongoing:
+                    days_left = max(0.0, (ev.end_time - sim_time) / seconds_per_day)
+                    lines.append(
+                        f"  · [{ev.event_id}] {ev.description}"
+                        f"（剩 {days_left:.1f} 天，预期：{ev.expected_result}）"
+                    )
         else:
             lines.append(f"### 目标地点：{location_id}")
             lines.append("- （世界状态数据库中尚未登记该地点，请根据行动描述合理推演）")
@@ -589,5 +1729,13 @@ class WorldState:
                     lines.append(f"- 基本情况：{exec_ent.description}")
                 if exec_ent.current_status:
                     lines.append(f"- 当前状况：{exec_ent.current_status}")
+                exec_ongoing = self.list_ongoing_events(executor_id)
+                if exec_ongoing:
+                    lines.append("- 正在发生的事情：")
+                    for ev in exec_ongoing:
+                        days_left = max(0.0, (ev.end_time - sim_time) / seconds_per_day)
+                        lines.append(
+                            f"  · [{ev.event_id}] {ev.description}（剩 {days_left:.1f} 天）"
+                        )
 
         return "\n".join(lines)

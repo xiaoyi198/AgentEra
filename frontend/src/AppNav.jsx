@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import './AppNav.css'
 
 const PAGES = [
-  { href: '/', label: '朝堂', match: (p) => p === '/' || p === '' || p.endsWith('/index.html') },
-  { href: '/editor.html', label: '编修', match: (p) => p.includes('editor') },
-  { href: '/tianji.html', label: '天玑', match: (p) => p.includes('tianji') },
+  { href: '/', label: '朝堂', icon: '殿', match: (p) => p === '/' || p === '' || p.endsWith('/index.html') },
+  { href: '/editor.html', label: '编修', icon: '录', match: (p) => p.includes('editor') },
+  { href: '/dlc.html', label: 'DLC', icon: '扩', match: (p) => p.includes('dlc') },
+  { href: '/tianji.html', label: '天玑', icon: '玑', match: (p) => p.includes('tianji') },
 ]
 
-const STORAGE_KEY = 'appNav.position.v1'
+const STORAGE_KEY = 'appNav.position.v2'
 const MARGIN = 8
 const DRAG_THRESHOLD = 4
 
@@ -17,7 +18,7 @@ function loadPosition() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') return parsed
-  } catch {}
+  } catch { /* localStorage may be unavailable */ }
   return null
 }
 
@@ -38,7 +39,7 @@ export default function AppNav() {
   const [dragging, setDragging] = useState(false)
   const suppressClickRef = useRef(false)
 
-  // 初始化默认位置（右上角），并在窗口尺寸改变后保持在视口内
+  // 初始化默认位置（底部居中），并在窗口尺寸改变后保持在视口内
   useEffect(() => {
     const applyDefault = () => {
       const el = navRef.current
@@ -46,7 +47,7 @@ export default function AppNav() {
       const rect = el.getBoundingClientRect()
       setPosition((prev) => {
         if (prev) return clampToViewport(prev.x, prev.y, rect.width, rect.height)
-        return { x: window.innerWidth - rect.width - 16, y: 12 }
+        return { x: Math.max(MARGIN, (window.innerWidth - rect.width) / 2), y: window.innerHeight - rect.height - 18 }
       })
     }
     applyDefault()
@@ -59,7 +60,7 @@ export default function AppNav() {
     if (!position) return
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(position))
-    } catch {}
+    } catch { /* localStorage may be unavailable */ }
   }, [position])
 
   useEffect(() => {
@@ -145,7 +146,8 @@ export default function AppNav() {
             onClick={onLinkClick}
             draggable={false}
           >
-            {page.label}
+            <span className="app-nav-icon" aria-hidden="true">{page.icon}</span>
+            <span>{page.label}</span>
           </a>
         )
       })}

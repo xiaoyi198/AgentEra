@@ -464,17 +464,11 @@ function SystemAgentEditor({ selectedKey, onSelect }) {
 
 // ── System Agent Detail (right panel) ──
 
-function SystemAgentDetail({ agentKey, prompts, onSave, showToast }) {
-  const [draft, setDraft] = useState('')
-  const [saved, setSaved] = useState('')
+function SystemAgentDetail({ agentKey, initialContent, onSave, showToast }) {
+  const [draft, setDraft] = useState(initialContent)
+  const [saved, setSaved] = useState(initialContent)
 
   const agent = SYSTEM_AGENTS.find(a => a.key === agentKey)
-
-  useEffect(() => {
-    const content = prompts[agentKey] || ''
-    setDraft(content)
-    setSaved(content)
-  }, [agentKey, prompts])
 
   if (!agent) {
     return <div className="detail-empty">在左侧选择一个系统 Agent</div>
@@ -769,7 +763,13 @@ export default function AgentEditor() {
     <div className="editor-root">
       {/* Header */}
       <header className="editor-header">
-        <h1>Agent 编辑器</h1>
+        <div className="editor-brand">
+          <span className="brand-seal small" aria-hidden="true">编</span>
+          <div>
+            <h1>百官编修录</h1>
+            <p>Agent 架构与人格设定</p>
+          </div>
+        </div>
         <div className="header-stats">
           <span className="stat">启用: <strong>{enabledCount}</strong> / {totalCount}</span>
           <span className="stat">活跃: <strong>{activeCount}</strong></span>
@@ -838,8 +838,9 @@ export default function AgentEditor() {
         <div className="editor-right">
           {systemAgentKey ? (
             <SystemAgentDetail
+              key={`${systemAgentKey}:${systemPrompts[systemAgentKey] || ''}`}
               agentKey={systemAgentKey}
-              prompts={systemPrompts}
+              initialContent={systemPrompts[systemAgentKey] || ''}
               onSave={handleSystemPromptSave}
               showToast={showToast}
             />

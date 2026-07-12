@@ -357,12 +357,15 @@ export default function TianJiView() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div className="tianji-root">
       {/* Header */}
       <div className="tj-header">
-        <div>
-          <h1>天 玑</h1>
-          <div className="tj-header-subtitle">全流程测试调试助手</div>
+        <div className="tj-brand">
+          <span className="brand-seal small" aria-hidden="true">玑</span>
+          <div>
+            <h1>天玑</h1>
+            <div className="tj-header-subtitle">世界推演与调试中枢</div>
+          </div>
         </div>
         <div className="tj-header-actions">
           <button className="tj-btn" onClick={refreshWorldState}>刷新世界</button>

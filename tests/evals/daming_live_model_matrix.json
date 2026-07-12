@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "matrix_id": "daming-live-model-matrix-v1",
+  "suite": "tests/evals/daming_live_trajectory_scenarios.json",
+  "tasks": {
+    "agent.turn": [
+      "fast_tools",
+      "deep_sim"
+    ],
+    "router.ambiguous": [
+      "fast_tools",
+      "deep_sim"
+    ],
+    "action.simulation": [
+      "fast_tools",
+      "deep_sim"
+    ],
+    "memory.compress": [
+      "fast_tools"
+    ],
+    "tianji.chat": [
+      "deep_sim",
+      "fast_tools"
+    ]
+  },
+  "repetitions": 3,
+  "minimum_review_coverage": 1.0,
+  "cohorts": [
+    "daming-core"
+  ],
+  "minimum_reviewers_per_target": 2,
+  "maximum_review_disagreement": 15
+}

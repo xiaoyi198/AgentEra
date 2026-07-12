@@ -21,12 +21,14 @@ class ChainLog:
         self._entries: deque[ChainLogEntry] = deque(maxlen=_ENTRIES_MAXLEN)
         self._by_chain: dict[str, list[ChainLogEntry]] = {}
         self._by_event: dict[str, list[ChainLogEntry]] = {}
+        self._route_edges: dict[str, set[tuple[str, str]]] = {}
 
     def clear(self) -> None:
         """清空内存索引和磁盘文件."""
         self._entries.clear()
         self._by_chain.clear()
         self._by_event.clear()
+        self._route_edges.clear()
         if self._path.exists():
             self._path.write_text("", encoding="utf-8")
 
@@ -36,6 +38,8 @@ class ChainLog:
         self._by_chain.setdefault(entry.chain_id, []).append(entry)
         if entry.event_id:
             self._by_event.setdefault(entry.event_id, []).append(entry)
+        if entry.chain_id and entry.caller and entry.routed_to:
+            self._route_edges.setdefault(entry.chain_id, set()).add((entry.caller, entry.routed_to))
         with open(self._path, "a", encoding="utf-8") as f:
             f.write(json.dumps(dataclasses.asdict(entry), ensure_ascii=False) + "\n")
 
@@ -60,6 +64,13 @@ class ChainLog:
         """获取某条链的最大跳数."""
         entries = self._by_chain.get(chain_id, [])
         return max((e.hop_count for e in entries), default=0)
+
+    def has_route_edge(self, chain_id: str, source_id: str, target_id: str) -> bool:
+        """Whether a directed source -> target edge already exists in a chain."""
+        return (source_id, target_id) in self._route_edges.get(chain_id, set())
+
+    def get_route_edges(self, chain_id: str) -> set[tuple[str, str]]:
+        return set(self._route_edges.get(chain_id, set()))
 
     def all_entries(self) -> list[ChainLogEntry]:
         return list(self._entries)
@@ -89,6 +100,7 @@ class ChainLog:
         self._entries.clear()
         self._by_chain.clear()
         self._by_event.clear()
+        self._route_edges.clear()
         loaded = 0
         with open(self._path, encoding="utf-8") as f:
             for line in f:
@@ -101,5 +113,7 @@ class ChainLog:
                 self._by_chain.setdefault(entry.chain_id, []).append(entry)
                 if entry.event_id:
                     self._by_event.setdefault(entry.event_id, []).append(entry)
+                if entry.chain_id and entry.caller and entry.routed_to:
+                    self._route_edges.setdefault(entry.chain_id, set()).add((entry.caller, entry.routed_to))
                 loaded += 1
         return loaded

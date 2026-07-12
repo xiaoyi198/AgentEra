@@ -139,26 +139,29 @@ export default function RelationsView() {
     () => Object.fromEntries(entities.map(e => [e.id, e.name])),
     [entities]
   )
-  const typeMap = useMemo(
-    () => Object.fromEntries(entities.map(e => [e.id, e.type])),
-    [entities]
-  )
-
   const flash = (s) => { setMsg(s); setTimeout(() => setMsg(''), 2000) }
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/relations`)
-      const data = await res.json()
-      if (data.error) { flash('✗ ' + data.error); return }
-      setEntities(data.entities || [])
-      setRelations(data.relations || [])
-    } catch {
-      flash('✗ 网络错误')
-    }
+  useEffect(() => {
+    let active = true
+    fetch(`${API_BASE}/relations`)
+      .then(res => res.json())
+      .then(data => {
+        if (!active) return
+        if (data.error) {
+          setMsg('✗ ' + data.error)
+          setTimeout(() => setMsg(''), 2000)
+          return
+        }
+        setEntities(data.entities || [])
+        setRelations(data.relations || [])
+      })
+      .catch(() => {
+        if (!active) return
+        setMsg('✗ 网络错误')
+        setTimeout(() => setMsg(''), 2000)
+      })
+    return () => { active = false }
   }, [])
-
-  useEffect(() => { load() }, [load])
 
   // 首次布局：entities + relations 首批到达时跑一次 dagre，之后不再重排
   useEffect(() => {

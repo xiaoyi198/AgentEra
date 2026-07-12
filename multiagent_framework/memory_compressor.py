@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any, Protocol, runtime_checkable
 
+from .runtime_bindings import MEMORY_TASK, RuntimeBindingsHub, RuntimeTaskBinding
+
 logger = logging.getLogger(__name__)
 
 SUMMARY_META_KEY = "_meta"
@@ -150,6 +152,20 @@ class LLMMemoryCompressor:
         self._llm = llm_client
         self._prompt_template = prompt_template
         self._temperature = temperature
+        self._runtime_bindings: RuntimeBindingsHub | None = None
+
+    def bind_runtime_bindings(self, hub: RuntimeBindingsHub) -> None:
+        self._runtime_bindings = hub
+
+    def _capture_runtime_binding(self) -> RuntimeTaskBinding:
+        if self._runtime_bindings is not None:
+            return self._runtime_bindings.capture(MEMORY_TASK)
+        return RuntimeTaskBinding(
+            task_id=MEMORY_TASK,
+            generation=0,
+            prompt=self._prompt_template,
+            llm=self._llm,
+        )
 
     async def compress(
         self,
@@ -157,6 +173,7 @@ class LLMMemoryCompressor:
         existing_summary: dict[str, Any] | None,
         agent_context: str,
     ) -> dict[str, Any]:
+        binding = self._capture_runtime_binding()
         # 构建已有摘要段落
         if existing_summary and existing_summary.get("content"):
             existing_text = existing_summary["content"]
@@ -166,16 +183,21 @@ class LLMMemoryCompressor:
 
         messages_text = format_messages_for_compression(messages)
 
-        prompt = self._prompt_template.format(
+        prompt = binding.prompt.format(
             agent_context=agent_context,
             existing_summary_section=existing_section,
             messages_text=messages_text,
         )
 
-        response = await self._llm.chat(
+        response = await binding.llm.chat(
             messages=[{"role": "user", "content": prompt}],
             tools=None,
             temperature=self._temperature,
+            trace_context={
+                "task_type": "memory.compress",
+                "agent_id": "memory_compressor",
+                "runtime_generation": binding.generation,
+            },
         )
 
         summary_text = response.content.strip()

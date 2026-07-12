@@ -1,0 +1,7 @@
+﻿{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "${WORLD_SIM_API_KEY}",
+  "model": "your-model-id",
+  "timeout_s": 30,
+  "max_concurrent": 4
+}

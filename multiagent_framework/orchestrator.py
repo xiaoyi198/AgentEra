@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -14,6 +15,7 @@ from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
 from .memory_compressor import MemoryCompressor
+from .event_generator import RandomEventGenerator
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -21,7 +23,17 @@ from .fc_handlers import (
     dispatch_fc,
 )
 from .router import RouterAgent, MAX_HOPS
+from .time_simulator import TimeSimulator
 from .runtime_persistor import RuntimePersistor
+from .runtime_bindings import (
+    ACTION_TASK,
+    MEMORY_TASK,
+    ROUTER_TASK,
+    TIANJI_TASK,
+    RuntimeBindingsHub,
+    RuntimeBindingsSnapshot,
+    RuntimeTaskBinding,
+)
 from .timer_system import TimerSystem
 from .types import (
     ActionResult,
@@ -69,12 +81,45 @@ class Orchestrator:
         self.action_agent = action_agent
 
         self.agents: dict[str, BaseAgent] = {}
+        self.agent_generation: int = 0
         self._memory_compressor = memory_compressor
+        initial_bindings: dict[str, RuntimeTaskBinding] = {
+            ROUTER_TASK: RuntimeTaskBinding(
+                task_id=ROUTER_TASK,
+                generation=0,
+                prompt=str(getattr(router, "_system_prompt", "") or ""),
+                llm=getattr(router, "llm", None),
+            )
+        }
+        if action_agent is not None:
+            action_prompt = getattr(action_agent, "_prompt_template", None)
+            if action_prompt is None and hasattr(action_agent, "_load_template"):
+                action_prompt = action_agent._load_template()
+            initial_bindings[ACTION_TASK] = RuntimeTaskBinding(
+                task_id=ACTION_TASK, generation=0,
+                prompt=str(action_prompt or ""), llm=getattr(action_agent, "llm", None),
+            )
+        if memory_compressor is not None:
+            initial_bindings[MEMORY_TASK] = RuntimeTaskBinding(
+                task_id=MEMORY_TASK, generation=0,
+                prompt=str(getattr(memory_compressor, "_prompt_template", "") or ""),
+                llm=getattr(memory_compressor, "_llm", None),
+            )
+        self.runtime_bindings = RuntimeBindingsHub(
+            RuntimeBindingsSnapshot.create(0, initial_bindings)
+        )
+        self._bind_runtime_component(router, self.runtime_bindings)
+        self._bind_runtime_component(action_agent, self.runtime_bindings)
+        self._bind_runtime_component(memory_compressor, self.runtime_bindings)
         self._seconds_per_day = seconds_per_day
         self._on_tick = on_tick
 
         # 时间状态
         self._sim_time: float = 0.0
+        self.random_event_generator = RandomEventGenerator(sim_time=self._sim_time)
+        self.time_simulator = (
+            action_agent.time_simulator if action_agent is not None else TimeSimulator()
+        )
         self._last_real_time: float = 0.0
         self._running = False
         self._pausing = False
@@ -104,6 +149,146 @@ class Orchestrator:
         # 已触发定时器历史（调试用）
         self.fired_timers: deque[dict[str, Any]] = deque(maxlen=2000)
 
+        # Monotonic lifecycle counters. Unlike bounded debug logs these counters
+        # remain meaningful for external operational monitoring.
+        self._operational_metrics_lock = threading.Lock()
+        self._operational_metrics = {
+            "router_batches": 0,
+            "router_batches_completed": 0,
+            "router_failures": 0,
+            "router_actions": 0,
+            "router_commands": 0,
+            "agent_turns": 0,
+            "agent_turn_completed": 0,
+            "agent_turn_errors": 0,
+            "agent_turn_rounds": 0,
+            "agent_turn_tool_calls": 0,
+            "agent_turn_input_tokens": 0,
+            "agent_turn_output_tokens": 0,
+        }
+
+        # Execution-layer idempotency guard; Router owns the first guard.
+        self._executed_command_keys: set[str] = set()
+        self._executed_command_order: deque[str] = deque(maxlen=5000)
+
+    @staticmethod
+    def _bind_runtime_component(component: Any, hub: RuntimeBindingsHub | None = None) -> None:
+        if component is not None and hasattr(component, "bind_runtime_bindings"):
+            target_hub = hub
+            if target_hub is not None:
+                component.bind_runtime_bindings(target_hub)
+
+    def _runtime_component(self, task_id: str) -> Any:
+        return {
+            ROUTER_TASK: self.router,
+            ACTION_TASK: self.action_agent,
+            MEMORY_TASK: self._memory_compressor,
+            TIANJI_TASK: getattr(self, "tianji_agent", None),
+        }.get(task_id)
+
+    @staticmethod
+    def _legacy_runtime_values(task_id: str, component: Any) -> tuple[str, Any]:
+        if component is None:
+            return "", None
+        if task_id == ROUTER_TASK:
+            return str(getattr(component, "_system_prompt", "") or ""), getattr(component, "llm", None)
+        if task_id == ACTION_TASK:
+            prompt = getattr(component, "_prompt_template", None)
+            if prompt is None and hasattr(component, "_load_template"):
+                prompt = component._load_template()
+            return str(prompt or ""), getattr(component, "llm", None)
+        if task_id == MEMORY_TASK:
+            return str(getattr(component, "_prompt_template", "") or ""), getattr(component, "_llm", None)
+        if task_id == TIANJI_TASK:
+            prompt = getattr(component, "_system_prompt", None)
+            if prompt is None and hasattr(component, "_load_system_prompt"):
+                prompt = component._load_system_prompt()
+            return str(prompt or ""), getattr(component, "llm", None)
+        return "", None
+
+    def prepare_runtime_bindings(
+        self,
+        generation: int,
+        *,
+        prompts: dict[str, str] | None = None,
+        clients: dict[str, Any] | None = None,
+        model_profiles: dict[str, str] | None = None,
+    ) -> RuntimeBindingsSnapshot:
+        """Build a complete candidate without mutating the active runtime binding."""
+        prompts = prompts or {}
+        clients = clients or {}
+        model_profiles = model_profiles or {}
+        active = self.runtime_bindings.snapshot.bindings
+        prepared: dict[str, RuntimeTaskBinding] = {}
+        for task_id in (ROUTER_TASK, ACTION_TASK, MEMORY_TASK, TIANJI_TASK):
+            previous = active.get(task_id)
+            component = self._runtime_component(task_id)
+            legacy_prompt, legacy_llm = self._legacy_runtime_values(task_id, component)
+            prompt = previous.prompt if previous is not None else legacy_prompt
+            llm = previous.llm if previous is not None else legacy_llm
+            profile = previous.model_profile if previous is not None else ""
+            if prompts.get(task_id):
+                prompt = str(prompts[task_id])
+            if clients.get(task_id) is not None:
+                llm = clients[task_id]
+            if task_id in model_profiles:
+                profile = str(model_profiles[task_id] or "")
+            if component is None and previous is None and llm is None:
+                continue
+            if llm is None:
+                raise ValueError(f"runtime task has no LLM client: {task_id}")
+            prepared[task_id] = RuntimeTaskBinding(
+                task_id=task_id, generation=int(generation), prompt=prompt,
+                llm=llm, model_profile=profile,
+            )
+        return RuntimeBindingsSnapshot.create(int(generation), prepared)
+
+    def activate_runtime_bindings(
+        self, snapshot: RuntimeBindingsSnapshot
+    ) -> RuntimeBindingsSnapshot:
+        """Publish all task bindings atomically, then mirror legacy fields for tooling."""
+        for task_id in snapshot.bindings:
+            component = self._runtime_component(task_id)
+            self._bind_runtime_component(component, self.runtime_bindings)
+        previous = self.runtime_bindings.activate(snapshot)
+        # These mirrors are not used by bound calls. They preserve compatibility for
+        # debug views and independent code that still inspects the legacy attributes.
+        for task_id, binding in snapshot.bindings.items():
+            component = self._runtime_component(task_id)
+            if component is None:
+                continue
+            if task_id == ROUTER_TASK:
+                component._system_prompt = binding.prompt
+                component.llm = binding.llm
+            elif task_id == ACTION_TASK:
+                component._prompt_template = binding.prompt
+                component.llm = binding.llm
+            elif task_id == MEMORY_TASK:
+                component._prompt_template = binding.prompt
+                component._llm = binding.llm
+            elif task_id == TIANJI_TASK:
+                component._system_prompt = binding.prompt
+                component.llm = binding.llm
+        return previous
+
+    def runtime_bindings_public_state(self) -> dict[str, Any]:
+        return self.runtime_bindings.public_state()
+
+    def _record_operational_metric(self, name: str, amount: int = 1) -> None:
+        with self._operational_metrics_lock:
+            self._operational_metrics[name] = (
+                self._operational_metrics.get(name, 0) + int(amount)
+            )
+
+    def operational_metrics_snapshot(self) -> dict[str, int]:
+        with self._operational_metrics_lock:
+            return dict(self._operational_metrics)
+
+    @property
+    def world_state(self):
+        """Return the WorldState bound to ActionAgent, or None."""
+        return getattr(self.action_agent, "world_state", None)
+
     @property
     def sim_time(self) -> float:
         return self._sim_time
@@ -125,11 +310,61 @@ class Orchestrator:
     def register_agent(self, agent: BaseAgent) -> None:
         if self._memory_compressor is not None:
             agent.set_compressor(self._memory_compressor)
+        agent.bind_runtime(
+            world_state=self.world_state,
+            court=self.court,
+            sim_time_provider=lambda: self._sim_time,
+            seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+        )
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
 
     def get_agent(self, agent_id: str) -> BaseAgent | None:
         return self.agents.get(agent_id)
+
+    def activate_agent_snapshot(
+        self,
+        agents: dict[str, BaseAgent],
+        *,
+        replace_agent_ids: set[str] | None = None,
+    ) -> dict[str, BaseAgent]:
+        """Atomically publish a prepared Agent map for future dispatches.
+
+        Background turns already hold direct references to their old Agent instances and
+        therefore finish normally. Pending wakeups resolve against the new map on the next
+        tick. The caller is responsible for migrating memory before activation.
+        """
+        prepared: dict[str, BaseAgent] = {}
+        for agent_id, agent in agents.items():
+            if agent_id != agent.agent_id:
+                raise ValueError(f"agent snapshot key mismatch: {agent_id}")
+            if self._memory_compressor is not None:
+                agent.set_compressor(self._memory_compressor)
+            agent.bind_runtime(
+                world_state=self.world_state,
+                court=self.court,
+                sim_time_provider=lambda: self._sim_time,
+                seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+            )
+            prepared[agent_id] = agent
+
+        replace_ids = set(replace_agent_ids or self.agents)
+        previous = {
+            agent_id: agent for agent_id, agent in self.agents.items()
+            if agent_id in replace_ids
+        }
+        merged = {
+            agent_id: agent for agent_id, agent in self.agents.items()
+            if agent_id not in replace_ids
+        }
+        merged.update(prepared)
+        self.agents = merged
+        self.agent_generation += 1
+        logger.info(
+            "Activated Agent snapshot generation=%d active=%d replaced=%d",
+            self.agent_generation, len(prepared), len(previous),
+        )
+        return previous
 
     def _fuzzy_find_agent(self, keyword: str) -> tuple[BaseAgent | None, Any]:
         """模糊匹配 Agent — Router 可能返回地名、人名、简称."""
@@ -150,6 +385,43 @@ class Orchestrator:
         return None, None
 
     # ── 事件注入 ──
+
+    def configure_random_events(
+        self,
+        templates: list[dict[str, Any]],
+        *,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish DLC random-event templates at the current simulation time."""
+        self.random_event_generator.configure(
+            templates,
+            sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def random_event_status(self) -> dict[str, Any]:
+        """Return scheduler metadata without payloads or Agent identifiers."""
+        return self.random_event_generator.public_status()
+
+    def configure_time_rules(self, rules: list[dict[str, Any]]) -> None:
+        """Atomically publish DLC action-duration rules for future work."""
+        if self.action_agent is not None:
+            self.action_agent.configure_time_rules(rules)
+            self.time_simulator = self.action_agent.time_simulator
+        else:
+            self.time_simulator = TimeSimulator(rules)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def time_rule_status(self) -> dict[str, Any]:
+        """Return safe rule metadata without action, entity, or prompt content."""
+        return {
+            "fingerprint": self.time_simulator.fingerprint,
+            "rule_count": len(self.time_simulator.rules),
+            "enabled_count": sum(1 for rule in self.time_simulator.rules if rule.enabled),
+        }
 
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
@@ -205,6 +477,8 @@ class Orchestrator:
             "sim_time": self._sim_time,
             "seconds_per_day": self._seconds_per_day,
             "timer_count": timer_count,
+            "random_events": self.random_event_generator.snapshot(),
+            "time_rules": self.time_rule_status(),
             "agent_memories": agent_memories,
         }
 
@@ -214,6 +488,9 @@ class Orchestrator:
         self.timers.load_from_db()
         self.chain_log.load_from_file()
         self.router.update_time_scale(self._seconds_per_day)
+        self.random_event_generator.restore(
+            state.get("random_events", {}), sim_time=self._sim_time
+        )
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})
         restored = 0
@@ -328,6 +605,19 @@ class Orchestrator:
         self._agent_tasks -= done
 
         # 1. 检查到期定时器 → 加入待唤醒队列
+        random_poll = self.random_event_generator.poll(self._sim_time)
+        for event in random_poll.events:
+            self.inject_event(event)
+            result.generated_events.append({
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "target_count": len(event.target_agents),
+                "generated_at": event.generated_at,
+            })
+        if random_poll.attempts and self.persistor:
+            self.persistor.mark_state_dirty()
+
         due_timers = self.timers.pop_due(self._sim_time)
         for timer in due_timers:
             self._pending_wakeups.append({
@@ -344,6 +634,23 @@ class Orchestrator:
                 "created_at": timer.created_at,
                 "fired_at": self._sim_time,
             })
+
+        # 1.5 Apply matured world events transactionally.
+        if self.world_state is not None:
+            matured_results = self.world_state.apply_matured_events(self._sim_time)
+            for matured_result in matured_results:
+                if not matured_result.ok:
+                    logger.warning(
+                        "Matured event rejected: command=%s code=%s error=%s",
+                        matured_result.command_id,
+                        matured_result.error_code,
+                        matured_result.error,
+                    )
+            if self.persistor and any(
+                matured_result.ok and not matured_result.replayed
+                for matured_result in matured_results
+            ):
+                self.persistor.mark_state_dirty()
 
         # 2. 处理待唤醒 — 拆分出皇帝奏折 vs Agent 调用
         if self._pending_wakeups:
@@ -418,6 +725,7 @@ class Orchestrator:
                     self._process_agents_background(agent_wakeups)
                 )
                 self._agent_tasks.add(task)
+                task.add_done_callback(self._agent_tasks.discard)
 
         # 3. 处理玩家操作
         while not self._player_actions.empty():
@@ -471,8 +779,11 @@ class Orchestrator:
 
         # Router 批量处理
         if actions:
+            self._record_operational_metric("router_batches")
+            self._record_operational_metric("router_actions", len(actions))
             try:
                 commands = await self.router.process_batch(actions)
+                self._record_operational_metric("router_commands", len(commands))
 
                 # 记录 Router 决策日志
                 self.router_log.append({
@@ -490,10 +801,30 @@ class Orchestrator:
                     ],
                     "command_count": len(commands),
                     "router_text": self.router.last_response_text[:200] if self.router.last_response_text else "",
+                    "router_stats": dict(getattr(self.router, "last_stats", {}) or {}),
                 })
 
-                await self._execute_commands(commands)
+                execution_results = await self._execute_commands(commands)
+                for command, execution_result in execution_results:
+                    source_action = command.source_action
+                    source_id = source_action.agent_id if source_action else ""
+                    source_agent = self.agents.get(source_id)
+                    if source_agent is None:
+                        continue
+                    await source_agent.record_execution_feedback({
+                        "phase": "dispatch",
+                        "intent_id": (source_action.metadata or {}).get("intent_id", ""),
+                        "chain_id": command.chain_id,
+                        "command": command.command_type.value,
+                        "target": command.target,
+                        "targets": list(command.targets),
+                        "result": execution_result,
+                    })
+                    if self.persistor:
+                        self.persistor.mark_agent_dirty(source_id)
+                self._record_operational_metric("router_batches_completed")
             except Exception as e:
+                self._record_operational_metric("router_failures")
                 logger.error("Router batch processing failed: %s", e)
 
     async def _call_agent_safe(
@@ -505,8 +836,39 @@ class Orchestrator:
 
         返回需要进入 Router 批处理的 action 列表（request_action 已在此处直接分发）。
         """
+        self._record_operational_metric("agent_turns")
+        previous_outcome = getattr(agent, "last_turn_outcome", None)
+        turn_error_recorded = False
         try:
-            result = await agent.process(wakeup.get("payload", {}))
+            chain_ids = wakeup.get("chain_ids") or [
+                wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")
+            ]
+            chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
+            agent_payload = dict(wakeup.get("payload", {}))
+            agent_payload.setdefault("chain_id", chain_ids[0])
+            agent_payload.setdefault("chain_ids", list(chain_ids))
+            agent_payload.setdefault("sim_time", self._sim_time)
+            agent_payload.setdefault("seconds_per_day", float(GAME_SECONDS_PER_DAY))
+            result = await agent.process(agent_payload)
+            outcome = getattr(agent, "last_turn_outcome", None)
+            if outcome is not None and outcome is not previous_outcome:
+                self._record_operational_metric("agent_turn_rounds", outcome.rounds)
+                self._record_operational_metric(
+                    "agent_turn_tool_calls", outcome.tool_calls
+                )
+                self._record_operational_metric(
+                    "agent_turn_input_tokens", outcome.input_tokens
+                )
+                self._record_operational_metric(
+                    "agent_turn_output_tokens", outcome.output_tokens
+                )
+                if outcome.error:
+                    self._record_operational_metric("agent_turn_errors")
+                    turn_error_recorded = True
+                else:
+                    self._record_operational_metric("agent_turn_completed")
+            else:
+                self._record_operational_metric("agent_turn_completed")
             # 兼容旧式单返回值
             if isinstance(result, AgentAction):
                 actions = [result]
@@ -522,12 +884,17 @@ class Orchestrator:
                 )]
 
             # 合并 wakeup 携带 chain_ids 列表；未合并的旧格式兼容 chain_id 字段
-            chain_ids = wakeup.get("chain_ids") or [wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")]
-            chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
-            event_id = wakeup.get("payload", {}).get("event_id", "")
+            event_id = agent_payload.get("event_id", "")
+            max_existing = max(self.chain_log.get_max_hop(c) for c in chain_ids)
+            hop_count = max_existing + 1
 
             router_actions: list[AgentAction] = []
             for action in actions:
+                action.metadata = dict(action.metadata or {})
+                action.metadata.setdefault("chain_id", chain_ids[0])
+                action.metadata.setdefault("parent_chain_ids", list(chain_ids))
+                action.metadata.setdefault("hop_count", hop_count)
+                action.metadata.setdefault("schema_version", "2.0")
                 # request_action：绕过 Router，直接分发给 ActionAgent
                 if action.metadata.get("fc_type") == "request_action":
                     for chain_id in chain_ids:
@@ -553,22 +920,35 @@ class Orchestrator:
                         )
                         self._agent_tasks.add(task)
                         task.add_done_callback(self._agent_tasks.discard)
+                        await agent.record_execution_feedback({
+                            "phase": "dispatch",
+                            "intent_id": (action.metadata or {}).get("intent_id", ""),
+                            "chain_id": chain_ids[0],
+                            "command": "request_action",
+                            "result": {"ok": True, "scheduled": True},
+                        })
                     else:
                         logger.warning(
                             "request_action from %s but no ActionAgent registered",
                             agent.agent_id,
                         )
+                        await agent.record_execution_feedback({
+                            "phase": "dispatch",
+                            "intent_id": (action.metadata or {}).get("intent_id", ""),
+                            "chain_id": chain_ids[0],
+                            "command": "request_action",
+                            "result": {"ok": False, "error": "ActionAgent not registered"},
+                        })
                     continue  # 不进入 Router 批处理
 
                 router_actions.append(action)
 
             if not router_actions:
+                if self.persistor:
+                    self.persistor.mark_agent_dirty(agent.agent_id)
                 return []
 
             # 对进入 Router 的 action 做 hop 检查
-            max_existing = max(self.chain_log.get_max_hop(c) for c in chain_ids)
-            hop_count = max_existing + 1
-
             if hop_count > MAX_HOPS:
                 for action in router_actions:
                     for chain_id in chain_ids:
@@ -606,8 +986,24 @@ class Orchestrator:
             return router_actions
 
         except Exception as e:
+            if not turn_error_recorded:
+                self._record_operational_metric("agent_turn_errors")
             logger.error("Agent %s failed: %s", agent.agent_id, e)
             return []
+
+    def _apply_matured_event(self, ev) -> None:
+        """Compatibility wrapper; authoritative application remains transactional."""
+        if self.world_state is None:
+            return
+        result = self.world_state.apply_matured_event(ev.event_id, self._sim_time)
+        if not result.ok:
+            logger.warning(
+                "Matured event rejected: event=%s code=%s error=%s",
+                ev.event_id, result.error_code, result.error,
+            )
+            return
+        if self.persistor:
+            self.persistor.mark_state_dirty()
 
     async def _run_action(
         self,
@@ -625,6 +1021,9 @@ class Orchestrator:
             return
 
         payload.setdefault("executor_id", source_agent_id)
+        payload.setdefault("sim_time", self._sim_time)
+        payload.setdefault("seconds_per_day", float(GAME_SECONDS_PER_DAY))
+        payload.setdefault("chain_id", chain_id)
         try:
             result: ActionResult = await self.action_agent.process(payload)
         except Exception as e:
@@ -675,6 +1074,12 @@ class Orchestrator:
             "target_location": result.target_location,
             "success": result.success,
             "duration_days": result.duration_days,
+            "duration_source": result.duration_source,
+            "duration_rule_id": result.duration_rule_id,
+            "duration_components": result.duration_components,
+            "duration_clamped": result.duration_clamped,
+            "runtime_generation": result.runtime_generation,
+            "time_rule_fingerprint": result.time_rule_fingerprint,
             "result_description": result.result_description,
             "error": result.error,
             "changes_made": result.changes_made,
@@ -699,6 +1104,7 @@ class Orchestrator:
                 "target_location": result.target_location,
                 "success": result.success,
                 "changes": result.changes_made,
+                "intent_id": payload.get("intent_id", ""),
             },
             chain_id=chain_id,
             created_at=self._sim_time,
@@ -711,18 +1117,78 @@ class Orchestrator:
             result.duration_days, source_agent_id,
         )
 
-    async def _execute_commands(self, commands: list[RouterCommand]) -> None:
-        """执行 Router 产生的指令 —— 统一走 fc_handlers.dispatch_fc."""
+    async def _execute_commands(
+        self, commands: list[RouterCommand],
+    ) -> list[tuple[RouterCommand, dict[str, Any]]]:
+        """Execute routed commands with a second idempotency guard and chain logging."""
         ctx = self._build_fc_context()
+        results: list[tuple[RouterCommand, dict[str, Any]]] = []
         for cmd in commands:
+            source_id = cmd.source_agent_id or (cmd.source_action.agent_id if cmd.source_action else "router")
+            route_targets = list(cmd.targets) if cmd.targets else ([cmd.target] if cmd.target else [])
+            has_route_edge = getattr(self.chain_log, "has_route_edge", None)
+            repeated_target = None
+            if callable(has_route_edge):
+                repeated_target = next((
+                    target_id for target_id in route_targets
+                    if target_id and target_id != source_id
+                    and has_route_edge(cmd.chain_id, source_id, target_id)
+                ), None)
+            if repeated_target is not None:
+                execution_result = {
+                    "ok": False,
+                    "status": "loop_detected",
+                    "error": f"persisted chain edge already exists: {source_id} -> {repeated_target}",
+                    "command_id": cmd.command_id,
+                }
+                reject_command = getattr(self.router, "reject_command", None)
+                if callable(reject_command):
+                    reject_command(cmd, "loop_detected", execution_result["error"])
+                results.append((cmd, execution_result))
+                continue
+            execution_key = cmd.idempotency_key or cmd.command_id
+            if execution_key and execution_key in self._executed_command_keys:
+                execution_result = {
+                    "ok": False,
+                    "status": "duplicate",
+                    "error": "command was already claimed by the execution layer",
+                    "command_id": cmd.command_id,
+                }
+                reject_command = getattr(self.router, "reject_command", None)
+                if callable(reject_command):
+                    reject_command(cmd, "duplicate", execution_result["error"])
+                results.append((cmd, execution_result))
+                continue
+            if execution_key:
+                if len(self._executed_command_order) == self._executed_command_order.maxlen:
+                    oldest = self._executed_command_order[0]
+                    self._executed_command_keys.discard(oldest)
+                self._executed_command_order.append(execution_key)
+                self._executed_command_keys.add(execution_key)
             ctx.chain_id = cmd.chain_id
+            ctx.tool_call_id = cmd.command_id
             ctx.source_action = cmd.source_action
             fc_name = command_type_to_fc_name(cmd.command_type)
             args = command_to_fc_args(cmd)
             try:
-                await dispatch_fc(fc_name, ctx, args)
+                execution_result = await dispatch_fc(fc_name, ctx, args)
             except Exception as e:
                 logger.exception("dispatch_fc(%s) failed: %s", fc_name, e)
+                execution_result = {"ok": False, "error": str(e)}
+            source_action = cmd.source_action
+            log_targets = route_targets or [None]
+            for log_target in log_targets:
+                self.chain_log.append(ChainLogEntry(
+                    chain_id=cmd.chain_id, sim_time=self._sim_time,
+                    caller=source_id, caller_agent_type="router", fc_called=fc_name,
+                    original_text=source_action.original_intent if source_action else "",
+                    transmitted_text=str(cmd.payload),
+                    is_distorted=bool(source_action.is_distorting) if source_action else False,
+                    hop_count=cmd.hop_count, routed_to=log_target,
+                    status="delivered" if execution_result.get("ok") else "dead_letter",
+                ))
+            results.append((cmd, execution_result))
+        return results
 
     def _build_fc_context(self) -> FCContext:
         """组装 Orchestrator 主模拟路径的 FCContext."""
@@ -738,6 +1204,9 @@ class Orchestrator:
             sim_time=self._sim_time,
             seconds_per_day=GAME_SECONDS_PER_DAY,
             caller_id="orchestrator",
+            duration_estimator=(
+                self.action_agent.estimate_duration if self.action_agent is not None else None
+            ),
         )
 
     async def _handle_player_action(
@@ -807,6 +1276,7 @@ class Orchestrator:
                     agent_id="皇帝", action="issue_decree",
                     content=decree_text, original_intent=decree_text,
                     is_distorting=False, urgency="critical",
+                    metadata={"chain_id": chain_id, "parent_chain_ids": [chain_id], "hop_count": 0, "schema_version": "2.0"},
                 )
                 commands = await self.router.process_batch([agent_action])
                 await self._execute_commands(commands)

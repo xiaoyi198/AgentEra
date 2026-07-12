@@ -20,8 +20,16 @@ const TYPE_LABELS = {
 
 const ALL_TYPES = ['location', 'person', 'institution', 'organization', 'object']
 
-const RESOURCE_TOKENS = ['金钱', '粮草', '工料', '科技点', '兵力', '满意度', '人口']
-const PARAM_TOKENS = ['生活质量', '税率', '生产系数']
+function formatNumber(value, maximumFractionDigits = 2) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return String(value ?? '')
+  return number.toLocaleString('zh-CN', { maximumFractionDigits })
+}
+
+function createIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `world-state-ui:${Date.now()}:${Math.random().toString(16).slice(2)}`
+}
 
 function typeIcon(type) {
   return TYPE_ICONS[type] || '❓'
@@ -131,7 +139,7 @@ export default function WorldStateView() {
       } else {
         setMsg('✗ 保存失败: ' + JSON.stringify(data))
       }
-    } catch (e) {
+    } catch {
       setMsg('✗ 网络错误')
     } finally {
       setSaving(false)
@@ -152,31 +160,47 @@ export default function WorldStateView() {
       await loadEntities()
       setMsg('✓ 已删除')
       setTimeout(() => setMsg(''), 2000)
-    } catch (e) {
+    } catch {
       setMsg('✗ 删除失败')
     }
   }
 
-  // ── 库存行内编辑保存 ──
-  const handleSaveInvRow = async (item, idx) => {
+  // ── 资产 / 指标 / 参数行内编辑保存 ──
+  const handleSaveResourceRow = async (item, editKey) => {
     if (!selected) return
-    const edited = invEdits[idx] || {}
-    const qty = edited.quantity !== undefined ? parseFloat(edited.quantity) : item.quantity
-    if (isNaN(qty)) { setMsg('✗ 数量必须是数字'); return }
+    const edited = invEdits[editKey] || {}
+    const originalValue = item.quantity ?? item.value
+    const qty = edited.quantity !== undefined ? Number(edited.quantity) : Number(originalValue)
+    if (!Number.isFinite(qty)) { setMsg('✗ 数值必须是有限数字'); return }
+
+    const resourceName = item.item_name || item.name
+    setEditingInv(null)
     try {
-      await fetch(`${API_BASE}/world-state/${encodeURIComponent(selected.entity.id)}/inventory`, {
+      const res = await fetch(`${API_BASE}/world-state/${encodeURIComponent(selected.entity.id)}/inventory`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': createIdempotencyKey(),
+        },
         body: JSON.stringify({
-          resource_name: item.item_name,
+          resource_name: resourceName,
           quantity: qty,
+          expected_version: item.version,
+          reason: 'world_state_editor',
         }),
       })
-      setEditingInv(null)
-      setInvEdits(prev => { const n = { ...prev }; delete n[idx]; return n })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error || data.status !== 'ok') {
+        const detail = data.detail?.message || data.detail?.error || data.error || `HTTP ${res.status}`
+        throw new Error(detail)
+      }
+      setInvEdits(prev => { const next = { ...prev }; delete next[editKey]; return next })
       await loadEntity(selected.entity.id)
+      setMsg(`✓ ${resourceName} 已更新`)
+      setTimeout(() => setMsg(''), 2000)
     } catch (e) {
-      setMsg('✗ 保存库存失败')
+      setMsg(`✗ 保存 ${resourceName} 失败：${e.message || '未知错误'}，已刷新最新版本`)
+      await loadEntity(selected.entity.id)
     }
   }
 
@@ -250,7 +274,7 @@ export default function WorldStateView() {
       } else {
         setMsg('✗ 创建失败: ' + JSON.stringify(data))
       }
-    } catch (e) {
+    } catch {
       setMsg('✗ 网络错误')
     }
   }
@@ -392,6 +416,13 @@ export default function WorldStateView() {
                 </div>
               </section>
 
+              {/* 正在发生的事情 */}
+              <OngoingEventsCard
+                events={selected.ongoing_events || []}
+                onChanged={() => loadEntity(entityForm.id)}
+                onMsg={setMsg}
+              />
+
               {/* 地点坐标（仅 location 类型显示） */}
               {locCoords && entityForm.type === 'location' && (
                 <section className="ws-section">
@@ -435,31 +466,38 @@ export default function WorldStateView() {
                 </section>
               )}
 
-              {/* 资源代币 */}
+              {/* 锚定资产 */}
               <section className="ws-section">
-                <div className="ws-section-header">
-                  <h3>资源代币</h3>
+                <div className="ws-section-header ws-section-header-split">
+                  <h3>锚定资产</h3>
+                  <span className="ws-valuation-total">
+                    总基础价值 {formatNumber(selected.inventory_valuation?.base_value ?? 0)}
+                  </span>
                 </div>
 
                 {(() => {
-                  const visibleItems = selected.inventory.filter(it =>
-                    RESOURCE_TOKENS.includes(it.item_name) && it.quantity !== -1
-                  )
+                  const visibleItems = (selected.inventory || []).filter(item => item.quantity !== -1)
                   return visibleItems.length === 0 ? (
-                    <div className="ws-empty">暂无资源记录</div>
+                    <div className="ws-empty">暂无可支出资产</div>
                   ) : (
                     <table className="ws-inventory-table">
                       <thead>
                         <tr>
-                          <th>资源</th>
+                          <th>资产</th>
                           <th>数量</th>
-                          <th>单位</th>
+                          <th>单位/说明</th>
+                          <th>价值锚</th>
+                          <th>基础价值</th>
+                          <th>版本</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {visibleItems.map((item, idx) => {
-                          const isEditingQty = editingInv?.idx === idx && editingInv?.field === 'quantity'
-                          const currentQty = invEdits[idx]?.quantity !== undefined ? invEdits[idx].quantity : item.quantity
+                        {visibleItems.map(item => {
+                          const editKey = `asset:${item.item_name}`
+                          const isEditingQty = editingInv?.idx === editKey && editingInv?.field === 'quantity'
+                          const currentQty = invEdits[editKey]?.quantity !== undefined
+                            ? invEdits[editKey].quantity
+                            : item.quantity
                           return (
                             <tr key={item.item_name} className="ws-inv-row">
                               <td className="ws-inv-name">{item.item_name}</td>
@@ -468,26 +506,37 @@ export default function WorldStateView() {
                                   <input
                                     className="ws-inline-edit"
                                     type="number"
+                                    step="any"
                                     value={currentQty}
                                     autoFocus
-                                    onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], quantity: e.target.value } }))}
-                                    onBlur={() => handleSaveInvRow(item, idx)}
+                                    onChange={e => setInvEdits(prev => ({
+                                      ...prev,
+                                      [editKey]: { ...prev[editKey], quantity: e.target.value },
+                                    }))}
+                                    onBlur={() => handleSaveResourceRow(item, editKey)}
                                     onKeyDown={e => {
-                                      if (e.key === 'Enter') handleSaveInvRow(item, idx)
-                                      if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
+                                      if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+                                      if (e.key === 'Escape') {
+                                        e.preventDefault()
+                                        setEditingInv(null)
+                                        setInvEdits(prev => { const next = { ...prev }; delete next[editKey]; return next })
+                                      }
                                     }}
                                   />
                                 ) : (
                                   <span
                                     className="ws-editable-cell"
-                                    onClick={() => setEditingInv({ idx, field: 'quantity' })}
-                                    title="点击编辑"
+                                    onClick={() => setEditingInv({ idx: editKey, field: 'quantity' })}
+                                    title="点击编辑；保存时校验版本并使用幂等命令"
                                   >
-                                    {typeof currentQty === 'number' ? currentQty.toLocaleString() : currentQty}
+                                    {formatNumber(currentQty)}
                                   </span>
                                 )}
                               </td>
-                              <td className="ws-inv-desc">{item.description}</td>
+                              <td className="ws-inv-desc">{item.description || '—'}</td>
+                              <td className="ws-anchor-rate">× {formatNumber(item.anchor_rate, 6)}</td>
+                              <td className="ws-base-value">{formatNumber(item.base_value)}</td>
+                              <td><span className="ws-version-badge">v{item.version ?? 0}</span></td>
                             </tr>
                           )
                         })}
@@ -495,75 +544,237 @@ export default function WorldStateView() {
                     </table>
                   )
                 })()}
+              </section>
+
+              {/* 世界指标：不可支出，仅由模拟与命令更新 */}
+              <section className="ws-section">
+                <div className="ws-section-header">
+                  <h3>世界指标</h3>
+                  <span className="ws-section-note">非库存，不参与资产余额与价值合计</span>
+                </div>
+                {(selected.metrics || []).length === 0 ? (
+                  <div className="ws-empty">暂无指标记录</div>
+                ) : (
+                  <table className="ws-inventory-table">
+                    <thead>
+                      <tr>
+                        <th>指标</th>
+                        <th>当前值</th>
+                        <th>说明</th>
+                        <th>版本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.metrics.map(item => (
+                        <tr key={item.name} className="ws-inv-row">
+                          <td className="ws-inv-name">{item.name}</td>
+                          <td className="ws-metric-value">{formatNumber(item.value)}</td>
+                          <td className="ws-inv-desc">{item.description || '—'}</td>
+                          <td><span className="ws-version-badge">v{item.version ?? 0}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </section>
 
               {/* 核心参数 */}
               <section className="ws-section">
                 <div className="ws-section-header">
                   <h3>核心参数</h3>
+                  <span className="ws-section-note">独立参数存储，不计入库存</span>
                 </div>
 
-                {(() => {
-                  const paramItems = selected.inventory.filter(it =>
-                    PARAM_TOKENS.includes(it.item_name) && it.quantity !== -1
-                  )
-                  return paramItems.length === 0 ? (
-                    <div className="ws-empty">暂无参数记录（institution 类实体不适用）</div>
-                  ) : (
-                    <table className="ws-inventory-table">
-                      <thead>
-                        <tr>
-                          <th>参数</th>
-                          <th>数值</th>
-                          <th>单位</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {paramItems.map((item, rawIdx) => {
-                          const idx = 1000 + rawIdx
-                          const isEditingQty = editingInv?.idx === idx && editingInv?.field === 'quantity'
-                          const currentQty = invEdits[idx]?.quantity !== undefined ? invEdits[idx].quantity : item.quantity
-                          return (
-                            <tr key={item.item_name} className="ws-inv-row">
-                              <td className="ws-inv-name">{item.item_name}</td>
-                              <td className="ws-inv-qty">
-                                {isEditingQty ? (
-                                  <input
-                                    className="ws-inline-edit"
-                                    type="number"
-                                    step="0.01"
-                                    value={currentQty}
-                                    autoFocus
-                                    onChange={e => setInvEdits(p => ({ ...p, [idx]: { ...p[idx], quantity: e.target.value } }))}
-                                    onBlur={() => handleSaveInvRow(item, idx)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleSaveInvRow(item, idx)
-                                      if (e.key === 'Escape') { setEditingInv(null); setInvEdits(p => { const n = {...p}; delete n[idx]; return n }) }
-                                    }}
-                                  />
-                                ) : (
-                                  <span
-                                    className="ws-editable-cell"
-                                    onClick={() => setEditingInv({ idx, field: 'quantity' })}
-                                    title="点击编辑"
-                                  >
-                                    {typeof currentQty === 'number' ? currentQty : currentQty}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="ws-inv-desc">{item.description}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  )
-                })()}
+                {(selected.parameters || []).length === 0 ? (
+                  <div className="ws-empty">暂无参数记录（当前实体可能不适用）</div>
+                ) : (
+                  <table className="ws-inventory-table">
+                    <thead>
+                      <tr>
+                        <th>参数</th>
+                        <th>数值</th>
+                        <th>说明</th>
+                        <th>版本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.parameters.map(item => {
+                        const editKey = `parameter:${item.name}`
+                        const isEditingQty = editingInv?.idx === editKey && editingInv?.field === 'quantity'
+                        const currentQty = invEdits[editKey]?.quantity !== undefined
+                          ? invEdits[editKey].quantity
+                          : item.value
+                        return (
+                          <tr key={item.name} className="ws-inv-row">
+                            <td className="ws-inv-name">{item.name}</td>
+                            <td className="ws-inv-qty">
+                              {isEditingQty ? (
+                                <input
+                                  className="ws-inline-edit"
+                                  type="number"
+                                  step="any"
+                                  value={currentQty}
+                                  autoFocus
+                                  onChange={e => setInvEdits(prev => ({
+                                    ...prev,
+                                    [editKey]: { ...prev[editKey], quantity: e.target.value },
+                                  }))}
+                                  onBlur={() => handleSaveResourceRow(item, editKey)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+                                    if (e.key === 'Escape') {
+                                      e.preventDefault()
+                                      setEditingInv(null)
+                                      setInvEdits(prev => { const next = { ...prev }; delete next[editKey]; return next })
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                <span
+                                  className="ws-editable-cell"
+                                  onClick={() => setEditingInv({ idx: editKey, field: 'quantity' })}
+                                  title="点击编辑；保存时校验参数版本"
+                                >
+                                  {formatNumber(currentQty)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="ws-inv-desc">{item.description || '—'}</td>
+                            <td><span className="ws-version-badge">v{item.version ?? 0}</span></td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                )}
               </section>
             </>
           )}
         </main>
       </div>
     </div>
+  )
+}
+
+
+function OngoingEventsCard({ events, onChanged, onMsg }) {
+  const [editingId, setEditingId] = useState(null)
+  const [draftDays, setDraftDays] = useState('')
+
+  const handleDelete = async (eventId) => {
+    if (!confirm(`确定取消事件 ${eventId} 吗？该事件的预期结果将不会被应用。`)) return
+    try {
+      const res = await fetch(`${API_BASE}/world-state/events/${encodeURIComponent(eventId)}`, {
+        method: 'DELETE',
+      })
+      const data = await res.json()
+      if (data.status === 'ok') {
+        onMsg && onMsg(`事件 ${eventId} 已取消`)
+        onChanged && onChanged()
+      } else {
+        onMsg && onMsg(`取消失败：${data.status || '未知'}`)
+      }
+    } catch (e) {
+      onMsg && onMsg(`取消失败：${e.message}`)
+    }
+  }
+
+  const handleSaveDays = async (eventId) => {
+    const days = parseFloat(draftDays)
+    if (Number.isNaN(days) || days < 0) {
+      onMsg && onMsg('剩余天数必须是非负数')
+      return
+    }
+    try {
+      const res = await fetch(`${API_BASE}/world-state/events/${encodeURIComponent(eventId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duration_days: days }),
+      })
+      const data = await res.json()
+      if (data.status === 'ok') {
+        onMsg && onMsg(`事件 ${eventId} 剩余天数已更新为 ${days}`)
+        setEditingId(null)
+        setDraftDays('')
+        onChanged && onChanged()
+      } else {
+        onMsg && onMsg(`修改失败：${data.status || '未知'}`)
+      }
+    } catch (e) {
+      onMsg && onMsg(`修改失败：${e.message}`)
+    }
+  }
+
+  return (
+    <section className="ws-section">
+      <div className="ws-section-header">
+        <h3>正在发生的事情</h3>
+        <span className="ws-entity-id-badge">{events.length} 条</span>
+      </div>
+      {events.length === 0 ? (
+        <div className="ws-empty">无进行中事件</div>
+      ) : (
+        <table className="ws-inventory-table">
+          <thead>
+            <tr>
+              <th>事件描述</th>
+              <th>类型</th>
+              <th>剩余天数</th>
+              <th>预期结果</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map(ev => {
+              const isEditing = editingId === ev.event_id
+              const expected = ev.expected_result || {}
+              const newStatus = expected.new_status || ''
+              const deltas = expected.inventory_deltas || []
+              return (
+                <tr key={ev.event_id} className="ws-inv-row">
+                  <td className="ws-inv-name" title={ev.event_id}>{ev.description}</td>
+                  <td className="ws-inv-desc">{ev.event_type}</td>
+                  <td className="ws-inv-qty">
+                    {isEditing ? (
+                      <input
+                        className="ws-inline-edit"
+                        type="number"
+                        step="0.1"
+                        value={draftDays}
+                        autoFocus
+                        onChange={e => setDraftDays(e.target.value)}
+                        onBlur={() => handleSaveDays(ev.event_id)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleSaveDays(ev.event_id)
+                          if (e.key === 'Escape') { setEditingId(null); setDraftDays('') }
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="ws-editable-cell"
+                        onClick={() => { setEditingId(ev.event_id); setDraftDays(String(ev.days_remaining?.toFixed(1) || 0)) }}
+                        title="点击编辑剩余天数"
+                      >
+                        {ev.days_remaining?.toFixed(1) ?? '?'} 天
+                      </span>
+                    )}
+                  </td>
+                  <td className="ws-inv-desc" style={{ fontSize: '12px' }}>
+                    {newStatus && <div>状态 → {newStatus}</div>}
+                    {deltas.map((d, i) => (
+                      <div key={i}>{d.resource} {d.delta > 0 ? '+' : ''}{d.delta}{d.reason ? `（${d.reason}）` : ''}</div>
+                    ))}
+                    {!newStatus && deltas.length === 0 && <span style={{ color: '#999' }}>（空）</span>}
+                  </td>
+                  <td>
+                    <button className="btn warning" onClick={() => handleDelete(ev.event_id)}>取消</button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
   )
 }

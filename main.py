@@ -15,7 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from multiagent_framework.action_agent import ActionAgent
 from multiagent_framework.chain_log import ChainLog
 from multiagent_framework.court_graph import CourtGraph
-from multiagent_framework.llm_client import LLMClient, LLMConfig
+from multiagent_framework.dlc_registry import DLCRegistry, DLCRegistryError
+from multiagent_framework.dlc_runtime import DLCBundleLoader, ModelBindingResolver
+from multiagent_framework.model_gateway import ModelGateway, TaskLLMClient
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.router import RouterAgent
 from multiagent_framework.runtime_paths import (
@@ -34,11 +36,29 @@ from routers.saves import router as saves_router
 from routers.editor import router as editor_router
 from routers.worldstate import router as worldstate_router
 from routers.debug import router as debug_router
+from routers.metrics import router as metrics_router
+from routers.dlc import router as dlc_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+def _task_client_for_primary_dlc(
+    gateway: ModelGateway,
+    primary_dlc: Any,
+    task_type: str,
+    *,
+    agent_id: str,
+) -> TaskLLMClient:
+    """Bind world-global LLM tasks to the primary DLC policy when configured."""
+    client = gateway.for_task(task_type, agent_id=agent_id)
+    if primary_dlc is None:
+        return client
+    resolver = ModelBindingResolver(client, primary_dlc.manifest.model_bindings)
+    profile = resolver.resolve("", task_type=task_type)
+    return resolver.bind(agent_id, profile)
 
 
 # ── WebSocket 广播 ──
@@ -72,14 +92,32 @@ def init_orchestrator(
     """
     ensure_runtime_dir()
 
-    llm_config_path = "config/llm.json"
-    if Path(llm_config_path).exists():
-        llm_config = LLMConfig.from_file(llm_config_path)
-    else:
-        logger.warning("No LLM config found, using defaults (will fail on real calls)")
-        llm_config = LLMConfig()
+    project_root = Path(__file__).resolve().parent
+    dlc_registry = DLCRegistry(project_root)
+    primary_dlc = dlc_registry.primary_package()
+    primary_prompts: dict[str, str] = {}
+    if primary_dlc is not None:
+        primary_prompts = dlc_registry.load_content(primary_dlc.manifest.id).get("prompts", {})
 
-    llm_client = LLMClient(llm_config)
+    model_gateway = ModelGateway.from_files(
+        models_path="config/models.json",
+        legacy_path="config/llm.json",
+    )
+    router_llm = _task_client_for_primary_dlc(
+        model_gateway, primary_dlc, "router.ambiguous", agent_id="router"
+    )
+    action_llm = _task_client_for_primary_dlc(
+        model_gateway, primary_dlc, "action.simulation", agent_id="action_agent"
+    )
+    memory_llm = _task_client_for_primary_dlc(
+        model_gateway, primary_dlc, "memory.compress", agent_id="memory_compressor"
+    )
+    tianji_llm = _task_client_for_primary_dlc(
+        model_gateway, primary_dlc, "tianji.chat", agent_id="tianji"
+    )
+    # Agent clients are bound per package/agent by DLCBundleLoader. Applying the
+    # primary profile here would incorrectly leak it into secondary DLC agents.
+    agent_llm = model_gateway.for_task("agent.turn")
 
     time_config_path = "config/time.json"
     seconds_per_day = 600.0
@@ -95,19 +133,20 @@ def init_orchestrator(
     timers = TimerSystem(db_path)
     chain_log = ChainLog(str(CHAIN_LOG)) # runtime/chain_log.jsonl
 
-    router_prompt = ""
-    router_prompt_path = "daming_court/prompts/router.txt"
-    if Path(router_prompt_path).exists():
-        router_prompt = Path(router_prompt_path).read_text(encoding="utf-8")
-
-    router = RouterAgent(llm_client, court, router_prompt, seconds_per_day)
+    router_prompt = str(primary_prompts.get("router", ""))
+    router = RouterAgent(router_llm, court, router_prompt, seconds_per_day)
 
     world_state = WorldState(db_path)
     court.set_world_state(world_state)
-    action_agent = ActionAgent(llm_client, world_state)
+    action_agent = ActionAgent(
+        action_llm,
+        world_state,
+        court=court,
+        prompt_template=primary_prompts.get("action_agent"),
+    )
 
     from multiagent_framework.memory_compressor import LLMMemoryCompressor
-    memory_compressor = LLMMemoryCompressor(llm_client)
+    memory_compressor = LLMMemoryCompressor(memory_llm)
 
     orch = Orchestrator(
         court_graph=court,
@@ -119,21 +158,24 @@ def init_orchestrator(
         action_agent=action_agent,
         memory_compressor=memory_compressor,
     )
-    orch.world_state = world_state  # type: ignore[attr-defined]
     orch.persistor = RuntimePersistor(orch)
+    orch.model_gateway = model_gateway
+    orch.dlc_registry = dlc_registry
 
     state.tianji_agent = TianJiAgent(
-        llm_client=llm_client,
+        llm_client=tianji_llm,
         world_state=world_state,
         court_graph=court,
         timer_system=timers,
         chain_log=chain_log,
         action_agent=action_agent,
         router=router,
+        system_prompt=primary_prompts.get("tianji"),
     )
+    orch.tianji_agent = state.tianji_agent
 
-    _load_dlc(
-        orch, court, llm_client, world_state,
+    _load_dlcs(
+        orch, court, agent_llm, world_state, dlc_registry,
         load_from_save=not is_fresh,  # 有 runtime → 不再 seed entity/event
     )
 
@@ -143,10 +185,39 @@ def init_orchestrator(
     return orch
 
 
-def _load_dlc(
+def _load_dlcs(
     orch: Orchestrator,
     court: CourtGraph,
-    llm: LLMClient,
+    llm: TaskLLMClient,
+    world_state: WorldState,
+    registry: DLCRegistry,
+    load_from_save: bool = False,
+) -> None:
+    """Load all enabled, published DLCs in dependency order."""
+    try:
+        packages = registry.ordered_active_packages()
+        if not packages:
+            logger.warning("No active published DLC found; using legacy fallback")
+            _load_legacy_dlc(orch, court, llm, world_state, load_from_save)
+            return
+        loader = DLCBundleLoader(registry, world_state, court, orch, llm)
+        reports = loader.load_active(seed_world=not load_from_save)
+        orch.dlc_loader = loader
+        for report in reports:
+            logger.info(
+                "Loaded DLC %s: resources=%d entities=%d inventory=%d values=%d officials=%d agents=%d events=%d",
+                report.package_id, report.resources, report.entities, report.inventory,
+                report.entity_values, report.officials, report.agents, report.initial_events,
+            )
+    except DLCRegistryError:
+        logger.exception("DLC Registry load failed")
+        raise
+
+
+def _load_legacy_dlc(
+    orch: Orchestrator,
+    court: CourtGraph,
+    llm: TaskLLMClient,
     world_state: WorldState,
     load_from_save: bool = False,
 ) -> None:
@@ -198,6 +269,10 @@ def _load_runtime_state(orch: Orchestrator) -> None:
             orch._seconds_per_day = s.get("seconds_per_day", 600.0)
             orch.memorials = s.get("memorials", [])
             orch.router.update_time_scale(orch._seconds_per_day)
+            if hasattr(orch, "random_event_generator"):
+                orch.random_event_generator.restore(
+                    s.get("random_events", {}), sim_time=orch._sim_time
+                )
             logger.info("Restored state: sim_time=%.1f, %d memorials",
                         orch._sim_time, len(orch.memorials))
         except Exception as e:
@@ -238,6 +313,9 @@ async def lifespan(app: FastAPI):
         state._orch_task.cancel()
     if state.orchestrator:
         state.orchestrator.stop()
+        model_gateway = getattr(state.orchestrator, "model_gateway", None)
+        if model_gateway:
+            await model_gateway.close()
 
 
 app = FastAPI(title="大明王朝·朝堂风云", lifespan=lifespan)
@@ -255,6 +333,8 @@ app.include_router(saves_router)
 app.include_router(editor_router)
 app.include_router(worldstate_router)
 app.include_router(debug_router)
+app.include_router(metrics_router)
+app.include_router(dlc_router)
 app.include_router(ws_router)
 
 

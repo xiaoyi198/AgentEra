@@ -189,10 +189,15 @@ def create_agents(
             personality_seed=official.personality_seed,
         )
 
+        bound_llm = (
+            llm_client.for_agent(official.id)
+            if hasattr(llm_client, "for_agent")
+            else llm_client
+        )
         if official.agent_type == "institution":
-            agent = InstitutionAgent(config, llm_client)
+            agent = InstitutionAgent(config, bound_llm)
         else:
-            agent = OfficialAgent(config, llm_client)
+            agent = OfficialAgent(config, bound_llm)
 
         agents.append(agent)
 

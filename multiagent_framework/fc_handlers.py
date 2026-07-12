@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from .llm_client import LLMResponse
+from .time_simulator import TimeSimulator
 from .types import (
     AgentAction,
     ChainLogEntry,
@@ -26,6 +27,7 @@ from .types import (
     RouterCommandType,
     TimerEntry,
 )
+from .world_state import OngoingEvent, RESOURCE_META
 
 if TYPE_CHECKING:
     from .chain_log import ChainLog
@@ -58,11 +60,21 @@ class FCContext:
     seconds_per_day: float = 86400.0
     caller_id: str = ""
     chain_id: str = ""
+    tool_call_id: str = ""
     source_action: AgentAction | None = None
     changes_made: list[dict[str, Any]] | None = None  # ActionAgent 收集变更用
+    duration_estimator: Callable | None = None  # authoritative deterministic estimator
 
 
 # ── 世界状态辅助 ─────────────────────────────────────────────────────────────
+
+
+def _world_command_id(ctx: FCContext, operation: str) -> str | None:
+    """Build a stable command id when the caller exposes a tool/route call id."""
+    if not ctx.tool_call_id:
+        return None
+    scope = ctx.chain_id or ctx.caller_id or "world"
+    return f"{scope}:{ctx.tool_call_id}:{operation}"
 
 def _resolve_entity_id(world_state: Any, entity_id: str) -> tuple[str, bool]:
     """精确匹配失败时回退到模糊匹配.
@@ -82,53 +94,74 @@ def _resolve_entity_id(world_state: Any, entity_id: str) -> tuple[str, bool]:
 # ── 世界状态 handlers ─────────────────────────────────────────────────────────
 
 def handle_query_entity(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Return the split, versioned world-state read model for one entity."""
     try:
         raw_id = args.get("entity_id", "")
         resolved_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
         ent = ctx.world_state.get_entity(resolved_id)
         if not ent:
-            return {"found": False, "message": "实体不存在"}
+            return {"found": False, "message": "entity not found"}
+        raw_items = ctx.world_state.get_inventory(resolved_id)
+        inventory = []
+        legacy_values = []
+        for item in raw_items:
+            if item.quantity == -1:
+                continue
+            meta = RESOURCE_META.get(item.item_name, {})
+            if not hasattr(ctx.world_state, "get_entity_values") and meta.get("kind") in {"metric", "parameter"}:
+                legacy_values.append((item, meta.get("kind")))
+                continue
+            rate = float(getattr(item, "anchor_rate", 1.0))
+            inventory.append({
+                "name": item.item_name, "quantity": item.quantity,
+                "unit": item.description, "version": int(getattr(item, "version", 0)),
+                "anchor_rate": rate, "base_value": float(item.quantity) * rate,
+            })
+        get_values = getattr(ctx.world_state, "get_entity_values", None)
+        values = get_values(resolved_id) if callable(get_values) else []
+        metrics = [{
+            "name": value.name, "value": value.value,
+            "unit": value.description, "version": value.version,
+        } for value in values if value.kind == "metric" and value.value != -1]
+        parameters = [{
+            "name": value.name, "value": value.value,
+            "unit": value.description, "version": value.version,
+        } for value in values if value.kind == "parameter" and value.value != -1]
+        for item, kind in legacy_values:
+            target = metrics if kind == "metric" else parameters
+            target.append({
+                "name": item.item_name, "value": item.quantity,
+                "unit": item.description, "version": int(getattr(item, "version", 0)),
+            })
+        seconds_per_day = ctx.seconds_per_day or 86400.0
+        ongoing = [{
+            "event_id": event.event_id, "event_type": event.event_type,
+            "description": event.description,
+            "days_remaining": max(0.0, (event.end_time - ctx.sim_time) / seconds_per_day),
+            "end_time": event.end_time, "expected_result": event.expected_result,
+        } for event in ctx.world_state.list_ongoing_events(resolved_id)]
         result: dict[str, Any] = {
-            "found": True,
-            "id": ent.id,
-            "type": ent.type,
-            "name": ent.name,
-            "description": ent.description,
-            "current_status": ent.current_status,
-        }
-        if fuzzy:
-            result["fuzzy_matched"] = True
-            result["original_query"] = raw_id
-        return result
-    except Exception as e:
-        logger.exception("handle_query_entity failed: %s", e)
-        return {"ok": False, "error": str(e)}
-
-
-def handle_query_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
-    try:
-        raw_id = args.get("entity_id", "")
-        resolved_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
-        items = ctx.world_state.get_inventory(resolved_id)
-        result: dict[str, Any] = {
-            "entity_id": resolved_id,
-            "items": [
-                {
-                    "category": it.category,
-                    "item_name": it.item_name,
-                    "quantity": it.quantity,
-                    "description": it.description,
+            "found": True, "id": ent.id, "type": ent.type, "name": ent.name,
+            "description": ent.description, "current_status": ent.current_status,
+            "version": int(getattr(ent, "version", 0)), "inventory": inventory, "metrics": metrics,
+            "parameters": parameters,
+            "inventory_valuation": (
+                ctx.world_state.get_inventory_valuation(resolved_id)
+                if callable(getattr(ctx.world_state, "get_inventory_valuation", None))
+                else {
+                    "entity_id": resolved_id,
+                    "base_value": sum(item["base_value"] for item in inventory),
+                    "items": inventory,
                 }
-                for it in items
-            ],
+            ),
+            "ongoing_events": ongoing,
         }
         if fuzzy:
-            result["fuzzy_matched"] = True
-            result["original_query"] = raw_id
+            result.update({"fuzzy_matched": True, "original_query": raw_id})
         return result
-    except Exception as e:
-        logger.exception("handle_query_inventory failed: %s", e)
-        return {"ok": False, "error": str(e)}
+    except Exception as exc:
+        logger.exception("handle_query_entity failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 def handle_list_entities(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -159,21 +192,21 @@ def handle_update_entity_status(ctx: FCContext, args: dict[str, Any]) -> dict[st
         raw_id = args.get("entity_id", "")
         entity_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
         new_status = args.get("new_status", "")
-        ctx.world_state.update_status(entity_id, new_status, 0.0)
+        changed = ctx.world_state.update_status(
+            entity_id, new_status, ctx.sim_time,
+            command_id=_world_command_id(ctx, "update_status"),
+            expected_version=args.get("expected_version"),
+            chain_id=ctx.chain_id,
+        )
         if ctx.changes_made is not None:
-            ctx.changes_made.append({
-                "type": "status_update",
-                "entity_id": entity_id,
-                "new_status": new_status,
-            })
-        result: dict[str, Any] = {"ok": True, "entity_id": entity_id}
+            ctx.changes_made.append({"type": "status_update", **changed})
+        result: dict[str, Any] = {"ok": True, **changed}
         if fuzzy:
-            result["fuzzy_matched"] = True
-            result["original_query"] = raw_id
+            result.update({"fuzzy_matched": True, "original_query": raw_id})
         return result
-    except Exception as e:
-        logger.exception("handle_update_entity_status failed: %s", e)
-        return {"ok": False, "error": str(e)}
+    except Exception as exc:
+        logger.exception("handle_update_entity_status failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 def handle_update_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -183,31 +216,185 @@ def handle_update_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, A
         resource_name = args.get("resource_name", "") or args.get("item_name", "")
         delta = float(args.get("quantity_delta", 0))
         reason = args.get("reason", "")
-        new_qty = ctx.world_state.update_inventory(
+        new_value = ctx.world_state.update_inventory(
             entity_id, resource_name, resource_name, delta, reason,
+            command_id=_world_command_id(ctx, "adjust_resource"),
+            expected_version=args.get("expected_version"),
+            chain_id=ctx.chain_id, sim_time=ctx.sim_time,
         )
+        definition = ctx.world_state.get_resource_definition(resource_name)
+        kind = definition.kind if definition else "asset"
+        change = {
+            "type": "inventory_update" if kind == "asset" else "entity_value_update",
+            "entity_id": entity_id, "resource_name": resource_name,
+            "delta": delta, "new_quantity": new_value, "reason": reason, "kind": kind,
+        }
+        if ctx.changes_made is not None:
+            ctx.changes_made.append(change)
+        result: dict[str, Any] = {"ok": True, **change}
+        if fuzzy:
+            result.update({"fuzzy_matched": True, "original_query": raw_id})
+        return result
+    except Exception as exc:
+        logger.exception("handle_update_inventory failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+# Ongoing event handlers.
+
+_SAFE_TIME_SIMULATOR = TimeSimulator()
+
+
+def _estimate_event_duration(
+    ctx: FCContext,
+    *,
+    action_type: str,
+    entity_id: str,
+    proposed_days: Any,
+) -> Any:
+    if ctx.duration_estimator is not None:
+        return ctx.duration_estimator(
+            action_type=action_type,
+            executor_id=ctx.caller_id,
+            target_location=entity_id,
+            proposed_days=proposed_days,
+            severity=5,
+            success=True,
+        )
+    return _SAFE_TIME_SIMULATOR.estimate(
+        action_type=action_type,
+        proposed_days=proposed_days,
+    )
+
+def handle_add_ongoing_event(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """在指定实体上排队一个事件，到期由 orchestrator 自动应用 expected_result."""
+    try:
+        raw_id = args.get("entity_id", "")
+        entity_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
+        if not ctx.world_state.get_entity(entity_id):
+            return {"ok": False, "error": f"实体不存在：{raw_id}"}
+
+        estimate = _estimate_event_duration(
+            ctx,
+            action_type=str(args.get("event_type", "state_change") or "state_change"),
+            entity_id=entity_id,
+            proposed_days=args.get("duration_days", 1.0),
+        )
+        duration_days = estimate.duration_days
+        seconds_per_day = ctx.seconds_per_day or 86400.0
+        end_time = ctx.sim_time + duration_days * seconds_per_day
+
+        expected_result = args.get("expected_result") or {}
+        if not isinstance(expected_result, dict):
+            return {"ok": False, "error": "expected_result 必须是对象"}
+
+        command_id = _world_command_id(ctx, "create_event")
+        event_id = (
+            f"evt_{uuid.uuid5(uuid.NAMESPACE_URL, command_id).hex[:10]}"
+            if command_id else f"evt_{uuid.uuid4().hex[:10]}"
+        )
+        event = OngoingEvent(
+            event_id=event_id,
+            entity_id=entity_id,
+            event_type=args.get("event_type", "state_change"),
+            description=args.get("description", ""),
+            start_time=ctx.sim_time,
+            end_time=end_time,
+            expected_result=expected_result,
+            source_action_id=ctx.chain_id or "",
+        )
+        ctx.world_state.add_ongoing_event(
+            event, command_id=command_id, chain_id=ctx.chain_id,
+        )
+
         if ctx.changes_made is not None:
             ctx.changes_made.append({
-                "type": "inventory_update",
+                "type": "ongoing_event_add",
+                "event_id": event.event_id,
                 "entity_id": entity_id,
-                "resource_name": resource_name,
-                "category": resource_name,
-                "item_name": resource_name,
-                "delta": delta,
-                "new_quantity": new_qty,
-                "reason": reason,
+                "description": event.description,
+                "duration_days": duration_days,
+                "duration_rule_id": estimate.rule_id,
+                "duration_source": estimate.source,
+                "expected_result": expected_result,
             })
+
         result: dict[str, Any] = {
             "ok": True,
-            "new_quantity": new_qty,
+            "event_id": event.event_id,
             "entity_id": entity_id,
+            "end_time": end_time,
         }
         if fuzzy:
             result["fuzzy_matched"] = True
             result["original_query"] = raw_id
         return result
     except Exception as e:
-        logger.exception("handle_update_inventory failed: %s", e)
+        logger.exception("handle_add_ongoing_event failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+def handle_modify_ongoing_event(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """修改一条已存在的 ongoing event。可改 description / duration_days / expected_result."""
+    try:
+        event_id = args.get("event_id", "")
+        existing = ctx.world_state.get_ongoing_event(event_id)
+        if not existing:
+            return {"ok": False, "error": f"事件不存在：{event_id}"}
+
+        kwargs: dict[str, Any] = {}
+        if "description" in args and args["description"] is not None:
+            kwargs["description"] = args["description"]
+        duration_estimate = None
+        if "duration_days" in args and args["duration_days"] is not None:
+            duration_estimate = _estimate_event_duration(
+                ctx,
+                action_type=str(args.get("event_type") or existing.event_type or "state_change"),
+                entity_id=existing.entity_id,
+                proposed_days=args["duration_days"],
+            )
+            seconds_per_day = ctx.seconds_per_day or 86400.0
+            kwargs["end_time"] = ctx.sim_time + duration_estimate.duration_days * seconds_per_day
+        if "expected_result" in args and args["expected_result"] is not None:
+            if not isinstance(args["expected_result"], dict):
+                return {"ok": False, "error": "expected_result 必须是对象"}
+            kwargs["expected_result"] = args["expected_result"]
+        if "event_type" in args and args["event_type"]:
+            kwargs["event_type"] = args["event_type"]
+
+        ok = ctx.world_state.update_ongoing_event(
+            event_id, **kwargs,
+            command_id=_world_command_id(ctx, "update_event"),
+            chain_id=ctx.chain_id, sim_time=ctx.sim_time,
+        )
+        if ok and ctx.changes_made is not None:
+            ctx.changes_made.append({
+                "type": "ongoing_event_modify",
+                "event_id": event_id,
+                "fields": list(kwargs.keys()),
+            })
+        return {"ok": ok, "event_id": event_id}
+    except Exception as e:
+        logger.exception("handle_modify_ongoing_event failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+def handle_delete_ongoing_event(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """取消一条进行中的事件。expected_result 不会被应用."""
+    try:
+        event_id = args.get("event_id", "")
+        ok = ctx.world_state.delete_ongoing_event(
+            event_id, command_id=_world_command_id(ctx, "delete_event"),
+            chain_id=ctx.chain_id, sim_time=ctx.sim_time,
+        )
+        if ok and ctx.changes_made is not None:
+            ctx.changes_made.append({
+                "type": "ongoing_event_delete",
+                "event_id": event_id,
+            })
+        return {"ok": ok, "event_id": event_id}
+    except Exception as e:
+        logger.exception("handle_delete_ongoing_event failed: %s", e)
         return {"ok": False, "error": str(e)}
 
 
@@ -272,7 +459,12 @@ async def handle_wake_agent(ctx: FCContext, args: dict[str, Any]) -> dict[str, A
     if delay_days <= MIN_TRAVEL_DAYS and ctx.pending_wakeups is not None:
         ctx.pending_wakeups.append({
             "target": target,
-            "payload": {"message": message, "from": from_agent, "urgency": urgency},
+            "payload": {
+                "message": message,
+                "from": from_agent,
+                "urgency": urgency,
+                "intent_id": args.get("intent_id", ""),
+            },
             "chain_id": chain_id,
         })
         logger.info("wake_agent: %s → %s 立即投递（%s）", from_agent or "?", target, urgency)
@@ -294,6 +486,7 @@ async def handle_wake_agent(ctx: FCContext, args: dict[str, Any]) -> dict[str, A
             "message": message,
             "from": from_agent,
             "urgency": urgency,
+            "intent_id": args.get("intent_id", ""),
         },
         chain_id=chain_id,
         created_at=ctx.sim_time,
@@ -336,6 +529,10 @@ async def handle_execute_policy(ctx: FCContext, args: dict[str, Any]) -> dict[st
             ctx.source_action.content if ctx.source_action else ""
         ),
         "resources": args.get("resources", "（未指定）"),
+        "severity": args.get("severity", 5),
+        "intent_id": args.get("intent_id", "") or (
+            (ctx.source_action.metadata or {}).get("intent_id", "") if ctx.source_action else ""
+        ),
     }
 
     # Orchestrator 路径 —— 通过 _run_action 异步调度
@@ -356,6 +553,9 @@ async def handle_execute_policy(ctx: FCContext, args: dict[str, Any]) -> dict[st
     # 直接路径 —— 同步 await（天玑等场景）
     if ctx.action_agent is not None:
         try:
+            payload.setdefault("sim_time", ctx.sim_time)
+            payload.setdefault("seconds_per_day", ctx.seconds_per_day)
+            payload.setdefault("chain_id", ctx.chain_id)
             result = await ctx.action_agent.process(payload)
             return {
                 "ok": True,
@@ -431,16 +631,18 @@ def handle_list_agents(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
 
 FC_HANDLERS: dict[str, tuple[Callable, bool]] = {
     # (handler, is_async)
-    "list_entities":        (handle_list_entities, False),
-    "query_entity":         (handle_query_entity, False),
-    "query_inventory":      (handle_query_inventory, False),
-    "update_entity_status": (handle_update_entity_status, False),
-    "update_inventory":     (handle_update_inventory, False),
-    "complete_action":      (handle_complete_action, False),
-    "list_agents":          (handle_list_agents, False),
-    "wake_agent":           (handle_wake_agent, True),
-    "execute_policy":       (handle_execute_policy, True),
-    "relay_decree":         (handle_relay_decree, True),
+    "list_entities":         (handle_list_entities, False),
+    "query_entity":          (handle_query_entity, False),
+    "update_entity_status":  (handle_update_entity_status, False),
+    "update_inventory":      (handle_update_inventory, False),
+    "add_ongoing_event":     (handle_add_ongoing_event, False),
+    "modify_ongoing_event":  (handle_modify_ongoing_event, False),
+    "delete_ongoing_event":  (handle_delete_ongoing_event, False),
+    "complete_action":       (handle_complete_action, False),
+    "list_agents":           (handle_list_agents, False),
+    "wake_agent":            (handle_wake_agent, True),
+    "execute_policy":        (handle_execute_policy, True),
+    "relay_decree":          (handle_relay_decree, True),
 }
 
 
@@ -482,6 +684,7 @@ def command_to_fc_args(cmd: RouterCommand) -> dict[str, Any]:
             "message": payload.get("message", ""),
             "from_agent": payload.get("from", ""),
             "urgency": payload.get("urgency", "normal"),
+            "intent_id": cmd.intent_id,
         }
 
     if ct == RouterCommandType.EXECUTE_POLICY:
@@ -490,6 +693,8 @@ def command_to_fc_args(cmd: RouterCommand) -> dict[str, Any]:
             "location": payload.get("location", ""),
             "executor": cmd.target or "",
             "description": payload.get("description", ""),
+            "from_agent": payload.get("from", cmd.source_agent_id),
+            "intent_id": cmd.intent_id,
         }
 
     if ct == RouterCommandType.RELAY_DECREE:
@@ -497,6 +702,7 @@ def command_to_fc_args(cmd: RouterCommand) -> dict[str, Any]:
             "targets": list(cmd.targets or []),
             "decree": payload.get("decree", ""),
             "urgency": payload.get("urgency", "normal"),
+            "intent_id": cmd.intent_id,
         }
 
     return dict(payload)
@@ -532,6 +738,7 @@ def parse_request_action(agent_id: str, args: dict[str, Any]) -> AgentAction:
             "target_location": args.get("target_location", ""),
             "description": args.get("description", ""),
             "resources": args.get("resources", ""),
+            "severity": args.get("severity", 5),
         },
     )
 

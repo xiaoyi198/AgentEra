@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,52 +18,75 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMConfig:
-    """LLM 配置."""
+    """LLM API configuration with environment-backed secret loading."""
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
+    api_key_env: str = ""
     model: str = "gpt-4o-mini"
     timeout_s: int = 30
     max_concurrent: int = 4
 
+    def __post_init__(self) -> None:
+        self.timeout_s = max(1, int(self.timeout_s))
+        self.max_concurrent = max(1, int(self.max_concurrent))
+
     @classmethod
     def from_file(cls, path: str = "config/llm.json") -> LLMConfig:
-        import os
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-        # 支持环境变量替换
-        api_key = data.get("api_key", "")
-        if api_key.startswith("${") and api_key.endswith("}"):
-            env_var = api_key[2:-1]
-            api_key = os.environ.get(env_var, "")
+
+        raw_api_key = str(data.get("api_key", "") or "")
+        api_key_env = str(data.get("api_key_env", "") or "")
+        if raw_api_key.startswith("${") and raw_api_key.endswith("}"):
+            api_key_env = raw_api_key[2:-1].strip()
+            raw_api_key = ""
+
+        if api_key_env:
+            api_key = os.environ.get(api_key_env, "")
+            if not api_key:
+                logger.warning("LLM API key environment variable %s is not set", api_key_env)
+        else:
+            api_key = raw_api_key
+            if api_key:
+                logger.warning(
+                    "Plaintext LLM API key loaded from %s; use ${ENV_VAR} instead",
+                    path,
+                )
+
         return cls(
             base_url=data.get("base_url", cls.base_url),
             api_key=api_key,
+            api_key_env=api_key_env,
             model=data.get("model", cls.model),
-            timeout_s=data.get("timeout_s", cls.timeout_s),
-            max_concurrent=data.get("max_concurrent", cls.max_concurrent),
+            timeout_s=max(1, int(data.get("timeout_s", cls.timeout_s))),
+            max_concurrent=max(1, int(data.get("max_concurrent", cls.max_concurrent))),
         )
 
     def save_to_file(self, path: str = "config/llm.json") -> None:
-        """持久化当前配置到 JSON 文件."""
+        """Persist non-secret configuration and an optional environment reference."""
+        key_reference = f"${{{self.api_key_env}}}" if self.api_key_env else ""
+        if self.api_key and not self.api_key_env:
+            logger.warning(
+                "LLM API key is active in memory but will not be persisted; configure api_key_env"
+            )
         data = {
             "base_url": self.base_url,
-            "api_key": self.api_key,
+            "api_key": key_reference,
             "model": self.model,
-            "timeout_s": self.timeout_s,
-            "max_concurrent": self.max_concurrent,
+            "timeout_s": max(1, int(self.timeout_s)),
+            "max_concurrent": max(1, int(self.max_concurrent)),
         }
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
     def to_display_dict(self) -> dict[str, Any]:
-        """返回脱敏后的配置（api_key 只显示末尾4位）."""
-        masked = ""
-        if self.api_key:
-            masked = "****" + self.api_key[-4:] if len(self.api_key) > 4 else "****"
+        """Return configuration metadata without exposing any key material."""
         return {
             "base_url": self.base_url,
-            "api_key_masked": masked,
+            "api_key_masked": "configured" if self.api_key else "",
+            "api_key_env": self.api_key_env,
+            "api_key_configured": bool(self.api_key),
             "model": self.model,
             "timeout_s": self.timeout_s,
             "max_concurrent": self.max_concurrent,
@@ -104,21 +128,25 @@ class TokenCounter:
 class LLMClient:
     """异步 LLM 客户端，支持 function calling."""
 
-    def __init__(self, config: LLMConfig, debug_log_path: str = "debug_llm.jsonl") -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        debug_log_path: str | None = "debug_llm.jsonl",
+    ) -> None:
         self._config = config
         self._semaphore = asyncio.Semaphore(config.max_concurrent)
         self._client: httpx.AsyncClient | None = None
-        self._debug_path = Path(debug_log_path)
+        self._debug_path = Path(debug_log_path) if debug_log_path else None
         self.token_counter = TokenCounter()
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            headers = {"Content-Type": "application/json"}
+            if self._config.api_key:
+                headers["Authorization"] = f"Bearer {self._config.api_key}"
             self._client = httpx.AsyncClient(
                 base_url=self._config.base_url,
-                headers={
-                    "Authorization": f"Bearer {self._config.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 timeout=self._config.timeout_s,
             )
         return self._client
@@ -129,70 +157,84 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_retries: int = 2,
+        trace_context: Any = None,
     ) -> LLMResponse:
-        """发送 chat completion 请求，失败自动重试."""
+        """Run a chat completion while respecting the shared concurrency limit."""
         async with self._semaphore:
-            start = time.monotonic()
-            client = await self._get_client()
+            return await self._chat_unlocked(messages, tools, temperature, max_retries)
 
-            body: dict[str, Any] = {
-                "model": self._config.model,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            if tools:
-                body["tools"] = tools
-                body["tool_choice"] = "auto"
+    async def _chat_unlocked(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_retries: int = 2,
+    ) -> LLMResponse:
+        """Run a chat completion without acquiring the semaphore again."""
+        start = time.monotonic()
+        client = await self._get_client()
 
-            last_error = None
-            for attempt in range(1 + max_retries):
-                try:
-                    resp = await client.post("/chat/completions", json=body)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    last_error = None
-                    break
-                except Exception as e:
-                    last_error = e
-                    if attempt < max_retries:
-                        wait = 2 ** attempt
-                        logger.warning("LLM call failed (attempt %d/%d), retry in %ds: %s",
-                                       attempt + 1, 1 + max_retries, wait, e)
-                        await asyncio.sleep(wait)
-                    else:
-                        logger.error("LLM call failed after %d attempts: %s", 1 + max_retries, e)
-                        self._log_debug(body, {"error": str(e)}, time.monotonic() - start)
-                        raise
+        body: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
 
-            latency = (time.monotonic() - start) * 1000
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
-            usage = data.get("usage", {})
+        for attempt in range(1 + max_retries):
+            try:
+                resp = await client.post("/chat/completions", json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "LLM call failed (attempt %d/%d), retry in %ds: %s",
+                        attempt + 1,
+                        1 + max_retries,
+                        wait,
+                        e,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM call failed after %d attempts: %s", 1 + max_retries, e)
+                    self._log_debug(body, {"error": str(e)}, time.monotonic() - start)
+                    raise
 
-            result = LLMResponse(
-                content=message.get("content", "") or "",
-                tool_calls=[
-                    {
-                        "id": tc.get("id", ""),
-                        "function": tc.get("function", {}),
-                    }
-                    for tc in message.get("tool_calls", [])
-                ],
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                latency_ms=latency,
-                raw=data,
-            )
+        latency = (time.monotonic() - start) * 1000
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        usage = data.get("usage", {})
 
-            self.token_counter.add(result.input_tokens, result.output_tokens)
-            self._log_debug(body, data, latency)
-            return result
+        result = LLMResponse(
+            content=message.get("content", "") or "",
+            tool_calls=[
+                {
+                    "id": tc.get("id", ""),
+                    "function": tc.get("function", {}),
+                }
+                for tc in message.get("tool_calls", [])
+            ],
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            latency_ms=latency,
+            raw=data,
+        )
+
+        self.token_counter.add(result.input_tokens, result.output_tokens)
+        self._log_debug(body, data, latency)
+        return result
 
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
+        trace_context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式 chat completion，逐 chunk yield.
 
@@ -308,7 +350,7 @@ class LLMClient:
                 logger.warning("chat_stream failed, falling back to non-stream: %s", e)
                 # 退化：用普通 chat 一次性返回
                 body.pop("stream", None)
-                result = await self.chat(messages, tools, temperature)
+                result = await self._chat_unlocked(messages, tools, temperature)
                 if result.content:
                     yield {"type": "delta", "content": result.content}
                 yield {"type": "done", "response": result}
@@ -329,6 +371,8 @@ class LLMClient:
             "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
             "output_tokens": response.get("usage", {}).get("completion_tokens", 0),
         }
+        if self._debug_path is None:
+            return
         try:
             with open(self._debug_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")

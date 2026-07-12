@@ -205,10 +205,44 @@ from pathlib import Path
 class SettingsRequest(BaseModel):
     base_url: str = ""
     api_key: str = ""
+    api_key_env: str = ""
     model: str = ""
     timeout_s: int = 30
     max_concurrent: int = 4
     seconds_per_day: float = 600.0
+
+
+def _prepare_llm_settings_update(
+    req: SettingsRequest,
+    old_config: LLMConfig,
+) -> tuple[LLMConfig | None, str]:
+    submitted_key = (
+        req.api_key
+        if req.api_key and not req.api_key.startswith("****")
+        else ""
+    )
+    requested_base_url = req.base_url or old_config.base_url
+    base_url_changed = requested_base_url.rstrip("/") != old_config.base_url.rstrip("/")
+
+    if req.api_key_env and req.api_key_env != old_config.api_key_env:
+        return None, (
+            "api_key_env can only be changed in the local config file; "
+            "remote environment-variable selection is disabled"
+        )
+    if base_url_changed and not submitted_key:
+        return None, (
+            "changing base_url requires a new session-only api_key; "
+            "the existing environment secret will not be forwarded to a new host"
+        )
+
+    return LLMConfig(
+        base_url=requested_base_url,
+        api_key=submitted_key or old_config.api_key,
+        api_key_env="" if base_url_changed else old_config.api_key_env,
+        model=req.model or old_config.model,
+        timeout_s=req.timeout_s,
+        max_concurrent=req.max_concurrent,
+    ), ""
 
 
 @router.get("/settings")
@@ -216,6 +250,9 @@ async def get_settings():
     if not state.orchestrator:
         return {"error": "not initialized"}
     llm_display = state.orchestrator.router.llm.config.to_display_dict()
+    gateway = getattr(state.orchestrator, "model_gateway", None)
+    if gateway:
+        llm_display["model_gateway"] = gateway.display_config()
     llm_display["seconds_per_day"] = state.orchestrator._seconds_per_day
     return llm_display
 
@@ -228,16 +265,16 @@ async def save_settings(req: SettingsRequest):
     llm_client = state.orchestrator.router.llm
     old_config = llm_client.config
 
-    new_config = LLMConfig(
-        base_url=req.base_url or old_config.base_url,
-        api_key=req.api_key if req.api_key and not req.api_key.startswith("****") else old_config.api_key,
-        model=req.model or old_config.model,
-        timeout_s=req.timeout_s,
-        max_concurrent=req.max_concurrent,
-    )
+    new_config, config_error = _prepare_llm_settings_update(req, old_config)
+    if config_error:
+        return {"error": config_error}
+    assert new_config is not None
 
     await llm_client.update_config(new_config)
-    new_config.save_to_file("config/llm.json")
+    if hasattr(llm_client, "save_configuration"):
+        llm_client.save_configuration()
+    else:
+        new_config.save_to_file("config/llm.json")
 
     if req.seconds_per_day != state.orchestrator._seconds_per_day:
         if not (state.orchestrator.is_running and not state.orchestrator.is_paused):
@@ -308,8 +345,9 @@ async def tianji_tools():
     if not state.tianji_agent:
         return {"error": "TianJiAgent not initialized"}
     tools = state.tianji_agent._build_tools()
-    world_state_names = {"query_entity", "query_inventory", "update_entity_status",
-                         "update_inventory", "complete_action"}
+    world_state_names = {"list_entities", "query_entity", "update_entity_status",
+                         "update_inventory", "add_ongoing_event", "modify_ongoing_event",
+                         "delete_ongoing_event", "complete_action"}
     router_names = {"wake_agent", "execute_policy", "relay_decree"}
     agent_names = {"submit_action", "request_action"}
 

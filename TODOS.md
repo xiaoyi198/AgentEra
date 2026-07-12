@@ -2,7 +2,7 @@
 
 ## v1 未完成
 
-### 事件执行系统重构（世界执行器优化）
+### ~~事件执行系统重构（世界执行器优化）~~ ✅ 2026-04-18 完成
 
 **什么：** 重构世界执行器，使事件结果不再在时间结束前直接修改实体描述。引入"正在执行的事件"列表机制：
 1. **实体状态**保持不变（如"遭遇灾害百姓受苦"）
@@ -13,6 +13,7 @@
 
 **为什么：** 当前执行器在事件未结束时就修改了实体描述，不符合时间逻辑，也无法支持事件叠加和中途干预。
 **添加时间：** 2026-04-13
+**完成说明：** 新增 `OngoingEvent` 表与 6 个 CRUD 方法；ActionAgent 工具集新增 add/modify/delete_ongoing_event；orchestrator `_tick` 内 `pop_matured_events` + `_apply_matured_event` 自动落账；prompt 重写为「执行者立即扣 / 目标侧排队」双通道模型；REST endpoints 与 WorldStateView UI 同步上线。
 
 
 

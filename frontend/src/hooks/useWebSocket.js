@@ -27,6 +27,8 @@ export function useWebSocket(url) {
 
     ws.onclose = () => {
       setConnected(false)
+      // The close callback runs only after connect has finished initialization.
+      // eslint-disable-next-line react-hooks/immutability
       reconnectTimer.current = setTimeout(connect, 1000)
     }
 

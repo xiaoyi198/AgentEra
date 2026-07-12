@@ -80,3 +80,14 @@ class TestChainLog:
         loaded = log2.load_from_file()
         assert loaded == 2
         assert len(log2.get_chain("c1")) == 1
+
+def test_route_edge_index_survives_reload(tmp_path):
+    path = tmp_path / "chain_edges.jsonl"
+    log = ChainLog(str(path))
+    log.append(ChainLogEntry(chain_id="chain_x", caller="agent_a", routed_to="agent_b"))
+    assert log.has_route_edge("chain_x", "agent_a", "agent_b")
+    assert log.get_route_edges("chain_x") == {("agent_a", "agent_b")}
+
+    loaded = ChainLog(str(path))
+    assert loaded.load_from_file() == 1
+    assert loaded.has_route_edge("chain_x", "agent_a", "agent_b")

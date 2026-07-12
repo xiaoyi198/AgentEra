@@ -27,6 +27,7 @@ from .fc_handlers import (
 )
 from .fc_tools import ALL_TOOLS
 from .llm_client import LLMClient
+from .runtime_bindings import TIANJI_TASK, RuntimeBindingsHub, RuntimeTaskBinding
 from .timer_system import TimerSystem
 from .types import ChainLogEntry
 from .world_state import WorldState
@@ -72,6 +73,7 @@ class TianJiAgent:
         router: Any | None = None,
         orchestrator: Any | None = None,  # 可选注入；有则共享 sim_time / pending_wakeups
         system_prompt_path: str = "daming_court/prompts/tianji.txt",
+        system_prompt: str | None = None,
     ) -> None:
         self.llm = llm_client
         self.world_state = world_state
@@ -82,12 +84,27 @@ class TianJiAgent:
         self.router = router
         self.orchestrator = orchestrator
         self._prompt_path = system_prompt_path
+        self._system_prompt = system_prompt
+        self._runtime_bindings: RuntimeBindingsHub | None = None
 
         self.session_id: str = f"tianji_{uuid.uuid4().hex[:8]}"
         self.messages: list[dict[str, Any]] = []
         self._tools = self._build_tools()
 
         self.reset()
+
+    def bind_runtime_bindings(self, hub: RuntimeBindingsHub) -> None:
+        self._runtime_bindings = hub
+
+    def _capture_runtime_binding(self) -> RuntimeTaskBinding:
+        if self._runtime_bindings is not None:
+            return self._runtime_bindings.capture(TIANJI_TASK)
+        return RuntimeTaskBinding(
+            task_id=TIANJI_TASK,
+            generation=0,
+            prompt=self._load_system_prompt(),
+            llm=self.llm,
+        )
 
     def attach_orchestrator(self, orchestrator: Any) -> None:
         """在 orchestrator 构造后反向挂载，便于天玑共享 sim_time / pending_wakeups."""
@@ -112,7 +129,17 @@ class TianJiAgent:
         全部使用非流式 chat() 确保兼容性。
         工具执行后如果 LLM 返回空 content，强制追问直到得到文字回复。
         """
+        binding = self._capture_runtime_binding()
+        if binding.prompt:
+            system_message = {"role": "system", "content": binding.prompt}
+            if self.messages and self.messages[0].get("role") == "system":
+                self.messages[0] = system_message
+            else:
+                self.messages.insert(0, system_message)
         self.messages.append({"role": "user", "content": user_text})
+
+        trace_id = uuid.uuid4().hex
+        turn_id = uuid.uuid4().hex
 
         had_tools = False        # 是否执行过工具
         empty_retries = 0        # 空回复重试计数
@@ -125,10 +152,18 @@ class TianJiAgent:
             use_tools = self._tools if _round < 8 else []
 
             try:
-                response = await self.llm.chat(
+                response = await binding.llm.chat(
                     messages=self.messages,
                     tools=use_tools,
                     temperature=0.7,
+                    trace_context={
+                        "trace_id": trace_id,
+                        "turn_id": turn_id,
+                        "agent_id": "tianji",
+                        "round": _round,
+                        "task_type": "tianji.chat",
+                        "runtime_generation": binding.generation,
+                    },
                 )
             except Exception as e:
                 logger.error("TianJiAgent LLM call failed round %d: %s", _round, e)
@@ -172,7 +207,7 @@ class TianJiAgent:
 
                     yield {"type": "tool_call", "call_id": call_id, "name": name, "arguments": args}
 
-                    result = await self._dispatch_tool(name, args)
+                    result = await self._dispatch_tool(name, args, call_id)
 
                     yield {"type": "tool_result", "call_id": call_id, "name": name, "result": result}
 
@@ -253,9 +288,12 @@ class TianJiAgent:
             chain_id=f"{_CHAIN_PREFIX}{self.session_id}",
         )
 
-    async def _dispatch_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _dispatch_tool(
+        self, name: str, args: dict[str, Any], tool_call_id: str = "",
+    ) -> dict[str, Any]:
         """天玑统一分发：submit_action / request_action 特殊路径，其余走 dispatch_fc."""
         ctx = self._build_ctx()
+        ctx.tool_call_id = tool_call_id
 
         # submit_action → 先解析成 AgentAction → 走 Router → Router 产生的命令
         # 再通过 dispatch_fc 真实执行（与 Orchestrator._execute_commands 同逻辑）
@@ -270,6 +308,7 @@ class TianJiAgent:
                     executed: list[dict[str, Any]] = []
                     for cmd in commands:
                         ctx.chain_id = cmd.chain_id
+                        ctx.tool_call_id = cmd.command_id
                         ctx.source_action = cmd.source_action
                         fc_name = command_type_to_fc_name(cmd.command_type)
                         fc_args = command_to_fc_args(cmd)
@@ -340,6 +379,8 @@ class TianJiAgent:
             logger.warning("TianJiAgent chain_log append failed: %s", e)
 
     def _load_system_prompt(self) -> str:
+        if self._system_prompt is not None:
+            return self._system_prompt
         path = Path(self._prompt_path)
         if path.exists():
             return path.read_text(encoding="utf-8")
@@ -353,11 +394,12 @@ _DEFAULT_SYSTEM_PROMPT = """你是「天玑」，大明王朝·朝堂风云世�
 ## 你拥有的工具
 
 **世界状态工具**（读写实体与库存）：
-- `query_entity(entity_id)` — 查询地点/人物/机构的描述与当前状况
-- `query_inventory(entity_id)` — 查询库存（粮食/货币/兵力/物资）
-- `update_entity_status(entity_id, new_status)` — 更新实体当前状况
-- `update_inventory(entity_id, category, item_name, quantity_delta)` — 增减库存
-- `complete_action(result_description, duration_days)` — 标记行动模拟结束
+- `query_entity(entity_id)` — 一次返回基本情况、当前状况、库存、核心参数与正在发生的事情
+- `update_entity_status(entity_id, new_status)` — 立即覆盖 current_status
+- `update_inventory(entity_id, resource_name, quantity_delta)` — 立即增减资源代币
+- `add_ongoing_event(entity_id, description, duration_days, expected_result)` — 排队一条延迟生效的事件
+- `modify_ongoing_event(event_id, ...)` / `delete_ongoing_event(event_id)` — 改/删进行中事件
+- `complete_action(result_description, duration_days)` — 仅 ActionAgent 用，标记行动结束
 
 **路由指令工具**（与生产路径行为一致，会产生真实副作用）：
 - `wake_agent(target, message, from_agent, urgency?)` — 真实投递消息；同城立即，异地按坐标+urgency（urgent/express/normal）自动写定时器
@@ -370,7 +412,7 @@ _DEFAULT_SYSTEM_PROMPT = """你是「天玑」，大明王朝·朝堂风云世�
 
 ## 工作原则
 
-1. 不确定时，先用 `query_entity` / `query_inventory` 了解现状
+1. 不确定时，先用 `query_entity` 了解现状（已包含库存与正在发生的事情）
 2. 对于写操作，在执行前告知用户你将要做什么
 3. 所有工具调用都会产生**真实副作用**（修改世界状态、唤醒 Agent、创建定时器等），请谨慎调用
 4. 每次工具调用结果会反馈给你，请整合后用自然语言告知用户

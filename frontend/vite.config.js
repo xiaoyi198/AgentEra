@@ -1,15 +1,19 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+const rootDir = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        editor: resolve(__dirname, 'editor.html'),
-        tianji: resolve(__dirname, 'tianji.html'),
+        main: resolve(rootDir, 'index.html'),
+        editor: resolve(rootDir, 'editor.html'),
+        dlc: resolve(rootDir, 'dlc.html'),
+        tianji: resolve(rootDir, 'tianji.html'),
       },
     },
   },

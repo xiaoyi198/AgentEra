@@ -177,14 +177,15 @@ function App() {
   const [showSaveManager, setShowSaveManager] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [settings, setSettings] = useState({
-    base_url: '', api_key_masked: '', model: '',
+    base_url: '', api_key_masked: '', api_key_env: '', model: '',
     timeout_s: 30, max_concurrent: 4, seconds_per_day: 600,
   })
   const [settingsForm, setSettingsForm] = useState({})
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsMsg, setSettingsMsg] = useState('')
 
-  // 处理 WebSocket tick
+  // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!lastMessage || lastMessage.type !== 'tick') return
     const data = lastMessage.data
@@ -199,6 +200,7 @@ function App() {
       })
     }
   }, [lastMessage])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // 挂载时从后端拉取已有 memorials（刷新不丢）
   useEffect(() => {
@@ -304,15 +306,16 @@ function App() {
       setSettingsForm({
         base_url: data.base_url || '',
         api_key: '',
+        api_key_env: data.api_key_env || '',
         model: data.model || '',
         timeout_s: data.timeout_s || 30,
         max_concurrent: data.max_concurrent || 4,
         seconds_per_day: data.seconds_per_day || 600,
       })
       setSettingsMsg('')
-    } catch (e) {
+    } catch {
       setSettingsForm({
-        base_url: '', api_key: '', model: '',
+        base_url: '', api_key: '', api_key_env: '', model: '',
         timeout_s: 30, max_concurrent: 4, seconds_per_day: 600,
       })
     }
@@ -336,11 +339,17 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>大明朝廷</h1>
+        <div className="header-brand">
+          <span className="brand-seal" aria-hidden="true">明</span>
+          <div className="brand-copy">
+            <h1>大明朝廷</h1>
+            <p>山河为局 · 百官为棋</p>
+          </div>
+        </div>
         <div className="header-info">
           <span className="day-counter">{timeStrFull(simTime)}</span>
           <span className={`ws-status ${connected ? 'on' : 'off'}`}>
-            {connected ? '●' : '○'}
+            <i aria-hidden="true" />{connected ? '世界已连接' : '世界离线'}
           </span>
         </div>
         <div className="header-controls">
@@ -506,7 +515,14 @@ function App() {
                   type="password"
                   value={settingsForm.api_key}
                   onChange={e => setSettingsForm(s => ({...s, api_key: e.target.value}))}
-                  placeholder="sk-..."
+                  placeholder="Session-only key; prefer the environment variable below"
+                />
+                <label>API key environment variable</label>
+                <input
+                  value={settingsForm.api_key_env || ''}
+                  readOnly
+                  title="Edit config/models.json or config/llm.json locally to change this value"
+                  placeholder="WORLD_SIM_API_KEY"
                 />
                 <label>模型名称</label>
                 <input

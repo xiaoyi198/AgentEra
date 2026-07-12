@@ -1,0 +1,1120 @@
+"""DLC package discovery, validation, and authoring registry.
+
+The registry owns the on-disk package boundary, prevents entrypoint path
+traversal, normalizes legacy DLCs, and performs atomic JSON writes.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import os
+import re
+import tempfile
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
+
+from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRegistryError
+from .time_simulator import ActionTimeRule, TimeRuleError
+from .world_state import RELATION_TYPES, RESOURCE_TOKENS
+
+DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
+RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DLC_FORMATS = {"bundle-v1", "legacy-v1"}
+DLC_STATUSES = {"draft", "published"}
+CURRENT_CONTENT_SCHEMA_VERSION = "1.0"
+RESOURCE_KINDS = {"asset", "metric", "parameter"}
+AGENT_PROMPT_VARIABLES = {
+    "id", "name", "rank", "rank_title", "location", "location_id",
+    "personality", "personality_seed", "superior", "superior_id",
+    "role", "agent_type",
+}
+
+
+_SEMVER_PATTERN = re.compile(
+    r"^(?P<major>0|[1-9]\d*)(?:\.(?P<minor>0|[1-9]\d*))?"
+    r"(?:\.(?P<patch>0|[1-9]\d*))?(?:-(?P<pre>[0-9A-Za-z.-]+))?"
+    r"(?:\+[0-9A-Za-z.-]+)?$"
+)
+
+
+def _parse_semver(value: str, *, partial: bool = False) -> tuple[int, int, int, tuple[Any, ...]]:
+    text = str(value).strip()
+    match = _SEMVER_PATTERN.fullmatch(text)
+    if not match:
+        raise DLCRegistryError(f"Invalid semantic version: {value!r}")
+    if not partial and (match.group("minor") is None or match.group("patch") is None):
+        raise DLCRegistryError(f"Semantic version must use major.minor.patch: {value!r}")
+    prerelease: tuple[Any, ...] = ()
+    if match.group("pre"):
+        prerelease = tuple(
+            int(part) if part.isdigit() else part
+            for part in match.group("pre").split(".")
+        )
+    return (
+        int(match.group("major")),
+        int(match.group("minor") or 0),
+        int(match.group("patch") or 0),
+        prerelease,
+    )
+
+
+def _compare_semver(left: tuple[int, int, int, tuple[Any, ...]], right: tuple[int, int, int, tuple[Any, ...]]) -> int:
+    if left[:3] != right[:3]:
+        return -1 if left[:3] < right[:3] else 1
+    left_pre, right_pre = left[3], right[3]
+    if not left_pre and not right_pre:
+        return 0
+    if not left_pre:
+        return 1
+    if not right_pre:
+        return -1
+    for lpart, rpart in zip(left_pre, right_pre):
+        if lpart == rpart:
+            continue
+        if isinstance(lpart, int) and isinstance(rpart, str):
+            return -1
+        if isinstance(lpart, str) and isinstance(rpart, int):
+            return 1
+        return -1 if lpart < rpart else 1
+    return (len(left_pre) > len(right_pre)) - (len(left_pre) < len(right_pre))
+
+
+def _constraint_clause(version: tuple[int, int, int, tuple[Any, ...]], clause: str) -> bool:
+    clause = clause.strip()
+    if not clause or clause in {"*", "x", "X"}:
+        return True
+    wildcard = re.fullmatch(r"(\d+)(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?", clause)
+    if wildcard and any(part in {"x", "X", "*"} for part in wildcard.groups()[1:] if part is not None):
+        major = int(wildcard.group(1))
+        minor = wildcard.group(2)
+        patch = wildcard.group(3)
+        return version[0] == major and (minor in {None, "x", "X", "*"} or version[1] == int(minor)) and (patch in {None, "x", "X", "*"} or version[2] == int(patch))
+    operator = "="
+    target_text = clause
+    for candidate in (">=", "<=", ">", "<", "^", "~", "="):
+        if clause.startswith(candidate):
+            operator, target_text = candidate, clause[len(candidate):].strip()
+            break
+    target = _parse_semver(target_text, partial=operator in {"^", "~"})
+    comparison = _compare_semver(version, target)
+    if operator == "^":
+        if target[0] > 0:
+            upper = (target[0] + 1, 0, 0, ())
+        elif target[1] > 0:
+            upper = (0, target[1] + 1, 0, ())
+        else:
+            upper = (0, 0, target[2] + 1, ())
+        return comparison >= 0 and _compare_semver(version, upper) < 0
+    if operator == "~":
+        upper = (target[0], target[1] + 1, 0, ())
+        return comparison >= 0 and _compare_semver(version, upper) < 0
+    return {"=": comparison == 0, ">=": comparison >= 0, "<=": comparison <= 0, ">": comparison > 0, "<": comparison < 0}[operator]
+
+
+def version_satisfies(version: str, constraint: str) -> bool:
+    """Return whether a strict SemVer version satisfies a compact range expression."""
+    parsed = _parse_semver(version)
+    expression = str(constraint).strip()
+    if not expression:
+        raise DLCRegistryError("Dependency version constraint cannot be empty")
+    alternatives = [item.strip() for item in expression.split("||")]
+    for alternative in alternatives:
+        clauses = [item for item in re.split(r"(?:\s*,\s*|\s+)", alternative) if item]
+        if clauses and all(_constraint_clause(parsed, clause) for clause in clauses):
+            return True
+    return False
+
+
+class DLCRegistryError(ValueError):
+    """Raised when a DLC operation violates registry invariants."""
+
+
+@dataclass(frozen=True)
+class DLCValidationIssue:
+    code: str
+    message: str
+    path: str = ""
+    severity: str = "error"
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass
+class DLCManifest:
+    id: str
+    name: str
+    version: str = "0.1.0"
+    schema_version: str = "1.0"
+    description: str = ""
+    enabled: bool = False
+    status: str = "draft"
+    format: str = "bundle-v1"
+    priority: int = 0
+    primary: bool = False
+    dependencies: list[str] = field(default_factory=list)
+    dependency_constraints: dict[str, str] = field(default_factory=dict)
+    entrypoints: dict[str, str] = field(default_factory=dict)
+    model_bindings: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DLCManifest":
+        known = set(cls.__dataclass_fields__)
+        return cls(**{key: data[key] for key in known if key in data})
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DLCPackage:
+    manifest: DLCManifest
+    root: Path
+    manifest_path: Path
+
+    def summary(self) -> dict[str, Any]:
+        data = self.manifest.to_dict()
+        data["root"] = str(self.root)
+        return data
+
+
+class DLCRegistry:
+    """Discover and safely edit DLC packages below explicitly allowed roots."""
+
+    def __init__(
+        self,
+        project_root: str | Path = ".",
+        packages_root: str | Path = "dlcs",
+        manifest_roots: Iterable[str | Path] | None = None,
+    ) -> None:
+        self.project_root = Path(project_root).resolve()
+        package_path = Path(packages_root)
+        if not package_path.is_absolute():
+            package_path = self.project_root / package_path
+        self.packages_root = package_path.resolve()
+        roots = list(manifest_roots or [self.project_root, self.packages_root])
+        self.manifest_roots = [
+            (Path(root) if Path(root).is_absolute() else self.project_root / root).resolve()
+            for root in roots
+        ]
+        self.packages_root.mkdir(parents=True, exist_ok=True)
+        self._packages: dict[str, DLCPackage] = {}
+        self.discover()
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DLCRegistryError(f"Cannot read JSON {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise DLCRegistryError(f"JSON root must be an object: {path}")
+        return data
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _inside(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    def _safe_entrypoint(self, package: DLCPackage, relative: str) -> Path:
+        if not relative or Path(relative).is_absolute():
+            raise DLCRegistryError("DLC entrypoint must be a non-empty relative path")
+        resolved = (package.root / relative).resolve()
+        if not self._inside(resolved, package.root):
+            raise DLCRegistryError(f"DLC entrypoint escapes package root: {relative}")
+        return resolved
+
+    def discover(self) -> list[DLCPackage]:
+        candidates: set[Path] = set()
+        for root in self.manifest_roots:
+            if not root.exists():
+                continue
+            direct = root / "dlc.json"
+            if direct.is_file():
+                candidates.add(direct.resolve())
+            for path in root.glob("*/dlc.json"):
+                if path.is_file():
+                    candidates.add(path.resolve())
+
+        packages: dict[str, DLCPackage] = {}
+        for manifest_path in sorted(candidates, key=str):
+            manifest = DLCManifest.from_dict(self._read_json(manifest_path))
+            package = DLCPackage(manifest, manifest_path.parent.resolve(), manifest_path)
+            previous = packages.get(manifest.id)
+            if previous and previous.manifest_path != manifest_path:
+                raise DLCRegistryError(
+                    f"Duplicate DLC id {manifest.id!r}: {previous.root} and {package.root}"
+                )
+            packages[manifest.id] = package
+        self._packages = packages
+        return self.list_packages()
+
+    def list_packages(self) -> list[DLCPackage]:
+        return sorted(
+            self._packages.values(),
+            key=lambda pkg: (-pkg.manifest.priority, pkg.manifest.id),
+        )
+
+    def get(self, dlc_id: str) -> DLCPackage:
+        try:
+            return self._packages[dlc_id]
+        except KeyError as exc:
+            raise DLCRegistryError(f"Unknown DLC: {dlc_id}") from exc
+
+    def primary_package(self) -> DLCPackage | None:
+        active = [
+            pkg for pkg in self.list_packages()
+            if pkg.manifest.enabled and pkg.manifest.status == "published"
+        ]
+        return next((pkg for pkg in active if pkg.manifest.primary), active[0] if active else None)
+
+    def _dependency_cycle(self, start_id: str) -> list[str]:
+        visited: set[str] = set()
+        stack: list[str] = []
+        positions: dict[str, int] = {}
+
+        def visit(dlc_id: str) -> list[str]:
+            if dlc_id in positions:
+                return stack[positions[dlc_id]:] + [dlc_id]
+            if dlc_id in visited or dlc_id not in self._packages:
+                return []
+            visited.add(dlc_id)
+            positions[dlc_id] = len(stack)
+            stack.append(dlc_id)
+            dependencies = self._packages[dlc_id].manifest.dependencies
+            if isinstance(dependencies, list):
+                for dependency in dependencies:
+                    if isinstance(dependency, str):
+                        cycle = visit(dependency)
+                        if cycle:
+                            return cycle
+            stack.pop()
+            positions.pop(dlc_id, None)
+            return []
+
+        return visit(start_id)
+
+    @staticmethod
+    def _dependency_constraint(manifest: DLCManifest, dependency: str) -> str:
+        constraints = manifest.dependency_constraints
+        return constraints.get(dependency, "*") if isinstance(constraints, dict) else "*"
+
+    def ordered_active_packages(self) -> list[DLCPackage]:
+        active = {
+            pkg.manifest.id: pkg for pkg in self.list_packages()
+            if pkg.manifest.enabled and pkg.manifest.status == "published"
+        }
+        ordered: list[DLCPackage] = []
+        temporary: set[str] = set()
+        permanent: set[str] = set()
+
+        def visit(dlc_id: str) -> None:
+            if dlc_id in permanent:
+                return
+            if dlc_id in temporary:
+                raise DLCRegistryError(f"DLC dependency cycle includes {dlc_id}")
+            temporary.add(dlc_id)
+            package = active[dlc_id]
+            if not isinstance(package.manifest.dependencies, list):
+                raise DLCRegistryError(f"Active DLC {dlc_id} has invalid dependencies")
+            for dependency in package.manifest.dependencies:
+                if not isinstance(dependency, str) or dependency not in active:
+                    raise DLCRegistryError(
+                        f"Active DLC {dlc_id} requires inactive or missing DLC {dependency}"
+                    )
+                constraint = self._dependency_constraint(package.manifest, dependency)
+                if not version_satisfies(active[dependency].manifest.version, constraint):
+                    raise DLCRegistryError(
+                        f"Active DLC {dlc_id} requires {dependency} {constraint}, "
+                        f"but active version is {active[dependency].manifest.version}"
+                    )
+                visit(dependency)
+            temporary.remove(dlc_id)
+            permanent.add(dlc_id)
+            ordered.append(package)
+
+        for package in self.list_packages():
+            if package.manifest.id in active:
+                visit(package.manifest.id)
+        return ordered
+
+    def load_content(self, dlc_id: str) -> dict[str, Any]:
+        package = self.get(dlc_id)
+        if package.manifest.format == "legacy-v1":
+            return self._load_legacy_content(package)
+        entry = package.manifest.entrypoints.get("content", "content.json")
+        path = self._safe_entrypoint(package, entry)
+        content = self._read_json(path)
+        normalized = self._normalize_content(content)
+        if "schema_version" not in content:
+            # Missing schema markers belong to the pre-1.0 bundle shape. Keep
+            # that fact visible so validation and Studio migration can act on it.
+            normalized["schema_version"] = "0.9"
+        return normalized
+
+    @staticmethod
+    def _normalize_content(content: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(content)
+        normalized.setdefault("schema_version", "1.0")
+        for key in (
+            "resources", "entities", "inventory", "entity_values", "relations",
+            "agents", "initial_events", "ongoing_events", "random_events", "time_rules",
+        ):
+            value = normalized.setdefault(key, [])
+            if not isinstance(value, list):
+                raise DLCRegistryError(f"DLC content field {key!r} must be a list")
+        for key in ("personas", "prompts"):
+            value = normalized.setdefault(key, {})
+            if not isinstance(value, dict):
+                raise DLCRegistryError(f"DLC content field {key!r} must be an object")
+        return normalized
+    def _load_legacy_content(self, package: DLCPackage) -> dict[str, Any]:
+        entries = package.manifest.entrypoints
+
+        def read_optional(name: str, fallback: str) -> dict[str, Any]:
+            relative = entries.get(name, fallback)
+            path = self._safe_entrypoint(package, relative)
+            return self._read_json(path) if path.is_file() else {}
+
+        officials = read_optional("agents", "config/officials.json")
+        world = read_optional("world", "config/world_state.json")
+        events = read_optional("events", "config/events.json")
+        personas = read_optional("personas", "config/personas.json")
+        prompts: dict[str, str] = {}
+        prompts_path = self._safe_entrypoint(package, entries.get("prompts", "prompts"))
+        if prompts_path.is_dir():
+            for prompt_path in sorted(prompts_path.glob("*.txt")):
+                prompts[prompt_path.stem] = prompt_path.read_text(encoding="utf-8")
+
+        used_resources = {
+            str(item.get("item_name", item.get("name", "")))
+            for item in world.get("inventory", [])
+        }
+        used_resources.update(
+            str(item.get("name", "")) for item in world.get("entity_values", [])
+        )
+        resources = []
+        for token in RESOURCE_TOKENS:
+            if token["name"] not in used_resources:
+                continue
+            resources.append({
+                "name": token["name"],
+                "unit": token.get("unit", ""),
+                "kind": token.get("kind", "asset"),
+                "default_quantity": token.get("default", 0.0),
+                "min_quantity": token.get("min"),
+                "max_quantity": token.get("max"),
+                "anchor_rate": token.get("anchor_rate"),
+                "metadata": {"legacy_type": token.get("type", "")},
+            })
+        known = {item["name"] for item in resources}
+        for name in sorted(used_resources - known - {""}):
+            resources.append({"name": name, "kind": "asset", "anchor_rate": 1.0})
+
+        resource_kinds = {item["name"]: item.get("kind", "asset") for item in resources}
+        inventory: list[dict[str, Any]] = []
+        entity_values = list(world.get("entity_values", []))
+        for item in world.get("inventory", []):
+            name = str(item.get("item_name", item.get("resource_name", "")))
+            kind = resource_kinds.get(name, "asset")
+            if kind == "asset":
+                inventory.append(item)
+            else:
+                entity_values.append({
+                    "entity_id": item.get("entity_id", ""),
+                    "name": name,
+                    "kind": kind,
+                    "value": item.get("quantity", 0.0),
+                    "description": item.get("description", ""),
+                    "version": item.get("version", 0),
+                })
+
+        return self._normalize_content({
+            "schema_version": "1.0",
+            "resources": resources,
+            "entities": world.get("entities", []),
+            "inventory": inventory,
+            "entity_values": entity_values,
+            "relations": world.get("relations", []),
+            "agents": officials.get("officials", officials.get("agents", [])),
+            "initial_events": events.get("initial_events", []),
+            "random_events": events.get("random_events", []),
+            "time_rules": events.get("time_rules", []),
+            "ongoing_events": world.get("ongoing_events", []),
+            "personas": personas,
+            "prompts": prompts,
+        })
+
+    @staticmethod
+    def _duplicates(items: list[dict[str, Any]], key: str) -> set[str]:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for item in items:
+            value = str(item.get(key, ""))
+            if value in seen:
+                duplicates.add(value)
+            seen.add(value)
+        return duplicates
+
+    def validate(self, dlc_id: str) -> list[DLCValidationIssue]:
+        package = self.get(dlc_id)
+        manifest = package.manifest
+        issues: list[DLCValidationIssue] = []
+
+        def add(
+            code: str, message: str, path: str = "", severity: str = "error",
+        ) -> None:
+            issues.append(DLCValidationIssue(code, message, path, severity))
+
+        if not DLC_ID_PATTERN.fullmatch(manifest.id):
+            add("manifest.invalid_id", "DLC id must match ^[a-z][a-z0-9_-]{1,63}$", "manifest.id")
+        if package.root.name != manifest.id:
+            add("manifest.directory_mismatch", "Package directory must equal manifest id", "manifest.id")
+        if not manifest.name.strip():
+            add("manifest.missing_name", "DLC name is required", "manifest.name")
+        try:
+            _parse_semver(manifest.version)
+        except DLCRegistryError as exc:
+            add("manifest.invalid_version", str(exc), "manifest.version")
+        if manifest.format not in DLC_FORMATS:
+            add("manifest.invalid_format", f"Unsupported format: {manifest.format}", "manifest.format")
+        if manifest.status not in DLC_STATUSES:
+            add("manifest.invalid_status", f"Unsupported status: {manifest.status}", "manifest.status")
+        dependency_ids: set[str] = set()
+        if not isinstance(manifest.dependencies, list):
+            add("manifest.invalid_dependencies", "dependencies must be a list", "manifest.dependencies")
+        else:
+            for index, dependency in enumerate(manifest.dependencies):
+                path = f"manifest.dependencies[{index}]"
+                if not isinstance(dependency, str) or not dependency.strip():
+                    add("dependency.invalid_id", "Dependency id must be a non-empty string", path)
+                    continue
+                if dependency in dependency_ids:
+                    add("dependency.duplicate", f"Duplicate dependency: {dependency}", path)
+                dependency_ids.add(dependency)
+                if dependency == manifest.id:
+                    add("dependency.self", "A DLC cannot depend on itself", path)
+                elif dependency not in self._packages:
+                    add("dependency.missing", f"Missing dependency: {dependency}", path)
+        constraints = manifest.dependency_constraints
+        if not isinstance(constraints, dict):
+            add(
+                "manifest.invalid_dependency_constraints",
+                "dependency_constraints must be an object",
+                "manifest.dependency_constraints",
+            )
+            constraints = {}
+        for dependency, constraint in constraints.items():
+            path = f"manifest.dependency_constraints.{dependency}"
+            if dependency not in dependency_ids:
+                add(
+                    "dependency.constraint_without_dependency",
+                    f"Version constraint declared for undeclared dependency: {dependency}",
+                    path,
+                )
+                continue
+            if not isinstance(constraint, str) or not constraint.strip():
+                add("dependency.invalid_constraint", "Version constraint must be a non-empty string", path)
+                continue
+            target = self._packages.get(dependency)
+            try:
+                satisfied = target is None or version_satisfies(target.manifest.version, constraint)
+            except DLCRegistryError as exc:
+                add("dependency.invalid_constraint", str(exc), path)
+                continue
+            if target is not None and not satisfied:
+                add(
+                    "dependency.version_mismatch",
+                    f"Dependency {dependency} requires {constraint}, installed version is {target.manifest.version}",
+                    path,
+                )
+        cycle = self._dependency_cycle(dlc_id)
+        if cycle:
+            add(
+                "dependency.cycle",
+                "DLC dependency cycle: " + " -> ".join(cycle),
+                "manifest.dependencies",
+            )
+        for name, relative in manifest.entrypoints.items():
+            try:
+                self._safe_entrypoint(package, relative)
+            except DLCRegistryError as exc:
+                add("entrypoint.unsafe", str(exc), f"manifest.entrypoints.{name}")
+
+        bindings = manifest.model_bindings
+        if not isinstance(bindings, dict):
+            add(
+                "manifest.invalid_model_bindings",
+                "model_bindings must be an object",
+                "manifest.model_bindings",
+            )
+            bindings = {}
+        for section in ("tasks", "agents"):
+            mapping = bindings.get(section, {})
+            if not isinstance(mapping, dict):
+                add(
+                    "manifest.invalid_model_binding_section",
+                    f"model_bindings.{section} must be an object",
+                    f"manifest.model_bindings.{section}",
+                )
+                continue
+            for binding_key, profile in mapping.items():
+                if not str(binding_key).strip() or not isinstance(profile, str) or not profile.strip():
+                    add(
+                        "manifest.invalid_model_binding",
+                        "Model binding keys and profile names must be non-empty strings",
+                        f"manifest.model_bindings.{section}.{binding_key}",
+                    )
+        for binding_key, profile in bindings.items():
+            if binding_key in {"tasks", "agents"}:
+                continue
+            if not isinstance(profile, str) or not profile.strip():
+                add(
+                    "manifest.invalid_model_binding",
+                    "Legacy flat model bindings must map task names to profile strings",
+                    f"manifest.model_bindings.{binding_key}",
+                )
+
+        try:
+            content = self.load_content(dlc_id)
+        except DLCRegistryError as exc:
+            add("content.unreadable", str(exc), "content")
+            return issues
+
+        content_schema = str(content.get("schema_version", ""))
+        if content_schema != CURRENT_CONTENT_SCHEMA_VERSION:
+            add(
+                "content.migration_required",
+                f"Content schema {content_schema or '<missing>'} must be migrated to {CURRENT_CONTENT_SCHEMA_VERSION}",
+                "content.schema_version",
+            )
+
+        entities = content["entities"]
+        agents = content["agents"]
+        resources = content["resources"]
+        for collection, key in ((entities, "id"), (agents, "id"), (resources, "name")):
+            label = "resources" if key == "name" else ("entities" if collection is entities else "agents")
+            for duplicate in self._duplicates(collection, key):
+                add(f"{label}.duplicate", f"Duplicate {key}: {duplicate}", label)
+
+        entity_ids = {str(item.get("id", "")) for item in entities if item.get("id")}
+        agent_ids = {str(item.get("id", "")) for item in agents if item.get("id")}
+        resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
+        agent_bindings = bindings.get("agents", {}) if isinstance(bindings.get("agents", {}), dict) else {}
+        for bound_agent in agent_bindings:
+            if str(bound_agent) not in agent_ids:
+                add(
+                    "manifest.model_binding_unknown_agent",
+                    f"Model binding references unknown agent: {bound_agent}",
+                    f"manifest.model_bindings.agents.{bound_agent}",
+                )
+
+        for index, entity in enumerate(entities):
+            if not str(entity.get("id", "")).strip():
+                add("entity.missing_id", "Entity id is required", f"entities[{index}].id")
+            if not str(entity.get("type", "")).strip():
+                add("entity.missing_type", "Entity type is required", f"entities[{index}].type")
+
+        for index, resource in enumerate(resources):
+            path = f"resources[{index}]"
+            name = str(resource.get("name", ""))
+            kind = str(resource.get("kind", "asset"))
+            if not name:
+                add("resource.missing_name", "Resource name is required", f"{path}.name")
+            if kind not in RESOURCE_KINDS:
+                add("resource.invalid_kind", f"Invalid resource kind: {kind}", f"{path}.kind")
+            if kind == "asset":
+                rate = resource.get("anchor_rate")
+                if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
+                    add("resource.invalid_anchor_rate", "Asset anchor_rate must be finite and positive", f"{path}.anchor_rate")
+            for field_name in ("default_quantity", "min_quantity", "max_quantity"):
+                value = resource.get(field_name)
+                if value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value)):
+                    add("resource.invalid_number", f"{field_name} must be finite", f"{path}.{field_name}")
+
+        for index, item in enumerate(content["inventory"]):
+            path = f"inventory[{index}]"
+            entity_id = str(item.get("entity_id", ""))
+            resource_name = str(item.get("item_name", item.get("resource_name", "")))
+            if entity_id not in entity_ids:
+                add("inventory.missing_entity", f"Unknown entity: {entity_id}", f"{path}.entity_id")
+            resource = resource_map.get(resource_name)
+            if resource is None:
+                add("inventory.missing_resource", f"Unknown resource: {resource_name}", f"{path}.item_name")
+            elif resource.get("kind", "asset") != "asset":
+                add("inventory.non_asset", f"Inventory resource must be an asset: {resource_name}", f"{path}.item_name")
+            elif "anchor_rate" in item:
+                item_rate = item.get("anchor_rate")
+                resource_rate = resource.get("anchor_rate")
+                if (
+                    not isinstance(item_rate, (int, float))
+                    or isinstance(item_rate, bool)
+                    or not math.isfinite(item_rate)
+                    or float(item_rate) != float(resource_rate)
+                ):
+                    add(
+                        "inventory.anchor_mismatch",
+                        f"Inventory anchor_rate must match resource catalog: {resource_name}",
+                        f"{path}.anchor_rate",
+                    )
+
+        for index, item in enumerate(content["entity_values"]):
+            path = f"entity_values[{index}]"
+            entity_id = str(item.get("entity_id", ""))
+            name = str(item.get("name", ""))
+            if entity_id not in entity_ids:
+                add("value.missing_entity", f"Unknown entity: {entity_id}", f"{path}.entity_id")
+            resource = resource_map.get(name)
+            if resource is None:
+                add("value.missing_resource", f"Unknown resource: {name}", f"{path}.name")
+            elif resource.get("kind") not in {"metric", "parameter"}:
+                add("value.invalid_kind", f"Entity value must reference metric/parameter: {name}", f"{path}.name")
+            if item.get("kind") and resource and item.get("kind") != resource.get("kind"):
+                add("value.kind_mismatch", f"Value kind differs from resource definition: {name}", f"{path}.kind")
+        for index, relation in enumerate(content["relations"]):
+            path = f"relations[{index}]"
+            parent_id = str(relation.get("parent_id", ""))
+            child_id = str(relation.get("child_id", ""))
+            rel_type = str(relation.get("rel_type", ""))
+            if parent_id not in entity_ids:
+                add("relation.missing_parent", f"Unknown parent entity: {parent_id}", f"{path}.parent_id")
+            if child_id not in entity_ids:
+                add("relation.missing_child", f"Unknown child entity: {child_id}", f"{path}.child_id")
+            if rel_type not in RELATION_TYPES:
+                add(
+                    "relation.invalid_type",
+                    f"Invalid relation type: {rel_type or '<empty>'}",
+                    f"{path}.rel_type",
+                )
+            if parent_id and parent_id == child_id:
+                add("relation.self_reference", "A relation cannot point to itself", path)
+
+        for index, agent in enumerate(agents):
+            path = f"agents[{index}]"
+            agent_id = str(agent.get("id", ""))
+            if not agent_id:
+                add("agent.missing_id", "Agent id is required", f"{path}.id")
+            location_id = str(agent.get("location_id", ""))
+            if location_id and location_id not in entity_ids:
+                add("agent.missing_location", f"Unknown location entity: {location_id}", f"{path}.location_id")
+            superior_id = agent.get("superior_id")
+            if superior_id and str(superior_id) not in agent_ids:
+                add("agent.missing_superior", f"Unknown superior agent: {superior_id}", f"{path}.superior_id")
+            model_profile = agent.get("model_profile")
+            if model_profile is not None and (
+                not isinstance(model_profile, str) or not model_profile.strip()
+            ):
+                add(
+                    "agent.invalid_model_profile",
+                    "model_profile must be a non-empty string",
+                    f"{path}.model_profile",
+                )
+
+        for duplicate in self._duplicates([item for item in content["time_rules"] if isinstance(item, dict)], "rule_id"):
+            add("time_rules.duplicate", f"Duplicate rule_id: {duplicate}", "time_rules")
+        for index, rule in enumerate(content["time_rules"]):
+            path = f"time_rules[{index}]"
+            if not isinstance(rule, dict):
+                add("time_rule.invalid_rule", "Time rule must be an object", path)
+                continue
+            try:
+                ActionTimeRule.from_dict(rule)
+            except TimeRuleError as exc:
+                add("time_rule.invalid_rule", str(exc), path)
+
+        for duplicate in self._duplicates([item for item in content["random_events"] if isinstance(item, dict)], "template_id"):
+            add("random_events.duplicate", f"Duplicate template_id: {duplicate}", "random_events")
+
+        reserved_payload_fields = {"random_event_template_id", "occurrence"}
+        for index, template in enumerate(content["random_events"]):
+            path = f"random_events[{index}]"
+            if not isinstance(template, dict):
+                add("random_event.invalid_template", "Random event template must be an object", path)
+                continue
+            template_id = template.get("template_id")
+            event_type = template.get("event_type")
+            if not isinstance(template_id, str) or not RANDOM_EVENT_ID_PATTERN.fullmatch(template_id.strip()):
+                add(
+                    "random_event.invalid_template_id",
+                    "template_id must use 1-64 letters, numbers, dot, underscore, or hyphen",
+                    f"{path}.template_id",
+                )
+            if not isinstance(event_type, str) or not RANDOM_EVENT_ID_PATTERN.fullmatch(event_type.strip()):
+                add(
+                    "random_event.invalid_type",
+                    "event_type must use 1-64 letters, numbers, dot, underscore, or hyphen",
+                    f"{path}.event_type",
+                )
+            targets = template.get("target_agents", [])
+            if not isinstance(targets, list) or not targets:
+                add("random_event.invalid_targets", "target_agents must be a non-empty list", f"{path}.target_agents")
+            else:
+                normalized_targets = [str(target).strip() for target in targets]
+                if any(not target for target in normalized_targets) or len(set(normalized_targets)) != len(normalized_targets):
+                    add("random_event.invalid_targets", "target_agents must contain unique non-empty Agent ids", f"{path}.target_agents")
+                for target in normalized_targets:
+                    if target and target not in agent_ids:
+                        add("random_event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
+            payload = template.get("initial_payload", {})
+            if not isinstance(payload, dict):
+                add("random_event.invalid_payload", "initial_payload must be an object", f"{path}.initial_payload")
+            else:
+                for field_name in sorted(reserved_payload_fields & set(payload)):
+                    add(
+                        "random_event.reserved_payload_field",
+                        f"initial_payload cannot override runtime field: {field_name}",
+                        f"{path}.initial_payload.{field_name}",
+                    )
+            severity_values: dict[str, int] = {}
+            for field_name, default in (("severity_min", 1), ("severity_max", 10)):
+                value = template.get(field_name, default)
+                if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10:
+                    add("random_event.invalid_severity", f"{field_name} must be an integer from 1 to 10", f"{path}.{field_name}")
+                else:
+                    severity_values[field_name] = value
+            if len(severity_values) == 2 and severity_values["severity_min"] > severity_values["severity_max"]:
+                add("random_event.invalid_severity_range", "severity_min cannot exceed severity_max", path)
+            interval_values: dict[str, float] = {}
+            for field_name, default in (("min_interval_days", 30.0), ("max_interval_days", 90.0)):
+                value = template.get(field_name, default)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                    add("random_event.invalid_interval", f"{field_name} must be a positive finite number", f"{path}.{field_name}")
+                else:
+                    interval_values[field_name] = float(value)
+            if len(interval_values) == 2 and interval_values["min_interval_days"] > interval_values["max_interval_days"]:
+                add("random_event.invalid_interval_range", "min_interval_days cannot exceed max_interval_days", path)
+            probability = template.get("probability", 1.0)
+            if (
+                isinstance(probability, bool)
+                or not isinstance(probability, (int, float))
+                or not math.isfinite(probability)
+                or not 0 <= probability <= 1
+            ):
+                add("random_event.invalid_probability", "probability must be a finite number from 0 to 1", f"{path}.probability")
+            max_occurrences = template.get("max_occurrences", 0)
+            if isinstance(max_occurrences, bool) or not isinstance(max_occurrences, int) or max_occurrences < 0:
+                add("random_event.invalid_max_occurrences", "max_occurrences must be a non-negative integer", f"{path}.max_occurrences")
+            enabled = template.get("enabled", True)
+            if not isinstance(enabled, bool):
+                add("random_event.invalid_enabled", "enabled must be a boolean", f"{path}.enabled")
+
+        for duplicate in self._duplicates(content["initial_events"], "event_id"):
+            add("initial_events.duplicate", f"Duplicate event_id: {duplicate}", "initial_events")
+        for duplicate in self._duplicates(content["ongoing_events"], "event_id"):
+            add("ongoing_events.duplicate", f"Duplicate event_id: {duplicate}", "ongoing_events")
+
+        for index, event in enumerate(content["initial_events"]):
+            path = f"initial_events[{index}]"
+            event_id = str(event.get("event_id", "")).strip()
+            if not event_id:
+                add("event.missing_id", "Initial event_id is required", f"{path}.event_id")
+            severity = event.get("severity", 5)
+            if isinstance(severity, bool) or not isinstance(severity, int) or not 1 <= severity <= 10:
+                add("event.invalid_severity", "Initial event severity must be an integer from 1 to 10", f"{path}.severity")
+            targets = event.get("target_agents", [])
+            if not isinstance(targets, list):
+                add("event.invalid_targets", "target_agents must be a list", f"{path}.target_agents")
+            else:
+                for target in targets:
+                    if str(target) not in agent_ids:
+                        add("event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
+            if not isinstance(event.get("initial_payload", {}), dict):
+                add("event.invalid_payload", "initial_payload must be an object", f"{path}.initial_payload")
+            generated_at = event.get("generated_at", 0.0)
+            if not isinstance(generated_at, (int, float)) or isinstance(generated_at, bool) or not math.isfinite(generated_at):
+                add("event.invalid_generated_at", "generated_at must be finite", f"{path}.generated_at")
+
+        for index, event in enumerate(content["ongoing_events"]):
+            path = f"ongoing_events[{index}]"
+            event_id = str(event.get("event_id", "")).strip()
+            entity_id = str(event.get("entity_id", ""))
+            if not event_id:
+                add("ongoing_event.missing_id", "Ongoing event_id is required", f"{path}.event_id")
+            if entity_id not in entity_ids:
+                add("ongoing_event.missing_entity", f"Unknown entity: {entity_id}", f"{path}.entity_id")
+            if not isinstance(event.get("expected_result", {}), dict):
+                add("ongoing_event.invalid_result", "expected_result must be an object", f"{path}.expected_result")
+            times: dict[str, float] = {}
+            for field_name in ("start_time", "end_time"):
+                value = event.get(field_name, 0.0)
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                    add("ongoing_event.invalid_time", f"{field_name} must be finite", f"{path}.{field_name}")
+                else:
+                    times[field_name] = float(value)
+            if len(times) == 2 and times["end_time"] < times["start_time"]:
+                add("ongoing_event.invalid_time_range", "end_time cannot be earlier than start_time", path)
+
+        for persona_name, persona_text in content["personas"].items():
+            path = f"personas.{persona_name}"
+            if not str(persona_name).strip():
+                add("persona.missing_name", "Persona name cannot be empty", path)
+            if not isinstance(persona_text, str) or not persona_text.strip():
+                add("persona.invalid_text", "Persona text must be a non-empty string", path)
+
+        try:
+            prompt_registry = FrameworkPromptRegistry(content["prompts"])
+            for prompt_name in prompt_registry.names:
+                allowed = AGENT_PROMPT_VARIABLES if prompt_name == "official_template" or prompt_name in agent_ids else None
+                for issue in prompt_registry.lint(prompt_name, allowed_variables=allowed):
+                    add(issue.code, issue.message, f"prompts.{issue.path}", issue.severity)
+        except (PromptRegistryError, TypeError, ValueError) as exc:
+            add("prompt.invalid_definition", str(exc), "prompts")
+
+        for other in self.list_packages():
+            if other.manifest.id == dlc_id or other.manifest.status != "published":
+                continue
+            try:
+                other_content = self.load_content(other.manifest.id)
+            except DLCRegistryError:
+                continue
+            comparisons = (
+                ("entity", entity_ids, {str(item.get("id", "")) for item in other_content["entities"]}),
+                ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
+                ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
+            )
+            for kind, own_ids, other_ids in comparisons:
+                for conflict in sorted((own_ids & other_ids) - {""}):
+                    add(
+                        f"cross_package.{kind}_conflict",
+                        f"{kind.title()} id {conflict!r} already exists in published DLC {other.manifest.id}",
+                        kind + "s",
+                    )
+        return issues
+
+    def create(self, manifest_data: dict[str, Any]) -> DLCPackage:
+        manifest = DLCManifest.from_dict({
+            "status": "draft",
+            "enabled": False,
+            "format": "bundle-v1",
+            "entrypoints": {"content": "content.json", "prompts": "prompts"},
+            **manifest_data,
+        })
+        if not DLC_ID_PATTERN.fullmatch(manifest.id):
+            raise DLCRegistryError("DLC id must match ^[a-z][a-z0-9_-]{1,63}$")
+        if manifest.id in self._packages:
+            raise DLCRegistryError(f"DLC already exists: {manifest.id}")
+        if manifest.format != "bundle-v1":
+            raise DLCRegistryError("DLC Studio can only create bundle-v1 packages")
+        manifest.status = "draft"
+        manifest.enabled = False
+        root = (self.packages_root / manifest.id).resolve()
+        if not self._inside(root, self.packages_root) or root.name != manifest.id:
+            raise DLCRegistryError("Unsafe DLC package directory")
+        if root.exists():
+            raise DLCRegistryError(f"DLC directory already exists: {root}")
+        root.mkdir(parents=True)
+        (root / "prompts").mkdir()
+        self._atomic_write_json(root / "dlc.json", manifest.to_dict())
+        self._atomic_write_json(root / "content.json", self._normalize_content({}))
+        self.discover()
+        return self.get(manifest.id)
+
+    def save_manifest(self, dlc_id: str, data: dict[str, Any]) -> DLCPackage:
+        package = self.get(dlc_id)
+        merged = package.manifest.to_dict()
+        merged.update(data)
+        if merged.get("id") != dlc_id:
+            raise DLCRegistryError("Changing a DLC id is not supported")
+        manifest = DLCManifest.from_dict(merged)
+        for relative in manifest.entrypoints.values():
+            probe = DLCPackage(manifest, package.root, package.manifest_path)
+            self._safe_entrypoint(probe, relative)
+        self._atomic_write_json(package.manifest_path, manifest.to_dict())
+        self.discover()
+        return self.get(dlc_id)
+
+    def save_content(self, dlc_id: str, content: dict[str, Any]) -> dict[str, Any]:
+        package = self.get(dlc_id)
+        if package.manifest.format != "bundle-v1":
+            raise DLCRegistryError("Legacy DLC content is read-only; migrate it to bundle-v1 first")
+        normalized = self._normalize_content(content)
+        path = self._safe_entrypoint(
+            package, package.manifest.entrypoints.get("content", "content.json")
+        )
+        self._atomic_write_json(path, normalized)
+        return normalized
+
+    def plan_content_migration(
+        self, dlc_id: str, target_schema_version: str = CURRENT_CONTENT_SCHEMA_VERSION,
+    ) -> dict[str, Any]:
+        package = self.get(dlc_id)
+        if package.manifest.format != "bundle-v1":
+            raise DLCRegistryError("Legacy DLC packages must first be copied into a bundle-v1 package")
+        path = self._safe_entrypoint(
+            package, package.manifest.entrypoints.get("content", "content.json")
+        )
+        raw = self._read_json(path)
+        source = str(raw.get("schema_version") or "0.9")
+        target = str(target_schema_version)
+        if target != CURRENT_CONTENT_SCHEMA_VERSION:
+            raise DLCRegistryError(
+                f"Unsupported target content schema {target!r}; latest is {CURRENT_CONTENT_SCHEMA_VERSION}"
+            )
+        migrated = copy.deepcopy(raw)
+        steps: list[dict[str, str]] = []
+        warnings: list[str] = []
+        if source == target:
+            migrated = self._normalize_content(migrated)
+        elif source == "0.9" and target == "1.0":
+            if "agents" not in migrated and isinstance(migrated.get("officials"), list):
+                migrated["agents"] = migrated.pop("officials")
+                steps.append({"id": "officials-to-agents", "description": "Rename officials to agents"})
+            for resource in migrated.get("resources", []):
+                if isinstance(resource, dict) and "kind" not in resource and "type" in resource:
+                    legacy_type = str(resource.pop("type"))
+                    resource["kind"] = {
+                        "item": "asset", "asset": "asset", "value": "metric",
+                        "metric": "metric", "parameter": "parameter",
+                    }.get(legacy_type, legacy_type)
+            if migrated.get("resources"):
+                steps.append({"id": "resource-kind", "description": "Normalize resource type to kind"})
+            for item in migrated.get("inventory", []):
+                if not isinstance(item, dict) or "item_name" in item:
+                    continue
+                legacy_name = item.pop("resource_name", item.pop("name", None))
+                if legacy_name is not None:
+                    item["item_name"] = legacy_name
+            if migrated.get("inventory"):
+                steps.append({"id": "inventory-resource-name", "description": "Normalize inventory item_name"})
+            migrated["schema_version"] = "1.0"
+            steps.append({"id": "schema-version", "description": "Set content schema_version to 1.0"})
+            migrated = self._normalize_content(migrated)
+        else:
+            raise DLCRegistryError(f"No content migration path from {source!r} to {target!r}")
+        if not steps and source == target:
+            warnings.append("Content already uses the latest schema")
+        return {
+            "dlc_id": dlc_id,
+            "source_schema_version": source,
+            "target_schema_version": target,
+            "changed": migrated != raw,
+            "steps": steps,
+            "warnings": warnings,
+            "content": migrated,
+        }
+
+    def migrate_content(
+        self,
+        dlc_id: str,
+        target_schema_version: str = CURRENT_CONTENT_SCHEMA_VERSION,
+        *,
+        expected_source_schema_version: str | None = None,
+    ) -> dict[str, Any]:
+        report = self.plan_content_migration(dlc_id, target_schema_version)
+        if (
+            expected_source_schema_version is not None
+            and report["source_schema_version"] != expected_source_schema_version
+        ):
+            raise DLCRegistryError(
+                "Content schema changed since preview: expected "
+                f"{expected_source_schema_version}, found {report['source_schema_version']}"
+            )
+        if report["changed"]:
+            report["content"] = self.save_content(dlc_id, report["content"])
+        return report
+
+    def _assert_dependency_lifecycle(self, package: DLCPackage, *, require_enabled: bool) -> None:
+        dependencies = package.manifest.dependencies
+        if not isinstance(dependencies, list):
+            raise DLCRegistryError("DLC dependencies must be a list")
+        for dependency in dependencies:
+            target = self.get(dependency)
+            constraint = self._dependency_constraint(package.manifest, dependency)
+            if not version_satisfies(target.manifest.version, constraint):
+                raise DLCRegistryError(
+                    f"DLC {package.manifest.id} requires {dependency} {constraint}, "
+                    f"installed version is {target.manifest.version}"
+                )
+            if target.manifest.status != "published":
+                raise DLCRegistryError(f"Dependency {dependency} must be published first")
+            if require_enabled and not target.manifest.enabled:
+                raise DLCRegistryError(f"Dependency {dependency} must be enabled first")
+
+    def publish(self, dlc_id: str) -> DLCPackage:
+        issues = self.validate(dlc_id)
+        errors = [issue for issue in issues if issue.severity == "error"]
+        if errors:
+            summary = "; ".join(issue.message for issue in errors[:5])
+            raise DLCRegistryError(f"DLC validation failed: {summary}")
+        package = self.get(dlc_id)
+        self._assert_dependency_lifecycle(package, require_enabled=False)
+        return self.save_manifest(dlc_id, {"status": "published", "enabled": package.manifest.enabled})
+
+    def set_enabled(self, dlc_id: str, enabled: bool) -> DLCPackage:
+        package = self.get(dlc_id)
+        if enabled and package.manifest.status != "published":
+            raise DLCRegistryError("Only published DLCs can be enabled")
+        if enabled:
+            self._assert_dependency_lifecycle(package, require_enabled=True)
+        updated = self.save_manifest(dlc_id, {"enabled": bool(enabled)})
+        if enabled:
+            # Defense in depth: validate the entire active graph before runtime sees it.
+            self.ordered_active_packages()
+        return updated
+
+    def _keyed_update(
+        self, dlc_id: str, collection: str, key: str, key_value: str,
+        value: dict[str, Any] | None,
+    ) -> bool:
+        content = self.load_content(dlc_id)
+        items = content[collection]
+        index = next((i for i, item in enumerate(items) if str(item.get(key, "")) == key_value), None)
+        if value is None:
+            if index is None:
+                return False
+            del items[index]
+            self.save_content(dlc_id, content)
+            return True
+        updated = dict(value)
+        updated[key] = key_value
+        if index is None:
+            items.append(updated)
+        else:
+            items[index] = updated
+        self.save_content(dlc_id, content)
+        return index is None
+
+    def upsert_entity(self, dlc_id: str, entity_id: str, value: dict[str, Any]) -> bool:
+        return self._keyed_update(dlc_id, "entities", "id", entity_id, value)
+
+    def delete_entity(self, dlc_id: str, entity_id: str) -> bool:
+        return self._keyed_update(dlc_id, "entities", "id", entity_id, None)
+
+    def upsert_agent(self, dlc_id: str, agent_id: str, value: dict[str, Any]) -> bool:
+        return self._keyed_update(dlc_id, "agents", "id", agent_id, value)
+
+    def delete_agent(self, dlc_id: str, agent_id: str) -> bool:
+        return self._keyed_update(dlc_id, "agents", "id", agent_id, None)
+
+    def upsert_resource(self, dlc_id: str, resource_name: str, value: dict[str, Any]) -> bool:
+        return self._keyed_update(dlc_id, "resources", "name", resource_name, value)
+
+    def delete_resource(self, dlc_id: str, resource_name: str) -> bool:
+        return self._keyed_update(dlc_id, "resources", "name", resource_name, None)

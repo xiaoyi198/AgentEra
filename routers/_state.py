@@ -1,4 +1,4 @@
-"""全局共享状态 — 所有 Router 通过此模块访问 orchestrator 等单例."""
+﻿"""全局共享状态——所有 Router 通过此模块访问 orchestrator 等单例。"""
 
 from __future__ import annotations
 

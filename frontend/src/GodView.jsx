@@ -228,13 +228,23 @@ export default function GodView() {
                       {a.changes_made?.length > 0 && (
                         <div className="action-changes">
                           <div className="action-round-hdr">世界变更 ({a.changes_made.length})</div>
-                          {a.changes_made.map((ch, ci) => (
-                            <div key={ci} className="action-change-item">
-                              {ch.type === 'status_update'
-                                ? `[状态] ${ch.entity_id}: ${ch.new_status}`
-                                : `[库存] ${ch.entity_id} ${ch.item_name} ${ch.delta > 0 ? '+' : ''}${ch.delta} → ${ch.new_quantity}`}
-                            </div>
-                          ))}
+                          {a.changes_made.map((ch, ci) => {
+                            let text
+                            if (ch.type === 'status_update') {
+                              text = `[状态] ${ch.entity_id}: ${ch.new_status}`
+                            } else if (ch.type === 'inventory_update') {
+                              text = `[库存] ${ch.entity_id} ${ch.item_name || ch.resource_name} ${ch.delta > 0 ? '+' : ''}${ch.delta} → ${ch.new_quantity}`
+                            } else if (ch.type === 'ongoing_event_add') {
+                              text = `[事件+] ${ch.entity_id} · ${ch.description} (${ch.duration_days}天后)`
+                            } else if (ch.type === 'ongoing_event_modify') {
+                              text = `[事件~] ${ch.event_id} 改 ${(ch.fields || []).join('/')}`
+                            } else if (ch.type === 'ongoing_event_delete') {
+                              text = `[事件-] ${ch.event_id}`
+                            } else {
+                              text = `[${ch.type}] ${ch.entity_id || ch.event_id || ''}`
+                            }
+                            return <div key={ci} className="action-change-item">{text}</div>
+                          })}
                         </div>
                       )}
                       {a.error && <div className="action-error">错误: {a.error}</div>}

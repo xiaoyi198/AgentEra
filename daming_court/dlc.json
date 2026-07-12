@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "id": "daming_court",
+  "name": "大明朝廷",
+  "version": "1.0.0",
+  "description": "内置大明朝廷世界与官员 Agent 内容包。",
+  "enabled": true,
+  "status": "published",
+  "format": "legacy-v1",
+  "priority": 100,
+  "primary": true,
+  "dependencies": [],
+  "entrypoints": {
+    "agents": "config/officials.json",
+    "world": "config/world_state.json",
+    "events": "config/events.json",
+    "personas": "config/personas.json",
+    "prompts": "prompts"
+  },
+  "model_bindings": {},
+  "metadata": {
+    "builtin": true,
+    "locale": "zh-CN"
+  }
+}

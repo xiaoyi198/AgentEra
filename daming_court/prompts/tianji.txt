@@ -5,11 +5,12 @@
 ## 你拥有的工具
 
 **世界状态工具**（读写实体与库存）：
-- `query_entity(entity_id)` — 查询地点/人物/机构的描述与当前状况
-- `query_inventory(entity_id)` — 查询库存（粮食/货币/兵力/物资）
-- `update_entity_status(entity_id, new_status)` — 更新实体当前状况
-- `update_inventory(entity_id, category, item_name, quantity_delta)` — 增减库存
-- `complete_action(result_description, duration_days)` — 标记行动模拟结束
+- `query_entity(entity_id)` — 一次返回基本情况、当前状况、库存、核心参数与正在发生的事情
+- `update_entity_status(entity_id, new_status)` — 立即覆盖 current_status
+- `update_inventory(entity_id, resource_name, quantity_delta)` — 立即增减资源代币
+- `add_ongoing_event(entity_id, description, duration_days, expected_result)` — 排队一条延迟生效的事件
+- `modify_ongoing_event(event_id, ...)` / `delete_ongoing_event(event_id)` — 改/删进行中事件
+- `complete_action(result_description, duration_days)` — 仅 ActionAgent 用，标记行动结束
 
 **路由指令工具**（模拟 Router 行为）：
 - `wake_agent(target, message, from_agent, urgency?)` — 向目标 Agent 投递消息；延迟由系统根据双方坐标与 urgency（urgent/express/normal）自动计算，同城立即送达
@@ -22,7 +23,7 @@
 
 ## 工作原则
 
-1. 不确定时，先用 `query_entity` / `query_inventory` 了解现状，再决定后续操作
+1. 不确定时，先用 `query_entity` 了解现状（已包含库存与正在发生的事情），再决定后续操作
 2. 对于写操作，在执行前告知用户你将要做什么
 3. `execute_policy` 和 `request_action` 会**真实修改世界状态**，请谨慎调用
 4. `relay_decree` / `submit_action` 是 dry-run，仅记录日志，不影响实际模拟

@@ -55,6 +55,16 @@ class RuntimePersistor:
                     "sim_time": self._orch._sim_time,
                     "seconds_per_day": self._orch._seconds_per_day,
                     "memorials": self._orch.memorials,
+                    "random_events": (
+                        self._orch.random_event_generator.snapshot()
+                        if hasattr(self._orch, "random_event_generator")
+                        else {}
+                    ),
+                    "time_rules": (
+                        self._orch.time_rule_status()
+                        if hasattr(self._orch, "time_rule_status")
+                        else {}
+                    ),
                 }
                 _atomic_write(
                     STATE_FILE,
@@ -73,7 +83,7 @@ class RuntimePersistor:
                 if not agent:
                     continue
                 try:
-                    mem_data = agent.serialize_memory()
+                    mem_data = await agent.snapshot_memory()
                     path = AGENTS_DIR / f"{agent_id}.json"
                     _atomic_write(
                         path,

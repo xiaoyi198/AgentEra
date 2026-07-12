@@ -1,0 +1,166 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "daming_core_prompt_contracts",
+  "dlc_id": "daming_court",
+  "minimum_score": 100,
+  "scenarios": [
+    {
+      "id": "official_uses_tools_and_does_not_claim_message_is_execution",
+      "prompt": "official_template",
+      "variables": {
+        "name": "况钟",
+        "location": "苏州府",
+        "rank_title": "知府",
+        "personality": "你务实谨慎，先核实事实再行动。",
+        "superior": "江南布政使_周忱"
+      },
+      "expect": {
+        "version": "1.0",
+        "content_hash": "6d106b93bc1c978b7de298e03fca101392de6a0daad8de7854f0f4bb3efe03b9",
+        "required_variables": ["name", "location", "rank_title", "personality", "superior"],
+        "allowed_variables": ["name", "location", "rank_title", "personality", "superior"],
+        "max_chars": 1200,
+        "max_estimated_tokens": 600,
+        "assertions": [
+          {
+            "id": "tool_only_actions",
+            "kind": "contains_all",
+            "patterns": ["不要输出纯文本作为行动", "必须通过工具表达"],
+            "weight": 2,
+            "description": "行动必须通过工具而不是纯文本"
+          },
+          {
+            "id": "message_is_not_execution",
+            "kind": "contains_all",
+            "patterns": ["说了不等于做了", "report_message` 只是传话"],
+            "weight": 2,
+            "description": "传话不应被虚构为世界执行成功"
+          },
+          {
+            "id": "action_tool_order",
+            "kind": "ordered",
+            "patterns": ["submit_action —— 表达意图", "request_action —— 亲自动手"],
+            "description": "稳定展示两类行动工具"
+          }
+        ]
+      }
+    },
+    {
+      "id": "action_agent_queries_then_commits_and_completes",
+      "prompt": "action_agent",
+      "variables": {
+        "executor_name": "况钟",
+        "action_type": "relief",
+        "target_location": "吴县",
+        "action_description": "开仓赈灾并调粮",
+        "resources": "粮草1000石",
+        "world_context": "吴县粮草不足，苏州府可调拨。"
+      },
+      "expect": {
+        "version": "1.0",
+        "content_hash": "0d8704e048cb58c260a113e12292f06ca4057f0af782b5f7338ad4d55d9fbfe8",
+        "required_variables": ["executor_name", "action_type", "target_location", "action_description", "resources", "world_context"],
+        "allowed_variables": ["executor_name", "action_type", "target_location", "action_description", "resources", "world_context"],
+        "max_chars": 2400,
+        "max_estimated_tokens": 1200,
+        "assertions": [
+          {
+            "id": "tool_first_round_order",
+            "kind": "ordered",
+            "patterns": ["第 1 轮（并行侦查）", "第 2 轮（并行落账 + 收尾）", "最后一个 `complete_action`"],
+            "weight": 3,
+            "description": "先查询、再落账、最后完成"
+          },
+          {
+            "id": "no_false_completion",
+            "kind": "contains_all",
+            "patterns": ["本身不改任何状态", "变更必须已在同轮或前轮完成"],
+            "weight": 3,
+            "description": "complete_action 不能伪造状态变更"
+          },
+          {
+            "id": "id_authority_boundary",
+            "kind": "contains_all",
+            "patterns": ["两套 ID 命名空间（不要混用）", "query_entity` **只接受实体 ID**"],
+            "weight": 2,
+            "description": "工具参数只能使用正确命名空间"
+          },
+          {
+            "id": "resource_failure_is_real",
+            "kind": "contains_all",
+            "patterns": ["资源不足", "要如实体现，不粉饰"],
+            "description": "资源约束不能被虚构绕过"
+          }
+        ]
+      }
+    },
+    {
+      "id": "router_preserves_hierarchy_and_legal_ids",
+      "prompt": "router",
+      "variables": {},
+      "expect": {
+        "version": "1.0",
+        "content_hash": "5cf4cf7ff351ca67742413a1d9d35f2693f848cdc0f21b8145a5262569d65f5a",
+        "max_chars": 2300,
+        "max_estimated_tokens": 1150,
+        "assertions": [
+          {
+            "id": "analyze_before_tools",
+            "kind": "contains_all",
+            "patterns": ["必须先做，再决定调用哪些工具", "先分析，再调用工具"],
+            "weight": 2,
+            "description": "Router 先分析意图再调用工具"
+          },
+          {
+            "id": "hierarchy_boundary",
+            "kind": "contains_all",
+            "patterns": ["不能直接联系的", "只发给直属下级", "只发给直属上级"],
+            "weight": 3,
+            "description": "禁止越级并按层级转发"
+          },
+          {
+            "id": "legal_agent_ids",
+            "kind": "contains_all",
+            "patterns": ["target 必须使用提供的完整官员 ID", "`from_agent` 必填"],
+            "weight": 2,
+            "description": "路由工具必须使用合法完整 ID"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tianji_warns_before_real_world_mutation",
+      "prompt": "tianji",
+      "variables": {},
+      "expect": {
+        "version": "1.0",
+        "content_hash": "9e74363e4f5c77d3640f7f42c23af6131be1740168d51582bd8ff9e5c37dd2a6",
+        "max_chars": 1800,
+        "max_estimated_tokens": 900,
+        "assertions": [
+          {
+            "id": "query_before_action",
+            "kind": "contains_all",
+            "patterns": ["不确定时，先用 `query_entity`", "再决定后续操作"],
+            "weight": 2,
+            "description": "调试 Agent 先查询真实状态"
+          },
+          {
+            "id": "write_authority_boundary",
+            "kind": "contains_all",
+            "patterns": ["对于写操作，在执行前告知用户", "会**真实修改世界状态**", "请谨慎调用"],
+            "weight": 3,
+            "description": "真实写操作需要告知并保持谨慎"
+          },
+          {
+            "id": "dry_run_distinction",
+            "kind": "contains_all",
+            "patterns": ["是 dry-run", "不影响实际模拟"],
+            "weight": 2,
+            "description": "明确区分记录意图和真实执行"
+          }
+        ]
+      }
+    }
+  ]
+}

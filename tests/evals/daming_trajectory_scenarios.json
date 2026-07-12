@@ -1,0 +1,648 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "daming-core-trajectories-v1",
+  "mode": "replay",
+  "minimum_score": 100,
+  "scenarios": [
+    {
+      "id": "agent-multiround-memory-commitment",
+      "task": "agent.turn",
+      "agent_id": "hubu_shangshu",
+      "expect": {
+        "allowed_tools": [
+          "recall_memory",
+          "submit_report"
+        ],
+        "required_terminal_tool": "submit_report",
+        "max_rounds": 4,
+        "max_tool_calls": 4,
+        "max_tokens": 1000,
+        "max_model_latency_ms": 1000,
+        "memory_must_include": [
+          "mem_tax_promise"
+        ],
+        "commitment_status": "resolved"
+      },
+      "replay": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Review the prior tax promise and report completion."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "recall_memory",
+              "description": "Recall structured memory",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_report",
+              "description": "Submit a terminal report",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_report"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1000,
+          "max_seconds": 5
+        },
+        "responses": [
+          {
+            "tool_calls": [
+              {
+                "id": "m1",
+                "type": "function",
+                "function": {
+                  "name": "recall_memory",
+                  "arguments": "{\"query\": \"tax promise\"}"
+                }
+              }
+            ],
+            "input_tokens": 120,
+            "output_tokens": 20,
+            "latency_ms": 12
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "m2",
+                "type": "function",
+                "function": {
+                  "name": "submit_report",
+                  "arguments": "{\"status\": \"resolved\"}"
+                }
+              }
+            ],
+            "input_tokens": 160,
+            "output_tokens": 32,
+            "latency_ms": 15
+          }
+        ],
+        "tool_results": [
+          {
+            "tool": "recall_memory",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "memory_ids": [
+                "mem_tax_promise"
+              ]
+            }
+          },
+          {
+            "tool": "submit_report",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          }
+        ],
+        "evidence": {
+          "memory_recalled": [
+            "mem_tax_promise"
+          ],
+          "commitment_status": "resolved"
+        }
+      },
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Use recall_memory first, then submit_report. Never invent tools."
+          },
+          {
+            "role": "user",
+            "content": "Review the prior tax promise and report completion."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "recall_memory",
+              "description": "Recall structured memory",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_report",
+              "description": "Submit a terminal report",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_report"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1000,
+          "max_seconds": 30
+        },
+        "tool_results": [
+          {
+            "tool": "recall_memory",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "memory_ids": [
+                "mem_tax_promise"
+              ]
+            }
+          },
+          {
+            "tool": "submit_report",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          }
+        ],
+        "evidence": {
+          "memory_recalled": [
+            "mem_tax_promise"
+          ],
+          "commitment_status": "resolved"
+        },
+        "expect": {
+          "allowed_tools": [
+            "recall_memory",
+            "submit_report"
+          ],
+          "required_terminal_tool": "submit_report",
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1000,
+          "max_model_latency_ms": 1000
+        }
+      }
+    },
+    {
+      "id": "router-ambiguous-target",
+      "task": "router.ambiguous",
+      "expect": {
+        "allowed_tools": [
+          "route_intent"
+        ],
+        "required_terminal_tool": "route_intent",
+        "route_target": "hubu",
+        "max_rounds": 2,
+        "max_tokens": 500
+      },
+      "replay": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Route a request to audit treasury grain accounts."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "route_intent",
+              "description": "Choose the responsible office",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "route_intent"
+        ],
+        "responses": [
+          {
+            "tool_calls": [
+              {
+                "id": "r1",
+                "type": "function",
+                "function": {
+                  "name": "route_intent",
+                  "arguments": "{\"target\": \"hubu\", \"action\": \"audit\"}"
+                }
+              }
+            ],
+            "input_tokens": 90,
+            "output_tokens": 18,
+            "latency_ms": 9
+          }
+        ],
+        "evidence": {}
+      },
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Treasury and grain accounting belongs to hubu. Call route_intent."
+          },
+          {
+            "role": "user",
+            "content": "Route a request to audit treasury grain accounts."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "route_intent",
+              "description": "Choose target; target must be a stable office id",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "route_intent"
+        ],
+        "budget": {
+          "max_rounds": 2,
+          "max_tool_calls": 2,
+          "max_tokens": 500,
+          "max_seconds": 30
+        },
+        "evidence": {},
+        "expect": {
+          "allowed_tools": [
+            "route_intent"
+          ],
+          "required_terminal_tool": "route_intent",
+          "route_target": "hubu",
+          "max_rounds": 2,
+          "max_tokens": 500
+        }
+      }
+    },
+    {
+      "id": "world-transfer-anchor-conservation",
+      "task": "action.simulation",
+      "expect": {
+        "allowed_tools": [
+          "inspect_inventory",
+          "apply_world_command"
+        ],
+        "required_terminal_tool": "apply_world_command",
+        "max_rounds": 3,
+        "max_tool_calls": 3,
+        "max_tokens": 800,
+        "resource_conservation": true
+      },
+      "replay": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Transfer equal anchored value between two inventories."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_inventory",
+              "description": "Read anchored inventory values",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "apply_world_command",
+              "description": "Apply an atomic inventory transfer",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "apply_world_command"
+        ],
+        "responses": [
+          {
+            "tool_calls": [
+              {
+                "id": "w1",
+                "type": "function",
+                "function": {
+                  "name": "inspect_inventory",
+                  "arguments": "{\"entities\": [\"source\", \"target\"]}"
+                }
+              }
+            ],
+            "input_tokens": 110,
+            "output_tokens": 24,
+            "latency_ms": 11
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "w2",
+                "type": "function",
+                "function": {
+                  "name": "apply_world_command",
+                  "arguments": "{\"command_type\": \"transfer_resource\", \"base_value\": 25}"
+                }
+              }
+            ],
+            "input_tokens": 145,
+            "output_tokens": 30,
+            "latency_ms": 13
+          }
+        ],
+        "tool_results": [
+          {
+            "tool": "inspect_inventory",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          },
+          {
+            "tool": "apply_world_command",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "receipt": "cmd-transfer-1"
+            }
+          }
+        ],
+        "evidence": {
+          "resource": {
+            "before_base_value": 200,
+            "after_base_value": 200,
+            "external_delta": 0,
+            "tolerance": 1e-06
+          }
+        }
+      },
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Inspect inventory before applying exactly one atomic transfer command."
+          },
+          {
+            "role": "user",
+            "content": "Transfer equal anchored value between two inventories."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_inventory",
+              "description": "Read anchored inventory values",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "apply_world_command",
+              "description": "Apply an atomic inventory transfer",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "apply_world_command"
+        ],
+        "budget": {
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 800,
+          "max_seconds": 30
+        },
+        "tool_results": [
+          {
+            "tool": "inspect_inventory",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          },
+          {
+            "tool": "apply_world_command",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "receipt": "eval-dry-run"
+            }
+          }
+        ],
+        "evidence": {
+          "resource": {
+            "before_base_value": 200,
+            "after_base_value": 200,
+            "external_delta": 0,
+            "tolerance": 1e-06
+          }
+        },
+        "expect": {
+          "allowed_tools": [
+            "inspect_inventory",
+            "apply_world_command"
+          ],
+          "required_terminal_tool": "apply_world_command",
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 800
+        }
+      }
+    },
+    {
+      "id": "agent-bounded-policy-decision",
+      "task": "agent.turn",
+      "agent_id": "neige_daxueshi",
+      "expect": {
+        "allowed_tools": [
+          "inspect_context",
+          "submit_decision"
+        ],
+        "required_terminal_tool": "submit_decision",
+        "max_rounds": 3,
+        "max_tool_calls": 3,
+        "max_tokens": 700
+      },
+      "replay": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Inspect context and decide whether to relay the decree."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_context",
+              "description": "Inspect relevant context",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_decision",
+              "description": "Submit final decision",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_decision"
+        ],
+        "responses": [
+          {
+            "tool_calls": [
+              {
+                "id": "d1",
+                "type": "function",
+                "function": {
+                  "name": "inspect_context",
+                  "arguments": "{\"scope\": \"decree\"}"
+                }
+              }
+            ],
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "latency_ms": 8
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "d2",
+                "type": "function",
+                "function": {
+                  "name": "submit_decision",
+                  "arguments": "{\"decision\": \"relay\"}"
+                }
+              }
+            ],
+            "input_tokens": 130,
+            "output_tokens": 25,
+            "latency_ms": 10
+          }
+        ],
+        "evidence": {}
+      },
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Inspect context once, then submit exactly one decision."
+          },
+          {
+            "role": "user",
+            "content": "Inspect context and decide whether to relay the decree."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_context",
+              "description": "Inspect relevant context",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_decision",
+              "description": "Submit final decision",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_decision"
+        ],
+        "budget": {
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 700,
+          "max_seconds": 30
+        },
+        "tool_results": [
+          {
+            "tool": "inspect_context",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          },
+          {
+            "tool": "submit_decision",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          }
+        ],
+        "evidence": {},
+        "expect": {
+          "allowed_tools": [
+            "inspect_context",
+            "submit_decision"
+          ],
+          "required_terminal_tool": "submit_decision",
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 700
+        }
+      }
+    }
+  ]
+}

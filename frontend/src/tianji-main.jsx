@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './tianji.css'
 import TianJiView from './TianJiView.jsx'
 import AppNav from './AppNav.jsx'
+import './design-system.css'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

@@ -1,52 +1,131 @@
-"""行动 Agent — 模拟官员行动的过程和结果，读写世界状态数据库.
-
-与普通 Agent 不同，ActionAgent：
-- 不使用 memory（每次行动都是独立会话）
-- 有自己的 FC 工具集（query_entity / query_inventory / update_entity_status /
-  update_inventory / complete_action）
-- 支持多轮 FC 循环，直到调用 complete_action 或达到最大轮次
-- 返回 ActionResult（而非 AgentAction）
-
-所有 FC 执行逻辑统一走 fc_handlers.dispatch_fc，不再有本地实现。
-"""
+"""行动 Agent — 使用通用 TurnEngine 模拟并落账世界行动。"""
 
 from __future__ import annotations
 
-import json
 import logging
+import math
+import uuid
 from pathlib import Path
 from typing import Any
 
 from .fc_handlers import FCContext, dispatch_fc
 from .fc_tools import ACTION_AGENT_TOOLS
+from .court_graph import TRAVEL_SPEED_LI_PER_DAY
 from .llm_client import LLMClient
+from .runtime_bindings import ACTION_TASK, RuntimeBindingsHub, RuntimeTaskBinding
+from .time_simulator import TimeEstimate, TimeSimulator
+from .turn_engine import TurnBudget, TurnEngine
 from .types import ActionResult
 from .world_state import WorldState
 
 logger = logging.getLogger(__name__)
 
 
-# ── ActionAgent ──
-
 class ActionAgent:
-    """行动模拟 Agent.
-
-    独立于 BaseAgent 类层次 —— ActionAgent 不是官员/机构，而是"世界法则"的执行者。
-    每次 process() 都是独立的多轮 FC 会话，无跨会话记忆。
-    max_rounds 参数限制每次行动的最大 FC 轮数，防止过度模拟导致资源耗尽推荐7轮就成最好别超过10轮。
-    """
+    """无跨会话记忆的世界法则执行者。"""
 
     def __init__(
         self,
         llm_client: LLMClient,
         world_state: WorldState,
         prompt_template_path: str = "daming_court/prompts/action_agent.txt",
-        max_rounds: int = 7,
+        max_rounds: int = 10,
+        court: Any = None,
+        max_tool_calls: int = 40,
+        max_turn_tokens: int = 50_000,
+        max_turn_seconds: float = 120.0,
+        no_progress_rounds: int = 2,
+        prompt_template: str | None = None,
     ) -> None:
         self.llm = llm_client
         self.world_state = world_state
         self._prompt_template_path = prompt_template_path
-        self.max_rounds = max_rounds
+        self._prompt_template = prompt_template
+        self._runtime_bindings: RuntimeBindingsHub | None = None
+        self.max_rounds = max(1, int(max_rounds))
+        self.max_tool_calls = max(1, int(max_tool_calls))
+        self.max_turn_tokens = max(1, int(max_turn_tokens))
+        self.max_turn_seconds = max(0.1, float(max_turn_seconds))
+        self.no_progress_rounds = max(1, int(no_progress_rounds))
+        self.court = court
+        self.time_simulator = TimeSimulator()
+        self._turn_engine = TurnEngine()
+
+    def configure_time_rules(self, rules: list[dict[str, Any]]) -> None:
+        """Atomically publish authoritative action-duration rules.
+
+        A new immutable rule engine is published instead of mutating the active
+        instance. Logical calls capture the engine once, so an in-flight action
+        keeps the generation that accepted it while later actions see new rules.
+        """
+        self.time_simulator = TimeSimulator(rules)
+
+    def _available_resource_value(self, executor_id: str) -> float:
+        if not executor_id:
+            return 0.0
+        try:
+            values = [
+                item.base_value for item in self.world_state.get_inventory(executor_id)
+                if item.quantity != -1 and math.isfinite(item.base_value) and item.base_value > 0
+            ]
+            return float(sum(values))
+        except Exception:
+            logger.debug("Unable to derive anchored resource capacity", exc_info=True)
+            return 0.0
+
+    def _travel_days(self, executor_id: str, target_location: str) -> float:
+        if not self.court or not target_location:
+            return 0.0
+        try:
+            official = self.court.get_official(executor_id)
+            source_location = official.location_id if official else ""
+            if not source_location or source_location == target_location:
+                return 0.0
+            source = self.world_state.get_coordinates(source_location)
+            target = self.world_state.get_coordinates(target_location)
+            if not source or not target:
+                return 0.0
+            distance = math.hypot(source[0] - target[0], source[1] - target[1])
+            return max(0.0, distance / TRAVEL_SPEED_LI_PER_DAY)
+        except Exception:
+            logger.debug("Unable to derive deterministic travel duration", exc_info=True)
+            return 0.0
+
+    def estimate_duration(
+        self,
+        *,
+        action_type: str,
+        executor_id: str,
+        target_location: str,
+        proposed_days: Any,
+        severity: Any = 5,
+        workload_days: Any | None = None,
+        success: bool = True,
+        simulator: TimeSimulator | None = None,
+    ) -> TimeEstimate:
+        engine = simulator if simulator is not None else self.time_simulator
+        return engine.estimate(
+            action_type=action_type,
+            proposed_days=proposed_days,
+            severity=severity,
+            workload_days=workload_days,
+            resource_value=self._available_resource_value(executor_id),
+            distance_days=self._travel_days(executor_id, target_location),
+            success=success,
+        )
+
+    def bind_runtime_bindings(self, hub: RuntimeBindingsHub) -> None:
+        self._runtime_bindings = hub
+
+    def _capture_runtime_binding(self) -> RuntimeTaskBinding:
+        if self._runtime_bindings is not None:
+            return self._runtime_bindings.capture(ACTION_TASK)
+        return RuntimeTaskBinding(
+            task_id=ACTION_TASK,
+            generation=0,
+            prompt=self._load_template(),
+            llm=self.llm,
+        )
 
     @property
     def agent_id(self) -> str:
@@ -56,33 +135,31 @@ class ActionAgent:
     def agent_type(self) -> str:
         return "world_sim"
 
-    # ── 主入口 ──
-
     async def process(self, payload: dict[str, Any]) -> ActionResult:
-        """模拟一次行动并返回结果。
-
-        payload 期待字段：
-          - action_type: 行动类型
-          - executor_id: 执行者 ID
-          - target_location: 目标地点 ID
-          - description: 行动描述
-          - resources: 投入资源描述（可选）
-        """
         action_type = payload.get("action_type", "unknown")
         executor_id = payload.get("executor_id", "")
         target_location = payload.get("target_location", "")
         description = payload.get("description", "")
         resources = payload.get("resources", "（未指定）")
+        sim_time = float(payload.get("sim_time", 0.0))
+        seconds_per_day = float(payload.get("seconds_per_day", 86400.0))
+        chain_id = str(payload.get("chain_id", "") or "")
+        binding = self._capture_runtime_binding()
+        # Freeze world-time policy together with the Prompt/client binding. DLC
+        # reload may publish a new engine while this multi-round call is awaiting
+        # the model, but committed work must retain the accepting generation.
+        time_simulator = self.time_simulator
 
-        # 构建动态 system prompt
         system_prompt = self._build_system_prompt(
             action_type=action_type,
             executor_id=executor_id,
             target_location=target_location,
             description=description,
             resources=resources,
+            sim_time=sim_time,
+            seconds_per_day=seconds_per_day,
+            prompt_template=binding.prompt,
         )
-
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {
@@ -97,114 +174,108 @@ class ActionAgent:
         ]
 
         changes_made: list[dict[str, Any]] = []
-        fc_trace: list[dict[str, Any]] = []
+        ctx = FCContext(
+            world_state=self.world_state,
+            court=self.court,
+            changes_made=changes_made,
+            caller_id=executor_id,
+            sim_time=sim_time,
+            seconds_per_day=seconds_per_day,
+            chain_id=chain_id,
+            duration_estimator=lambda **kwargs: self.estimate_duration(
+                **kwargs, simulator=time_simulator
+            ),
+        )
+
+        async def execute_tool(
+            name: str,
+            args: dict[str, Any],
+            _tool_call: dict[str, Any],
+        ) -> dict[str, Any]:
+            ctx.tool_call_id = str(_tool_call.get("id", "") or "")
+            return await dispatch_fc(name, ctx, args)
+
+        outcome = await self._turn_engine.run(
+            llm=binding.llm,
+            messages=messages,
+            tools=ACTION_AGENT_TOOLS,
+            execute_tool=execute_tool,
+            terminal_predicate=lambda name, result: name == "complete_action",
+            trace_context={
+                "trace_id": str(payload.get("trace_id", "") or uuid.uuid4().hex),
+                "chain_id": chain_id,
+                "turn_id": str(payload.get("turn_id", "") or uuid.uuid4().hex),
+                "agent_id": self.agent_id,
+                "sim_time_snapshot": sim_time,
+                "runtime_generation": binding.generation,
+            },
+            budget=TurnBudget(
+                max_rounds=self.max_rounds,
+                max_tool_calls=self.max_tool_calls,
+                max_tokens=self.max_turn_tokens,
+                max_seconds=self.max_turn_seconds,
+                no_progress_rounds=self.no_progress_rounds,
+            ),
+            temperature=0.7,
+        )
+
         result_description = ""
-        duration_days = 1.0
+        proposed_duration: Any = 1.0
         success = True
-        error: str | None = None
+        error = outcome.error
 
-        for round_idx in range(self.max_rounds):
-            try:
-                response = await self.llm.chat(
-                    messages=messages,
-                    tools=ACTION_AGENT_TOOLS,
-                    temperature=0.7,
-                )
-            except Exception as e:
-                logger.error("ActionAgent LLM call failed at round %d: %s", round_idx, e)
-                error = f"LLM 调用失败: {e}"
-                success = False
-                result_description = f"行动因系统故障中断: {e}"
-                break
-
-            if not response.tool_calls:
-                # 没有工具调用，强制收尾
-                logger.warning("ActionAgent round %d: no tool call, content=%r",
-                               round_idx, response.content[:200])
-                result_description = response.content or "行动未产生明确结果"
-                fc_trace.append({
-                    "round": round_idx,
-                    "assistant_content": response.content or "",
-                    "calls": [],
-                })
-                break
-
-            # 追加 assistant 消息（含 tool_calls）
-            messages.append({
-                "role": "assistant",
-                "content": response.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.get("id", ""),
-                        "type": "function",
-                        "function": tc.get("function", {}),
-                    }
-                    for tc in response.tool_calls
-                ],
-            })
-
-            round_calls: list[dict[str, Any]] = []
-            complete_called = False
-            ctx = FCContext(
-                world_state=self.world_state,
-                changes_made=changes_made,
-                caller_id=executor_id,
-            )
-            for tc in response.tool_calls:
-                fn = tc.get("function", {})
-                name = fn.get("name", "")
-                try:
-                    args = json.loads(fn.get("arguments", "{}") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                tool_result = await dispatch_fc(name, ctx, args)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(tool_result, ensure_ascii=False),
-                })
-
-                round_calls.append({
-                    "tool": name,
-                    "args": args,
-                    "result": tool_result,
-                })
-
-                if name == "complete_action":
-                    result_description = tool_result.get("result_description", "")
-                    duration_days = float(tool_result.get("duration_days", 1.0))
-                    success = bool(tool_result.get("success", True))
-                    complete_called = True
-
-            fc_trace.append({
-                "round": round_idx,
-                "assistant_content": response.content or "",
-                "calls": round_calls,
-            })
-
-            if complete_called:
-                break
+        if outcome.terminal_result is not None:
+            terminal = outcome.terminal_result
+            result_description = str(terminal.get("result_description", "") or "")
+            proposed_duration = terminal.get("duration_days", 1.0)
+            success = bool(terminal.get("success", True))
+        elif outcome.stop_reason == "no_tool_calls" and outcome.last_response is not None:
+            result_description = outcome.last_response.content or "行动未产生明确结果"
+        elif outcome.stop_reason == "llm_error":
+            success = False
+            result_description = f"行动因系统故障中断: {outcome.error or '未知错误'}"
         else:
-            # max_rounds 用完仍未 complete
-            logger.warning("ActionAgent exhausted %d rounds without complete_action", self.max_rounds)
-            if not result_description:
-                result_description = "行动模拟超过最大轮次，未能产出明确结论"
-                success = False
+            success = False
+            reason_text = {
+                "max_rounds": "超过最大轮次",
+                "max_tool_calls": "超过最大工具调用数",
+                "token_budget": "超过 token 预算",
+                "time_budget": "超过时间预算",
+                "no_progress": "连续多轮无有效进展",
+            }.get(outcome.stop_reason, outcome.stop_reason or "未完成")
+            result_description = f"行动模拟{reason_text}，未能产出明确结论"
+            logger.warning(
+                "ActionAgent stopped without complete_action: %s", outcome.stop_reason
+            )
+
+        estimate = self.estimate_duration(
+            action_type=str(action_type),
+            executor_id=str(executor_id),
+            target_location=str(target_location),
+            proposed_days=proposed_duration,
+            severity=payload.get("severity", 5),
+            workload_days=payload.get("workload_days"),
+            success=success,
+            simulator=time_simulator,
+        )
 
         return ActionResult(
             action_type=action_type,
             executor_id=executor_id,
             target_location=target_location,
             result_description=result_description,
-            duration_days=duration_days,
+            duration_days=estimate.duration_days,
+            duration_source=estimate.source,
+            duration_rule_id=estimate.rule_id,
+            duration_components=estimate.components,
+            duration_clamped=estimate.clamped,
+            runtime_generation=binding.generation,
+            time_rule_fingerprint=time_simulator.fingerprint,
             changes_made=changes_made,
             success=success,
             error=error,
-            fc_trace=fc_trace,
+            fc_trace=outcome.trace,
         )
-
-    # ── 内部：prompt 构建 ──
 
     def _build_system_prompt(
         self,
@@ -213,20 +284,21 @@ class ActionAgent:
         target_location: str,
         description: str,
         resources: str,
+        sim_time: float = 0.0,
+        seconds_per_day: float = 86400.0,
+        prompt_template: str | None = None,
     ) -> str:
-        """加载 prompt 模板，填充字段并注入世界状态上下文."""
-        template = self._load_template()
-
+        template = prompt_template if prompt_template is not None else self._load_template()
         executor_name = executor_id
         exec_ent = self.world_state.get_entity(executor_id) if executor_id else None
         if exec_ent:
             executor_name = exec_ent.name
-
         world_context = self.world_state.get_context_for_action(
             location_id=target_location,
             executor_id=executor_id or None,
+            sim_time=sim_time,
+            seconds_per_day=seconds_per_day,
         )
-
         return template.format(
             executor_name=executor_name,
             action_type=action_type,
@@ -237,10 +309,11 @@ class ActionAgent:
         )
 
     def _load_template(self) -> str:
+        if self._prompt_template is not None:
+            return self._prompt_template
         path = Path(self._prompt_template_path)
         if path.exists():
             return path.read_text(encoding="utf-8")
-        # 退化模板（文件缺失时兜底）
         return (
             "你是世界模拟器。\n"
             "行动：{action_type}\n执行者：{executor_name}\n"

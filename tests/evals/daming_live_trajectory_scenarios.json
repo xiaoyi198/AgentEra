@@ -1,0 +1,471 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "daming-live-trajectories-v1",
+  "mode": "live",
+  "minimum_score": 100,
+  "scenarios": [
+    {
+      "id": "live-agent-memory-commitment",
+      "task": "agent.turn",
+      "agent_id": "evaluation-agent",
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Use recall_memory exactly once, then submit_report exactly once. Do not answer with plain text."
+          },
+          {
+            "role": "user",
+            "content": "Recall the prior tax commitment and submit its resolved status."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "recall_memory",
+              "description": "Recall structured memory records.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_report",
+              "description": "Submit the final structured status report.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_report"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1200,
+          "max_seconds": 45
+        },
+        "tool_results": [
+          {
+            "tool": "recall_memory",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "memory_ids": [
+                "commitment-tax-v1"
+              ]
+            }
+          },
+          {
+            "tool": "submit_report",
+            "result": {
+              "ok": true,
+              "accepted": true
+            }
+          }
+        ],
+        "evidence": {
+          "memory_recalled": [
+            "commitment-tax-v1"
+          ],
+          "commitment_status": "resolved"
+        },
+        "expect": {
+          "allowed_tools": [
+            "recall_memory",
+            "submit_report"
+          ],
+          "required_tools": [
+            "recall_memory",
+            "submit_report"
+          ],
+          "required_tool_sequence": [
+            "recall_memory",
+            "submit_report"
+          ],
+          "required_terminal_tool": "submit_report",
+          "memory_must_include": [
+            "commitment-tax-v1"
+          ],
+          "commitment_status": "resolved",
+          "max_rounds": 3,
+          "max_tool_calls": 2,
+          "max_tokens": 1200
+        },
+        "temperature": 0
+      },
+      "cohorts": [
+        "daming-core"
+      ]
+    },
+    {
+      "id": "live-router-ambiguous-intent",
+      "task": "router.ambiguous",
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Call route_intent exactly once and do not answer with plain text."
+          },
+          {
+            "role": "user",
+            "content": "Route a petition about treasury grain reserves to the responsible ministry."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "route_intent",
+              "description": "Choose the responsible target for an ambiguous petition.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "route_intent"
+        ],
+        "budget": {
+          "max_rounds": 1,
+          "max_tool_calls": 1,
+          "max_tokens": 500,
+          "max_seconds": 30
+        },
+        "tool_results": [
+          {
+            "tool": "route_intent",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "target": "hubu"
+            }
+          }
+        ],
+        "evidence": {
+          "route_target": "hubu"
+        },
+        "expect": {
+          "allowed_tools": [
+            "route_intent"
+          ],
+          "required_tool_sequence": [
+            "route_intent"
+          ],
+          "required_terminal_tool": "route_intent",
+          "route_target": "hubu",
+          "max_rounds": 1,
+          "max_tool_calls": 1,
+          "max_tokens": 500
+        },
+        "temperature": 0
+      },
+      "cohorts": [
+        "daming-core"
+      ]
+    },
+    {
+      "id": "live-action-value-conservation",
+      "task": "action.simulation",
+      "agent_id": "evaluation-action-agent",
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Inspect inventory first, then apply exactly one transfer command. Use only the provided tools."
+          },
+          {
+            "role": "user",
+            "content": "Inspect the anchored inventory and transfer equivalent value without creating or destroying value."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_inventory",
+              "description": "Inspect inventory using common base-value anchors.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "apply_world_command",
+              "description": "Apply one validated world command.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "apply_world_command"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1200,
+          "max_seconds": 45
+        },
+        "tool_results": [
+          {
+            "tool": "inspect_inventory",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "base_value_total": 200
+            }
+          },
+          {
+            "tool": "apply_world_command",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "value_conserved": true
+            }
+          }
+        ],
+        "evidence": {
+          "resource": {
+            "before_base_value": 200,
+            "after_base_value": 200,
+            "external_delta": 0,
+            "tolerance": 1e-06
+          }
+        },
+        "expect": {
+          "allowed_tools": [
+            "inspect_inventory",
+            "apply_world_command"
+          ],
+          "required_tools": [
+            "inspect_inventory",
+            "apply_world_command"
+          ],
+          "required_tool_sequence": [
+            "inspect_inventory",
+            "apply_world_command"
+          ],
+          "required_terminal_tool": "apply_world_command",
+          "resource_conservation": true,
+          "max_rounds": 3,
+          "max_tool_calls": 2,
+          "max_tokens": 1200
+        },
+        "temperature": 0
+      },
+      "cohorts": [
+        "daming-core"
+      ]
+    },
+    {
+      "id": "live-memory-compression-commitment",
+      "task": "memory.compress",
+      "agent_id": "evaluation-memory-agent",
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Inspect the memory set, preserve the commitment identifier, then submit one compressed memory summary using tools only."
+          },
+          {
+            "role": "user",
+            "content": "Compress the memory set without losing the unresolved grain-delivery commitment."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_memory",
+              "description": "Inspect structured memories selected for compression.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_memory_summary",
+              "description": "Submit the compressed structured memory artifact.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_memory_summary"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1200,
+          "max_seconds": 45
+        },
+        "tool_results": [
+          {
+            "tool": "inspect_memory",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "memory_ids": [
+                "commitment-grain-v1"
+              ]
+            }
+          },
+          {
+            "tool": "submit_memory_summary",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "preserved_ids": [
+                "commitment-grain-v1"
+              ]
+            }
+          }
+        ],
+        "evidence": {
+          "memory_recalled": [
+            "commitment-grain-v1"
+          ],
+          "commitment_status": "retained"
+        },
+        "expect": {
+          "allowed_tools": [
+            "inspect_memory",
+            "submit_memory_summary"
+          ],
+          "required_tools": [
+            "inspect_memory",
+            "submit_memory_summary"
+          ],
+          "required_tool_sequence": [
+            "inspect_memory",
+            "submit_memory_summary"
+          ],
+          "required_terminal_tool": "submit_memory_summary",
+          "memory_must_include": [
+            "commitment-grain-v1"
+          ],
+          "commitment_status": "retained",
+          "max_rounds": 3,
+          "max_tool_calls": 2,
+          "max_tokens": 1200
+        },
+        "temperature": 0
+      },
+      "cohorts": [
+        "daming-core"
+      ]
+    },
+    {
+      "id": "live-tianji-grounded-advice",
+      "task": "tianji.chat",
+      "agent_id": "evaluation-tianji-agent",
+      "live": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Inspect world state before advice. Then submit exactly one grounded advice artifact. Never answer before inspection."
+          },
+          {
+            "role": "user",
+            "content": "Assess the current grain situation and submit grounded policy advice."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_world",
+              "description": "Inspect current world state relevant to the question.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "submit_advice",
+              "description": "Submit grounded policy advice.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ],
+        "terminal_tools": [
+          "submit_advice"
+        ],
+        "budget": {
+          "max_rounds": 4,
+          "max_tool_calls": 4,
+          "max_tokens": 1200,
+          "max_seconds": 45
+        },
+        "tool_results": [
+          {
+            "tool": "inspect_world",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "snapshot_generation": 1
+            }
+          },
+          {
+            "tool": "submit_advice",
+            "result": {
+              "ok": true,
+              "accepted": true,
+              "grounded": true
+            }
+          }
+        ],
+        "evidence": {},
+        "expect": {
+          "allowed_tools": [
+            "inspect_world",
+            "submit_advice"
+          ],
+          "required_tools": [
+            "inspect_world",
+            "submit_advice"
+          ],
+          "required_tool_sequence": [
+            "inspect_world",
+            "submit_advice"
+          ],
+          "required_terminal_tool": "submit_advice",
+          "max_rounds": 3,
+          "max_tool_calls": 2,
+          "max_tokens": 1400
+        },
+        "temperature": 0
+      },
+      "cohorts": [
+        "daming-core"
+      ]
+    }
+  ]
+}

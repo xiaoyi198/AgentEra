@@ -2,6 +2,7 @@
 
 import math
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -124,3 +125,41 @@ class TestCourtGraph:
         ])
         dist = court_no_ws.get_distance("A", "B")
         assert dist == pytest.approx(5.0)
+
+    def test_cached_queries_return_detached_values(self):
+        official = self.court.get_official("皇帝")
+        assert official is not None
+        official.name = "mutated"
+        assert self.court.get_official("皇帝").name == "皇帝"
+
+        subordinates = self.court.get_subordinates("苏州知府")
+        subordinates[0].rank = 99
+        assert self.court.get_subordinates("苏州知府")[0].rank == 1
+
+    def test_add_official_invalidates_all_indexes(self):
+        assert [item.id for item in self.court.get_subordinates("苏州知府")] == ["吴县知县"]
+        assert [item.id for item in self.court.get_officials_by_rank(1)] == ["吴县知县"]
+
+        self.court.add_official(Official(
+            "吴县知县", "张三", 2, "苏州", "official", "official",
+            "内阁_杨士奇", "贪腐",
+        ))
+
+        assert self.court.get_subordinates("苏州知府") == []
+        assert [item.id for item in self.court.get_subordinates("内阁_杨士奇")] == [
+            "苏州知府", "吴县知县",
+        ]
+        assert self.court.get_officials_by_rank(1) == []
+        assert [item.id for item in self.court.get_officials_by_rank(2)] == ["吴县知县"]
+        assert {item.id for item in self.court.get_officials_at_location("苏州")} == {
+            "苏州知府", "吴县知县",
+        }
+
+    def test_refresh_cache_observes_out_of_band_database_change(self):
+        assert self.court.get_official("皇帝").name == "皇帝"
+        with sqlite3.connect(self.tmp.name) as conn:
+            conn.execute("UPDATE officials SET name = ? WHERE id = ?", ("Emperor", "皇帝"))
+
+        assert self.court.get_official("皇帝").name == "皇帝"
+        assert self.court.refresh_cache() == 5
+        assert self.court.get_official("皇帝").name == "Emperor"
