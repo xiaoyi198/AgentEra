@@ -15,6 +15,7 @@ from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
 from .causal_events import CausalEventEngine
+from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .fc_handlers import (
@@ -654,6 +655,51 @@ class Orchestrator:
                 break
             causal_remaining -= causal_poll.due_count
             for event in causal_poll.events:
+                effect_count = len(event.world_commands)
+                effect_status = "none"
+                if effect_count:
+                    self._record_operational_metric("causal_effect_batches")
+                    try:
+                        effect_result = execute_causal_world_commands(
+                            self.world_state, event, sim_time=self._sim_time,
+                        ) if self.world_state is not None else None
+                    except Exception:
+                        self._record_operational_metric("causal_effect_failures")
+                        logger.exception("Causal world effect batch crashed for event %s", event.event_id)
+                        result.generated_events.append({
+                            "event_id": event.event_id,
+                            "event_type": event.event_type,
+                            "severity": event.severity,
+                            "target_count": 0,
+                            "generated_at": event.generated_at,
+                            "source": "causal",
+                            "world_effect_count": effect_count,
+                            "world_effect_status": "error",
+                            "error_code": "causal_effect_execution_error",
+                        })
+                        continue
+                    if effect_result is None or not effect_result.ok:
+                        self._record_operational_metric("causal_effect_rejections")
+                        rejected = next(
+                            (item for item in (effect_result.results if effect_result else []) if not item.ok),
+                            None,
+                        )
+                        result.generated_events.append({
+                            "event_id": event.event_id,
+                            "event_type": event.event_type,
+                            "severity": event.severity,
+                            "target_count": 0,
+                            "generated_at": event.generated_at,
+                            "source": "causal",
+                            "world_effect_count": effect_count,
+                            "world_effect_status": "rejected",
+                            "error_code": rejected.error_code if rejected else "world_state_unavailable",
+                        })
+                        continue
+                    effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
+                    self._record_operational_metric("causal_effect_commands", effect_count)
+                    if self.persistor and effect_result.applied_count:
+                        self.persistor.mark_state_dirty()
                 self.inject_event(event)
                 result.generated_events.append({
                     "event_id": event.event_id,
@@ -662,6 +708,8 @@ class Orchestrator:
                     "target_count": len(event.target_agents),
                     "generated_at": event.generated_at,
                     "source": "causal",
+                    "world_effect_count": effect_count,
+                    "world_effect_status": effect_status,
                 })
             if self.persistor:
                 self.persistor.mark_state_dirty()

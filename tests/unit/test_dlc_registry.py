@@ -553,3 +553,27 @@ def test_initial_and_random_events_cannot_forge_causal_metadata(registry: DLCReg
     codes = {issue.code for issue in registry.validate("forged-causality")}
     assert "event.reserved_payload_field" in codes
     assert "random_event.reserved_payload_field" in codes
+
+
+def test_causal_world_effect_references_and_asset_kinds_are_validated(registry: DLCRegistry):
+    registry.create(manifest("effect-errors"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(world_effects=[
+        {
+            "effect_type": "transfer_anchored_value",
+            "from_entity_id": "missing-place", "from_resource": "morale",
+            "to_entity_id": "place", "to_resource": "missing-resource",
+            "base_value": 5,
+        },
+        {
+            "effect_type": "create_ongoing_event", "entity_id": "place",
+            "event_type": "work", "duration_days": 1,
+            "expected_result": {"inventory_deltas": [{"resource": "morale", "delta": 1}]},
+        },
+    ])]
+    registry.save_content("effect-errors", content)
+
+    codes = {issue.code for issue in registry.validate("effect-errors")}
+    assert "causal_event.effect_missing_entity" in codes
+    assert "causal_event.effect_missing_resource" in codes
+    assert "causal_event.effect_invalid_resource_kind" in codes

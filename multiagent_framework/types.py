@@ -75,6 +75,9 @@ class EventObject:
     target_agents: list[str] = field(default_factory=list)
     initial_payload: dict[str, Any] = field(default_factory=dict)
     generated_at: float = 0.0     # 模拟时间
+    # Internal deterministic command plans materialized by causal rules.
+    # They are not copied into Agent wakeup payloads or public event APIs.
+    world_commands: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Router 指令 ──

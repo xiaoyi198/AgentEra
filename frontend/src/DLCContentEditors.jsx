@@ -76,7 +76,7 @@ const EMPTY = {
   initial_events: { event_id: '', event_type: 'world_event', severity: 5, target_agents: [], initial_payload: {}, generated_at: 0 },
   ongoing_events: { event_id: '', entity_id: '', event_type: 'state_change', description: '', start_time: 0, end_time: 0, expected_result: {}, source_action_id: '' },
   random_events: { template_id: '', event_type: 'world_event', target_agents: [], initial_payload: {}, severity_min: 3, severity_max: 7, min_interval_days: 30, max_interval_days: 90, probability: 1, max_occurrences: 0, enabled: true },
-  causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
+  causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], world_effects: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
 }
 
@@ -118,6 +118,10 @@ function normalizedListForm(kind, value) {
     source._source_types_text = (source.source_event_types || ['*']).join(', ')
     source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
     source.conditions = Array.isArray(source.conditions) ? source.conditions : []
+    source.world_effects = (Array.isArray(source.world_effects) ? source.world_effects : []).map(effect => ({
+      ...effect,
+      _expected_result_text: effect.effect_type === 'create_ongoing_event' ? jsonText(effect.expected_result) : undefined,
+    }))
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
@@ -167,6 +171,18 @@ function serializeListForm(kind, form) {
       operator: String(condition.operator || ''),
       value: Number(condition.value),
     }))
+    data.world_effects = (Array.isArray(data.world_effects) ? data.world_effects : []).map(source => {
+      const effect = { ...source, effect_type: String(source.effect_type || '') }
+      delete effect._expected_result_text
+      if (effect.effect_type === 'adjust_resource') effect.quantity_delta = Number(effect.quantity_delta)
+      if (effect.effect_type === 'set_resource') effect.quantity = Number(effect.quantity)
+      if (effect.effect_type === 'transfer_anchored_value') effect.base_value = Number(effect.base_value)
+      if (effect.effect_type === 'create_ongoing_event') {
+        effect.duration_days = Number(effect.duration_days)
+        effect.expected_result = parseObject(source._expected_result_text || '{}', 'Ongoing expected result')
+      }
+      return effect
+    })
     delete data._payload_text
     data.source_event_types = [...new Set(String(data._source_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     data.inherit_payload_keys = [...new Set(String(data._inherit_keys_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -188,6 +204,13 @@ function serializeListForm(kind, form) {
     const conditionKinds = new Set(['anchored_inventory', 'metric', 'parameter'])
     const conditionOperators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
     if (data.conditions.some(condition => !conditionKinds.has(condition.kind) || !condition.entity_id || !condition.name || !conditionOperators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Every condition needs a kind, entity, matching resource, operator, and finite value.')
+    const effectTypes = new Set(['adjust_resource', 'set_resource', 'update_status', 'create_ongoing_event', 'transfer_anchored_value'])
+    if (data.world_effects.length > 32 || data.world_effects.some(effect => !effectTypes.has(effect.effect_type))) throw new Error('World effects must use a supported type and cannot exceed 32 entries.')
+    if (data.world_effects.some(effect => effect.effect_type !== 'transfer_anchored_value' && !effect.entity_id)) throw new Error('Every world effect requires an entity.')
+    if (data.world_effects.some(effect => ['adjust_resource', 'set_resource'].includes(effect.effect_type) && (!effect.resource_name || !Number.isFinite(effect.quantity_delta ?? effect.quantity)))) throw new Error('Resource effects require a resource and finite quantity.')
+    if (data.world_effects.some(effect => effect.effect_type === 'update_status' && !String(effect.new_status || '').trim())) throw new Error('Status effects require a new status.')
+    if (data.world_effects.some(effect => effect.effect_type === 'create_ongoing_event' && (!safeId(effect.event_type) || !Number.isFinite(effect.duration_days) || effect.duration_days < 0 || effect.duration_days > 3650))) throw new Error('Ongoing effects require a safe event type and duration from 0 to 3650 days.')
+    if (data.world_effects.some(effect => effect.effect_type === 'transfer_anchored_value' && (!effect.from_entity_id || !effect.to_entity_id || !effect.from_resource || !effect.to_resource || !Number.isFinite(effect.base_value) || effect.base_value <= 0))) throw new Error('Anchored transfers require both entities, both asset resources, and a positive base value.')
   }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -316,6 +339,79 @@ function CausalConditionBuilder({ value, entities, resources, onChange }) {
   </section>
 }
 
+const WORLD_EFFECT_TYPES = [
+  { key: 'adjust_resource', label: 'Adjust resource' },
+  { key: 'set_resource', label: 'Set resource' },
+  { key: 'update_status', label: 'Update entity status' },
+  { key: 'create_ongoing_event', label: 'Create ongoing event' },
+  { key: 'transfer_anchored_value', label: 'Transfer anchored value' },
+]
+
+function defaultWorldEffect(effectType, entities, resources) {
+  const entityId = entities[0]?.id || ''
+  const resource = resources[0]?.name || ''
+  const asset = resources.find(item => item.kind === 'asset')?.name || ''
+  if (effectType === 'set_resource') return { effect_type: effectType, entity_id: entityId, resource_name: resource, quantity: 0, reason: '' }
+  if (effectType === 'update_status') return { effect_type: effectType, entity_id: entityId, new_status: '' }
+  if (effectType === 'create_ongoing_event') return { effect_type: effectType, entity_id: entityId, event_type: 'state_change', description: '', duration_days: 1, expected_result: {}, _expected_result_text: '{}' }
+  if (effectType === 'transfer_anchored_value') return { effect_type: effectType, from_entity_id: entityId, from_resource: asset, to_entity_id: entityId, to_resource: asset, base_value: 1, reason: '' }
+  return { effect_type: 'adjust_resource', entity_id: entityId, resource_name: resource, quantity_delta: 0, reason: '' }
+}
+
+function ResourceSelect({ value, resources, assetsOnly = false, onChange }) {
+  const choices = assetsOnly ? resources.filter(item => item.kind === 'asset') : resources
+  return <label>Resource<select value={value || ''} onChange={event => onChange(event.target.value)}><option value="">--</option>{choices.map(item => <option key={item.name} value={item.name}>{item.name}{item.kind === 'asset' ? ` (anchor ${item.anchor_rate ?? 1})` : ` (${item.kind})`}</option>)}</select></label>
+}
+
+function CausalWorldEffectBuilder({ value, entities, resources, onChange }) {
+  const effects = Array.isArray(value) ? value : []
+  const update = (index, name, nextValue) => {
+    const next = effects.map(item => ({ ...item }))
+    next[index][name] = nextValue
+    onChange(next)
+  }
+  const changeType = (index, effectType) => {
+    const next = effects.map(item => ({ ...item }))
+    next[index] = defaultWorldEffect(effectType, entities, resources)
+    onChange(next)
+  }
+  const add = () => onChange([...effects, defaultWorldEffect('adjust_resource', entities, resources)])
+  const remove = index => onChange(effects.filter((_, itemIndex) => itemIndex !== index))
+
+  return <section className="dlc-world-effect-builder">
+    <div className="dlc-condition-header"><div><strong>Transactional world effects</strong><small>Effects are frozen when scheduled and committed atomically before the child event reaches Agents.</small></div><button type="button" onClick={add}>+ Add world effect</button></div>
+    {!effects.length && <div className="dlc-condition-empty">No effects: this rule only emits an Agent-facing event.</div>}
+    {effects.map((effect, index) => <div className="dlc-world-effect-row" key={`world-effect-${index}`}>
+      <div className="dlc-world-effect-toolbar"><label>Effect type<select value={effect.effect_type || 'adjust_resource'} onChange={event => changeType(index, event.target.value)}>{WORLD_EFFECT_TYPES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><button type="button" className="danger" onClick={() => remove(index)}>Delete</button></div>
+      {['adjust_resource', 'set_resource'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
+        <EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+        <ResourceSelect value={effect.resource_name} resources={resources} onChange={next => update(index, 'resource_name', next)} />
+        <label>{effect.effect_type === 'adjust_resource' ? 'Quantity delta' : 'Quantity'}<input type="number" step="any" value={effect.effect_type === 'adjust_resource' ? effect.quantity_delta ?? 0 : effect.quantity ?? 0} onChange={event => update(index, effect.effect_type === 'adjust_resource' ? 'quantity_delta' : 'quantity', event.target.value)} /></label>
+        <label>Reason<input value={effect.reason || ''} onChange={event => update(index, 'reason', event.target.value)} /></label>
+      </div>}
+      {effect.effect_type === 'update_status' && <div className="dlc-world-effect-grid"><EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>New status<input value={effect.new_status || ''} onChange={event => update(index, 'new_status', event.target.value)} /></label></div>}
+      {effect.effect_type === 'create_ongoing_event' && <div className="dlc-world-effect-grid">
+        <EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+        <label>Ongoing event type<input value={effect.event_type || ''} onChange={event => update(index, 'event_type', event.target.value)} /></label>
+        <label>Duration days<input type="number" min="0" max="3650" step="any" value={effect.duration_days ?? 1} onChange={event => update(index, 'duration_days', event.target.value)} /></label>
+        <label className="dlc-world-effect-wide">Description<input value={effect.description || ''} onChange={event => update(index, 'description', event.target.value)} /></label>
+        <label className="dlc-world-effect-wide">Matured result JSON<textarea className="dlc-json-field" rows="5" spellCheck="false" value={effect._expected_result_text ?? jsonText(effect.expected_result)} onChange={event => update(index, '_expected_result_text', event.target.value)} /></label>
+      </div>}
+      {effect.effect_type === 'transfer_anchored_value' && <>
+        <div className="dlc-world-effect-grid">
+          <EntitySelect value={effect.from_entity_id} entities={entities} onChange={next => update(index, 'from_entity_id', next)} />
+          <ResourceSelect value={effect.from_resource} resources={resources} assetsOnly onChange={next => update(index, 'from_resource', next)} />
+          <EntitySelect value={effect.to_entity_id} entities={entities} onChange={next => update(index, 'to_entity_id', next)} />
+          <ResourceSelect value={effect.to_resource} resources={resources} assetsOnly onChange={next => update(index, 'to_resource', next)} />
+          <label>Base value<input type="number" min="0" step="any" value={effect.base_value ?? 1} onChange={event => update(index, 'base_value', event.target.value)} /></label>
+          <label>Reason<input value={effect.reason || ''} onChange={event => update(index, 'reason', event.target.value)} /></label>
+        </div>
+        <small className="dlc-condition-anchor">Debit quantity = base value / source anchor; credit quantity = base value / destination anchor. The atomic batch conserves anchored value.</small>
+      </>}
+    </div>)}
+  </section>
+}
+
 function CausalDryRunPanel({ report, busy, sourceType, severity, horizonDays, eventTypes, onSourceType, onSeverity, onHorizonDays, onRun }) {
   return <section className="dlc-causal-preview">
     <div className="dlc-condition-header"><div><strong>Deterministic chain preview</strong><small>Runs against this unsaved draft and DLC seed facts without changing live world state.</small></div></div>
@@ -333,7 +429,7 @@ function CausalDryRunPanel({ report, busy, sourceType, severity, horizonDays, ev
         <article><span>Pending</span><strong>{report.summary.pending_count}</strong></article>
       </div>
       {!!report.analysis.issues.length && <div className="dlc-causal-issues">{report.analysis.issues.map((issue, index) => <div key={`${issue.code}-${index}`} className={issue.severity}><strong>{issue.severity}</strong><code>{issue.code}</code><span>{issue.message}</span>{!!issue.rule_ids.length && <small>{issue.rule_ids.join(', ')}</small>}</div>)}</div>}
-      <div className="dlc-causal-timeline">{report.nodes.map((node, index) => <div className="dlc-causal-node" key={node.event_id}><span>Day {Number(node.day).toFixed(2)}</span><strong>{node.event_type}</strong><code>{node.event_id}</code><small>severity {node.severity} / depth {node.causal_depth}</small>{index < report.nodes.length - 1 && <i>-&gt;</i>}</div>)}</div>
+      <div className="dlc-causal-timeline">{report.nodes.map((node, index) => <div className="dlc-causal-node" key={node.event_id}><span>Day {Number(node.day).toFixed(2)}</span><strong>{node.event_type}</strong><code>{node.event_id}</code><small>severity {node.severity} / depth {node.causal_depth}</small>{node.world_command_count > 0 && <small>{node.world_effect_status || 'planned'} / {node.world_command_count} world command{node.world_command_count === 1 ? '' : 's'}</small>}{!!node.world_commands?.length && <div className="dlc-causal-command-list">{node.world_commands.map((command, commandIndex) => <code key={`${node.event_id}-command-${commandIndex}`}>{command.command_type} ? {command.entity_id}{command.resource_name ? ` ? ${command.resource_name}` : ''}{command.quantity_delta != null ? ` ? ${Number(command.quantity_delta).toFixed(4)}` : ''}{command.quantity != null ? ` ? ${Number(command.quantity).toFixed(4)}` : ''}{command.anchored_base_value != null ? ` ? base ${Number(command.anchored_base_value).toFixed(2)}` : ''}{command.end_day != null ? ` ? ends day ${Number(command.end_day).toFixed(2)}` : ''}</code>)}</div>}{node.world_effect_error_code && <small className="dlc-editor-error">{node.world_effect_error_code}</small>}{index < report.nodes.length - 1 && <i>-&gt;</i>}</div>)}</div>
       {report.summary.truncated && <div className="dlc-editor-error">Preview reached the event limit while due events remained.</div>}
     </>}
   </section>
@@ -459,6 +555,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
         <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
         <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
+        <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} onChange={value => set('world_effects', value)} />
         <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
         <CausalDryRunPanel
           report={previewReport}

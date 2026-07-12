@@ -2000,3 +2000,63 @@ npm test
 npm run lint
 npm run build
 ```
+
+
+## Transactional causal world-effect development (v0.15.0)
+
+Author world mutations through `world_effects`; never place internal commands in `initial_payload`. Example:
+
+```json
+{
+  "rule_id": "shortage_relief",
+  "source_event_types": ["shortage"],
+  "child_event_type": "relief_dispatched",
+  "delay_days": 1,
+  "probability": 1,
+  "world_effects": [
+    {
+      "effect_type": "transfer_anchored_value",
+      "from_entity_id": "warehouse",
+      "from_resource": "grain",
+      "to_entity_id": "treasury",
+      "to_resource": "coin",
+      "base_value": 100,
+      "reason": "emergency relief"
+    },
+    {
+      "effect_type": "create_ongoing_event",
+      "entity_id": "warehouse",
+      "event_type": "replenishment",
+      "duration_days": 5,
+      "description": "Restock grain",
+      "expected_result": {
+        "inventory_deltas": [{"resource": "grain", "delta": 20}]
+      }
+    }
+  ]
+}
+```
+
+Development invariants:
+
+1. Supported effect types are exactly `adjust_resource`, `set_resource`, `update_status`, `create_ongoing_event`, and `transfer_anchored_value`. Keep authored effects at or below 32 and materialized commands at or below 64.
+2. Materialization happens in `CausalEventEngine.observe()`. Do not defer anchor lookup, quantity conversion, event IDs, or event times until polling/execution; committed delayed semantics must survive reloads and restarts unchanged.
+3. Execution must go through `execute_causal_world_commands()` and `WorldCommandBus.execute_batch(..., atomic=True)`. Never loop over effects with independent database transactions.
+4. Stable command IDs are `causal:{event_id}:{index}`. Changing this format requires a migration and replay-compatibility tests.
+5. Anchored transfers may reference only asset resources with finite positive anchor rates. Debit and credit must share the same authored base value, and their ledger `base_value_delta` sum must remain zero.
+6. A failed effect batch must not wake Agents or feed the child into downstream causal rules. The Orchestrator may publish only bounded status/count/error-code metadata.
+7. Ongoing-event expected inventory deltas may reference only assets. Creation is transactional; maturity remains owned by `WorldState.apply_matured_events()`.
+8. Dry Run may mutate only `_SeedWorldFacts`. It must restore all projected facts after a rejected batch and must never write SQLite, package content, Studio history, or runtime scheduler state.
+9. Studio selectors and client validation are convenience gates, not security boundaries. Registry and runtime normalization remain authoritative.
+10. Any effect-schema change must update snapshots, Registry validation, analysis previews, Studio serialization/UI, tests, README, project docs, optimization plan, and synchronized version metadata.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_world_effects.py tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py
+python -m compileall -q main.py routers multiagent_framework tests
+cd frontend
+npm test
+npm run lint
+npm run build
+```

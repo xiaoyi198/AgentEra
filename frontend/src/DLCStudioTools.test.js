@@ -302,3 +302,27 @@ test('causal event catalog and dry-run draft include unsaved rule changes', () =
   assert.equal(content.causal_event_rules[0].rule_id, 'old')
   assert.equal(draft.source_event.event_type, 'unrest')
 })
+
+
+test('causal dry-run draft preserves unsaved world effects without mutating content', () => {
+  const content = {
+    ...base,
+    causal_event_rules: [{ rule_id: 'old', source_event_types: ['shortage'], child_event_type: 'unrest', world_effects: [] }],
+  }
+  const worldEffects = [{
+    effect_type: 'transfer_anchored_value',
+    from_entity_id: 'warehouse', from_resource: 'grain',
+    to_entity_id: 'treasury', to_resource: 'coin', base_value: 25,
+  }]
+  const draft = buildCausalDryRunDraft(
+    content,
+    { rule_id: 'old', source_event_types: ['shortage'], child_event_type: 'unrest', world_effects: worldEffects },
+    0,
+    { event_id: 'studio_preview_source', event_type: 'shortage', severity: 5 },
+  )
+
+  assert.deepEqual(draft.content.causal_event_rules[0].world_effects, worldEffects)
+  assert.deepEqual(content.causal_event_rules[0].world_effects, [])
+  draft.content.causal_event_rules[0].world_effects[0].base_value = 99
+  assert.equal(worldEffects[0].base_value, 25)
+})

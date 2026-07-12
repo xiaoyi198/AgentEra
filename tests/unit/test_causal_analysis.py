@@ -69,6 +69,9 @@ def test_analysis_builds_stable_graph_and_origin_metadata():
         "error_count": 0,
         "warning_count": 0,
         "info_count": 0,
+        "world_effect_count": 0,
+        "anchored_transfer_count": 0,
+        "ongoing_event_effect_count": 0,
     }
     assert [node["event_type"] for node in first["nodes"]] == ["crisis", "shortage", "unrest"]
     shortage = next(node for node in first["nodes"] if node["event_type"] == "shortage")
@@ -168,3 +171,49 @@ def test_analysis_reports_draft_reference_errors_before_save():
         "causal_analysis.missing_resource",
         "causal_analysis.resource_kind",
     }
+
+
+def test_dry_run_applies_world_effects_before_downstream_conditions():
+    content = _content()
+    content["causal_event_rules"][0]["world_effects"] = [{
+        "effect_type": "set_resource",
+        "entity_id": "city",
+        "resource_name": "stability",
+        "quantity": 10,
+    }]
+
+    report = dry_run_causal_rules(
+        content, {"event_type": "shortage", "severity": 5}, horizon_days=10,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == ["shortage", "unrest"]
+    unrest = report["nodes"][1]
+    assert unrest["world_effect_status"] == "applied"
+    assert unrest["world_command_count"] == 1
+    assert unrest["world_commands"] == [{
+        "command_type": "set_resource",
+        "entity_id": "city",
+        "resource_name": "stability",
+        "quantity": 10.0,
+    }]
+    assert report["analysis"]["summary"]["world_effect_count"] == 1
+
+
+def test_dry_run_rejected_effect_stops_downstream_chain_atomically():
+    content = _content()
+    content["resources"][0]["min_quantity"] = 0
+    content["causal_event_rules"][0]["world_effects"] = [{
+        "effect_type": "adjust_resource",
+        "entity_id": "city",
+        "resource_name": "grain",
+        "quantity_delta": -100,
+    }]
+
+    report = dry_run_causal_rules(
+        content, {"event_type": "shortage", "severity": 5}, horizon_days=10,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == ["shortage", "unrest"]
+    assert report["nodes"][1]["world_effect_status"] == "rejected"
+    assert report["nodes"][1]["world_effect_error_code"] == "insufficient_balance"
+    assert "crisis" not in [node["event_type"] for node in report["nodes"]]

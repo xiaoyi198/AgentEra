@@ -243,6 +243,7 @@ def test_public_status_only_contains_safe_aggregates():
     assert set(status) == {
         "rule_count", "enabled_count", "pending_count", "observed_count",
         "dropped_count", "next_due", "fingerprint",
+        "pending_world_command_count", "effect_rule_count",
     }
     rendered = str(status)
     assert "secret" not in rendered

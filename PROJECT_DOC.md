@@ -1675,3 +1675,40 @@ Status: **implemented and locally verified**.
 
 - Release identity is `0.14.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
 - Acceptance evidence: **419 Python tests passed**; **13 frontend tests passed**; frontend lint/build and Python compile passed. Prompt contracts and deterministic trajectory replay remain part of the required final gate.
+
+
+## Phase checkpoint: transactional causal world effects (2026-07-12)
+
+Status: **implemented and locally verified**.
+
+### Runtime command semantics
+
+- `CausalEventRule.world_effects` supports `adjust_resource`, `set_resource`, `update_status`, `create_ongoing_event`, and `transfer_anchored_value`. Rules are normalized with bounded effect and command counts.
+- Matching rules materialize complete internal `WorldCommand` plans when the child event is scheduled. Quantity, anchor rate, ongoing-event ID, start/end time, and expected result are therefore frozen across DLC reload, generation rollback, restart, and delayed polling.
+- `multiagent_framework/causal_world_effects.py` converts each due child plan into one atomic command batch. Stable IDs use `causal:{event_id}:{index}`, so replay returns stored receipts instead of applying balances or events twice.
+- The Orchestrator commits the batch before waking target Agents or observing the child for downstream causal rules. A rejected or crashed batch produces a bounded safe generated-event summary and stops that branch; no partial world mutation or downstream propagation occurs.
+- Aggregate operational metrics count effect batches, commands, rejections, and crashes without exposing internal command payloads, entity/resource identifiers, event payloads, or credentials.
+
+### Unified anchored-value transfer
+
+- `transfer_anchored_value` freezes debit and credit quantities from the scheduled base value: `debit = base_value / source_anchor_rate`, `credit = base_value / destination_anchor_rate`.
+- Both adjustments execute in the same SQLite transaction. Insufficient source balance, invalid references, or any sibling failure rolls back status changes, inventory writes, ledger rows, ongoing events, and the transfer credit.
+- Inventory ledger metadata records only the internal audit fields needed for reconciliation: anchored base value, frozen anchor rate, and debit/credit side. The two ledger base-value deltas sum to zero.
+
+### Ongoing events and isolated authoring preview
+
+- `create_ongoing_event` emits a deterministic `CREATE_EVENT` command with fixed start/end times and normalized expected results. Existing `apply_matured_events()` remains the authoritative atomic maturity reducer.
+- DLC Registry validates every effect entity/resource reference, requires asset resources for anchored transfers and ongoing inventory deltas, and blocks invalid packages before publication.
+- `causal_analysis.py` applies resource effects atomically to isolated DLC seed facts. Downstream conditions see updated inventory, metrics, and parameters, while live SQLite and the running Orchestrator remain untouched. Rejected preview batches stop downstream traversal.
+- Dry Run nodes expose bounded command previews and effect status only. Full internal command bodies remain absent from Agent payloads and public generated-event APIs.
+
+### DLC Studio
+
+- The causal-rule editor now includes a structured transactional world-effect builder with entity/resource selectors, asset-only transfer selectors, anchor-rate context, ongoing-event result JSON, and validation for all five effect types.
+- Dry Run timelines display command type, entity, resource/quantity, anchored base value, ongoing-event end day, and rejection code without persisting the draft.
+
+### Version identity and acceptance evidence
+
+- Release identity is `0.15.0`, synchronized across `VERSION`, backend package metadata, frontend package metadata/lockfile, FastAPI, and README.
+- Full backend suite: **428 passed**. Frontend: **14 tests passed**, lint passed, and production build passed. Python compile passed.
+- Focused coverage includes anchored-value conservation, atomic rollback, idempotent replay, frozen snapshot semantics, deterministic ongoing-event creation, malformed-plan rejection, isolated downstream fact propagation, Registry references, and unsaved Studio drafts.

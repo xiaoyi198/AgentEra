@@ -23,7 +23,7 @@ from .causal_events import (
 )
 from .event_generator import GAME_SECONDS_PER_DAY
 from .types import EventObject
-from .world_state import EntityValue, InventoryItem
+from .world_state import EntityValue, InventoryItem, ResourceDefinition
 
 _MAX_DRY_RUN_EVENTS = 256
 _MAX_HORIZON_DAYS = 3650.0
@@ -33,6 +33,10 @@ class _SeedWorldFacts:
     """Read-only world-state projection containing only facts used by conditions."""
 
     def __init__(self, content: Mapping[str, Any]) -> None:
+        self._entity_ids = {
+            str(item.get("id", "")).strip()
+            for item in _list_field(content, "entities") if isinstance(item, Mapping)
+        }
         resources = _list_field(content, "resources")
         inventory = _list_field(content, "inventory")
         values = _list_field(content, "entity_values")
@@ -49,6 +53,32 @@ class _SeedWorldFacts:
                 continue
             if math.isfinite(rate) and rate > 0:
                 anchor_rates[name] = rate
+
+        self._resources: dict[str, ResourceDefinition] = {}
+        for raw in resources:
+            if not isinstance(raw, Mapping):
+                continue
+            name = str(raw.get("name", "")).strip()
+            kind = str(raw.get("kind", "asset")).strip()
+            if not name:
+                continue
+            def optional_number(field_name: str) -> float | None:
+                raw_value = raw.get(field_name)
+                if raw_value is None:
+                    return None
+                try:
+                    parsed = float(raw_value)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                return parsed if math.isfinite(parsed) else None
+            self._resources[name] = ResourceDefinition(
+                name=name, kind=kind, unit=str(raw.get("unit", "")),
+                default_quantity=float(raw.get("default_quantity", 0.0) or 0.0),
+                min_quantity=optional_number("min_quantity"),
+                max_quantity=optional_number("max_quantity"),
+                anchor_rate=anchor_rates.get(name) if kind == "asset" else None,
+                metadata={},
+            )
 
         self._inventory: dict[str, list[InventoryItem]] = defaultdict(list)
         for raw in inventory:
@@ -95,9 +125,67 @@ class _SeedWorldFacts:
     def get_inventory(self, entity_id: str) -> list[InventoryItem]:
         return list(self._inventory.get(entity_id, ()))
 
+    def get_resource_definition(self, name: str) -> ResourceDefinition | None:
+        return self._resources.get(name)
+
     def get_entity_values(self, entity_id: str, kind: str | None = None) -> list[EntityValue]:
         values = self._values.get(entity_id, ())
         return [item for item in values if kind is None or item.kind == kind]
+
+    def apply_world_commands(self, commands: Sequence[Mapping[str, Any]]) -> tuple[bool, str]:
+        """Apply a causal batch to this isolated projection with atomic semantics."""
+
+        inventory_before = {key: [InventoryItem(**asdict(item)) for item in values] for key, values in self._inventory.items()}
+        values_before = {key: [EntityValue(**asdict(item)) for item in values] for key, values in self._values.items()}
+        try:
+            for command in commands:
+                entity_id = str(command.get("entity_id", ""))
+                if entity_id not in self._entity_ids:
+                    raise CausalEventError("entity_not_found")
+                command_type = str(command.get("command_type", ""))
+                payload = command.get("payload", {})
+                if command_type == "update_status" or command_type == "create_event":
+                    continue
+                resource_name = str(payload.get("resource_name", ""))
+                definition = self._resources.get(resource_name)
+                if definition is None:
+                    raise CausalEventError("resource_not_found")
+                key = "quantity" if command_type == "set_resource" else "quantity_delta"
+                number = float(payload.get(key))
+                if definition.kind == "asset":
+                    items = self._inventory[entity_id]
+                    item = next((candidate for candidate in items if candidate.item_name == resource_name), None)
+                    old_value = item.quantity if item else definition.default_quantity
+                    next_value = number if command_type == "set_resource" else old_value + number
+                    if definition.min_quantity is not None and next_value < definition.min_quantity:
+                        raise CausalEventError("insufficient_balance")
+                    if definition.max_quantity is not None and next_value > definition.max_quantity:
+                        raise CausalEventError("resource_out_of_range")
+                    if item is None:
+                        items.append(InventoryItem(
+                            entity_id=entity_id, category=resource_name, item_name=resource_name,
+                            quantity=next_value, anchor_rate=float(definition.anchor_rate or 1.0),
+                        ))
+                    else:
+                        item.quantity = next_value
+                else:
+                    items = self._values[entity_id]
+                    item = next((candidate for candidate in items if candidate.name == resource_name), None)
+                    old_value = item.value if item else definition.default_quantity
+                    next_value = number if command_type == "set_resource" else old_value + number
+                    if definition.min_quantity is not None:
+                        next_value = max(0.0 if definition.min_quantity == -1 else definition.min_quantity, next_value)
+                    if definition.max_quantity is not None:
+                        next_value = min(definition.max_quantity, next_value)
+                    if item is None:
+                        items.append(EntityValue(entity_id=entity_id, name=resource_name, kind=definition.kind, value=next_value))
+                    else:
+                        item.value = next_value
+        except (CausalEventError, TypeError, ValueError, OverflowError) as exc:
+            self._inventory = defaultdict(list, inventory_before)
+            self._values = defaultdict(list, values_before)
+            return False, str(exc) or "causal_effect_rejected"
+        return True, ""
 
 
 def _list_field(content: Mapping[str, Any], name: str) -> list[Any]:
@@ -128,6 +216,8 @@ def _rule_payload(rule: CausalEventRule) -> dict[str, Any]:
         "delay_days": rule.delay_days,
         "probability": rule.probability,
         "condition_count": len(rule.conditions),
+        "world_effect_count": len(rule.world_effects),
+        "world_command_count": sum(2 if item.get("effect_type") == "transfer_anchored_value" else 1 for item in rule.world_effects),
         "target_mode": "override" if rule.target_agents else "inherit",
     }
 
@@ -257,6 +347,33 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
                 issue("error", "causal_analysis.missing_resource", f"Rule {rule.rule_id!r} references unknown resource {condition.name!r}.", rule_ids=[rule.rule_id])
             elif str(resource.get("kind", "")) != expected_kind:
                 issue("error", "causal_analysis.resource_kind", f"Rule {rule.rule_id!r} requires {condition.name!r} to have kind {expected_kind!r}.", rule_ids=[rule.rule_id])
+        for effect in rule.world_effects:
+            effect_type = str(effect.get("effect_type", ""))
+            entity_fields = ("from_entity_id", "to_entity_id") if effect_type == "transfer_anchored_value" else ("entity_id",)
+            for field_name in entity_fields:
+                entity_id = str(effect.get(field_name, ""))
+                if entity_id not in entity_ids:
+                    issue("error", "causal_analysis.effect_missing_entity", f"Rule {rule.rule_id!r} world effect references unknown entity {entity_id!r}.", rule_ids=[rule.rule_id])
+            resource_fields: tuple[str, ...] = ()
+            if effect_type in {"adjust_resource", "set_resource"}:
+                resource_fields = ("resource_name",)
+            elif effect_type == "transfer_anchored_value":
+                resource_fields = ("from_resource", "to_resource")
+            for field_name in resource_fields:
+                resource_name = str(effect.get(field_name, ""))
+                resource = resource_map.get(resource_name)
+                if resource is None:
+                    issue("error", "causal_analysis.effect_missing_resource", f"Rule {rule.rule_id!r} world effect references unknown resource {resource_name!r}.", rule_ids=[rule.rule_id])
+                elif effect_type == "transfer_anchored_value" and str(resource.get("kind", "")) != "asset":
+                    issue("error", "causal_analysis.effect_resource_kind", f"Rule {rule.rule_id!r} anchored transfer requires asset resource {resource_name!r}.", rule_ids=[rule.rule_id])
+            if effect_type == "create_ongoing_event":
+                for delta in effect.get("expected_result", {}).get("inventory_deltas", []):
+                    resource_name = str(delta.get("resource", ""))
+                    resource = resource_map.get(resource_name)
+                    if resource is None:
+                        issue("error", "causal_analysis.effect_missing_resource", f"Rule {rule.rule_id!r} ongoing result references unknown resource {resource_name!r}.", rule_ids=[rule.rule_id])
+                    elif str(resource.get("kind", "")) != "asset":
+                        issue("error", "causal_analysis.effect_resource_kind", f"Rule {rule.rule_id!r} ongoing inventory delta requires asset resource {resource_name!r}.", rule_ids=[rule.rule_id])
 
     semantic_groups: dict[str, list[str]] = defaultdict(list)
     for rule in enabled:
@@ -270,6 +387,7 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
             "initial_payload": rule.initial_payload,
             "inherit_payload_keys": rule.inherit_payload_keys,
             "conditions": [asdict(item) for item in rule.conditions],
+            "world_effects": rule.world_effects,
             "max_depth": rule.max_depth,
             "max_fires_per_chain": rule.max_fires_per_chain,
             "priority": rule.priority,
@@ -332,6 +450,9 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
             "event_type_count": len(graph_nodes),
             "edge_count": len(edges),
             "cycle_count": len(all_cycles),
+            "world_effect_count": sum(len(rule.world_effects) for rule in rules),
+            "anchored_transfer_count": sum(item.get("effect_type") == "transfer_anchored_value" for rule in rules for item in rule.world_effects),
+            "ongoing_event_effect_count": sum(item.get("effect_type") == "create_ongoing_event" for rule in rules for item in rule.world_effects),
             "error_count": sum(item["severity"] == "error" for item in issues),
             "warning_count": sum(item["severity"] == "warning" for item in issues),
             "info_count": sum(item["severity"] == "info" for item in issues),
@@ -342,8 +463,27 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _world_command_preview(command: Mapping[str, Any]) -> dict[str, Any]:
+    payload = command.get("payload", {}) if isinstance(command.get("payload"), Mapping) else {}
+    preview = {
+        "command_type": str(command.get("command_type", "")),
+        "entity_id": str(command.get("entity_id", "")),
+    }
+    for key in (
+        "resource_name", "quantity", "quantity_delta", "new_status",
+        "event_id", "event_type", "anchored_base_value", "anchor_rate",
+        "transfer_side",
+    ):
+        if key in payload:
+            preview[key] = payload[key]
+    if "end_time" in payload:
+        preview["end_day"] = float(payload["end_time"]) / GAME_SECONDS_PER_DAY
+    return preview
+
+
 def _event_payload(event: EventObject) -> dict[str, Any]:
     payload = dict(event.initial_payload) if isinstance(event.initial_payload, Mapping) else {}
+    commands = event.world_commands if isinstance(event.world_commands, list) else []
     return {
         "event_id": event.event_id,
         "event_type": event.event_type,
@@ -353,6 +493,8 @@ def _event_payload(event: EventObject) -> dict[str, Any]:
         "generated_at": event.generated_at,
         "day": event.generated_at / GAME_SECONDS_PER_DAY,
         "causal_depth": payload.get("causal_depth", 0),
+        "world_command_count": len(commands),
+        "world_commands": [_world_command_preview(item) for item in commands],
     }
 
 
@@ -432,8 +574,13 @@ def dry_run_causal_rules(
             payload_value = event.initial_payload if isinstance(event.initial_payload, Mapping) else {}
             parent_id = str(payload_value.get("causal_parent_event_id", ""))
             rule_id = str(payload_value.get("causal_rule_id", ""))
+            effect_ok, effect_error = facts.apply_world_commands(event.world_commands)
             if event.event_id not in node_ids:
-                nodes.append(_event_payload(event))
+                node = _event_payload(event)
+                node["world_effect_status"] = "applied" if event.world_commands and effect_ok else "none" if not event.world_commands else "rejected"
+                if effect_error:
+                    node["world_effect_error_code"] = effect_error
+                nodes.append(node)
                 node_ids.add(event.event_id)
             edges.append({
                 "source_event_id": parent_id,
@@ -441,7 +588,8 @@ def dry_run_causal_rules(
                 "rule_id": rule_id,
                 "delay_days": max(0.0, (event.generated_at - next((item["generated_at"] for item in nodes if item["event_id"] == parent_id), event.generated_at)) / GAME_SECONDS_PER_DAY),
             })
-            engine.observe(event, sim_time=next_due, world_state=facts)
+            if effect_ok:
+                engine.observe(event, sim_time=next_due, world_state=facts)
 
     remaining = engine.snapshot()["pending"]
     pending_due = sum(float(item["due_at"]) <= horizon_at for item in remaining)
