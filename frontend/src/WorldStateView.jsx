@@ -43,6 +43,8 @@ export default function WorldStateView() {
   const [searchKw, setSearchKw] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')                   // 操作反馈消息
+  const [economy, setEconomy] = useState(null)
+  const [economyLoading, setEconomyLoading] = useState(false)
 
   // 库存行内编辑
   const [editingInv, setEditingInv] = useState(null)   // { idx, field } 正在编辑的格子
@@ -70,7 +72,23 @@ export default function WorldStateView() {
     }
   }, [])
 
-  useEffect(() => { loadEntities() }, [loadEntities])
+  const loadEconomy = useCallback(async () => {
+    setEconomyLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/world-state/economy`)
+      const data = await res.json()
+      if (res.ok && !data.error) setEconomy(data)
+    } catch (e) {
+      console.error('Failed to load economic invariants:', e)
+    } finally {
+      setEconomyLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadEntities()
+    loadEconomy()
+  }, [loadEntities, loadEconomy])
 
   // ── 加载单个实体详情 ──
   const loadEntity = useCallback(async (entityId) => {
@@ -158,6 +176,7 @@ export default function WorldStateView() {
       setSelected(null)
       setEntityForm(null)
       await loadEntities()
+      await loadEconomy()
       setMsg('✓ 已删除')
       setTimeout(() => setMsg(''), 2000)
     } catch {
@@ -196,6 +215,7 @@ export default function WorldStateView() {
       }
       setInvEdits(prev => { const next = { ...prev }; delete next[editKey]; return next })
       await loadEntity(selected.entity.id)
+      await loadEconomy()
       setMsg(`✓ ${resourceName} 已更新`)
       setTimeout(() => setMsg(''), 2000)
     } catch (e) {
@@ -271,6 +291,7 @@ export default function WorldStateView() {
         setNewEntity({ id: '', type: 'location', name: '', description: '', current_status: '' })
         await loadEntities()
         await loadEntity(newEntity.id.trim())
+        await loadEconomy()
       } else {
         setMsg('✗ 创建失败: ' + JSON.stringify(data))
       }
@@ -278,6 +299,13 @@ export default function WorldStateView() {
       setMsg('✗ 网络错误')
     }
   }
+
+  const economyResources = [...(economy?.inventory?.by_resource || [])]
+    .sort((left, right) => Number(right.base_value || 0) - Number(left.base_value || 0))
+    .slice(0, 8)
+  const transferHealthy = economy?.transfers?.conserved !== false
+  const causalIssues = Number(economy?.causal_effects?.rejections || 0)
+    + Number(economy?.causal_effects?.failures || 0)
 
   // ── 渲染 ──
   return (
@@ -315,6 +343,46 @@ export default function WorldStateView() {
         </button>
         {msg && <span className="ws-msg">{msg}</span>}
       </div>
+
+      {economy && (
+        <section className={`ws-economy-dashboard ${transferHealthy ? 'healthy' : 'warning'}`}>
+          <div className="ws-economy-header">
+            <div>
+              <strong>统一价值锚经济监测</strong>
+              <span>模拟时间 {formatNumber(economy.sim_time || 0)} 秒 · 账本 {formatNumber(economy.ledger?.entries_total || 0, 0)} 条</span>
+            </div>
+            <button className="btn ghost ws-economy-refresh" onClick={loadEconomy} disabled={economyLoading}>
+              {economyLoading ? '刷新中…' : '刷新经济快照'}
+            </button>
+          </div>
+          <div className="ws-economy-metrics">
+            <div><span>当前基础价值</span><strong>{formatNumber(economy.inventory?.total_base_value || 0)}</strong></div>
+            <div><span>累计发行</span><strong>{formatNumber(economy.ledger?.issued_base_value || 0)}</strong></div>
+            <div><span>累计销毁</span><strong>{formatNumber(economy.ledger?.destroyed_base_value || 0)}</strong></div>
+            <div className={transferHealthy ? 'ok' : 'danger'}>
+              <span>转移守恒差额</span>
+              <strong>{formatNumber(economy.transfers?.net_base_value || 0, 8)}</strong>
+              <small>{economy.transfers?.batch_count || 0} 批 / {economy.transfers?.mismatch_batch_count || 0} 异常</small>
+            </div>
+            <div className={causalIssues ? 'danger' : 'ok'}>
+              <span>因果效果拒绝/故障</span>
+              <strong>{formatNumber(causalIssues, 0)}</strong>
+              <small>{formatNumber((economy.causal_effects?.rejection_rate || 0) * 100)}%</small>
+            </div>
+          </div>
+          {economyResources.length > 0 && (
+            <div className="ws-economy-resources">
+              {economyResources.map(resource => (
+                <div key={resource.resource_name}>
+                  <span>{resource.resource_name}</span>
+                  <strong>{formatNumber(resource.base_value)}</strong>
+                  <small>{formatNumber(resource.quantity)} × {formatNumber(resource.anchor_rate, 6)}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* 新建实体面板 */}
       {showNewEntity && (

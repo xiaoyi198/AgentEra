@@ -1111,4 +1111,70 @@ body {
   .ws-label.ws-full { grid-column: auto; }
   .modal.save-manager { width: calc(100vw - 16px); }
   .save-item { align-items: flex-start; flex-direction: column; }
+}/* Anchored-value economy dashboard */
+.ws-economy-dashboard {
+  margin: 12px 16px 0;
+  padding: 14px;
+  border: 1px solid rgba(210, 175, 93, 0.3);
+  border-left: 3px solid var(--gold);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(210, 175, 93, 0.08), rgba(20, 18, 15, 0.62));
+}
+.ws-economy-dashboard.warning { border-left-color: var(--red); }
+.ws-economy-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.ws-economy-header > div { display: flex; flex-direction: column; gap: 3px; }
+.ws-economy-header strong { color: var(--gold-bright); font-size: 14px; }
+.ws-economy-header span { color: var(--text-dim); font-size: 11px; }
+.ws-economy-refresh { white-space: nowrap; font-size: 11px; }
+.ws-economy-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.ws-economy-metrics > div,
+.ws-economy-resources > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.ws-economy-metrics span,
+.ws-economy-resources span { color: var(--text-dim); font-size: 10px; }
+.ws-economy-metrics strong,
+.ws-economy-resources strong {
+  color: var(--text);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-economy-metrics small,
+.ws-economy-resources small { color: var(--text-dim); font-size: 10px; }
+.ws-economy-metrics .ok strong { color: #79c99e; }
+.ws-economy-metrics .danger strong { color: var(--red); }
+.ws-economy-resources {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.ws-economy-resources strong { font-size: 12px; color: var(--gold-bright); }
+@media (max-width: 1100px) {
+  .ws-economy-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ws-economy-resources { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .ws-economy-header { align-items: flex-start; }
+  .ws-economy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ws-economy-resources { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

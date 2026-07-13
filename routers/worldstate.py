@@ -39,6 +39,32 @@ async def get_world_state():
     return ws.export_all()
 
 
+@router.get("/world-state/economy")
+async def get_world_economy():
+    """Return a secret-free anchored-value invariant dashboard snapshot."""
+    ws = _ws()
+    if ws is None:
+        return {"error": "world_state not initialized"}
+    snapshot = ws.get_economic_invariants()
+    runtime = (
+        state.orchestrator.operational_metrics_snapshot()
+        if state.orchestrator and hasattr(state.orchestrator, "operational_metrics_snapshot")
+        else {}
+    )
+    batches = max(0, int(runtime.get("causal_effect_batches", 0) or 0))
+    rejections = max(0, int(runtime.get("causal_effect_rejections", 0) or 0))
+    failures = max(0, int(runtime.get("causal_effect_failures", 0) or 0))
+    snapshot["causal_effects"] = {
+        "batches": batches,
+        "commands": max(0, int(runtime.get("causal_effect_commands", 0) or 0)),
+        "rejections": rejections,
+        "failures": failures,
+        "rejection_rate": round((rejections + failures) / batches, 6) if batches else 0.0,
+    }
+    snapshot["sim_time"] = round(float(getattr(state.orchestrator, "sim_time", 0.0)), 3)
+    return snapshot
+
+
 @router.get("/world-state/{entity_id}")
 async def get_world_entity(entity_id: str):
     ws = _ws()

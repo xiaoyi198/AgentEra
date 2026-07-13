@@ -172,6 +172,54 @@ def _world_command_snapshot(orchestrator: Any) -> dict[str, Any]:
     }
 
 
+def _economy_snapshot(orchestrator: Any, runtime: Mapping[str, Any]) -> dict[str, Any]:
+    world_state = getattr(orchestrator, "world_state", None)
+    raw = (
+        world_state.get_economic_invariants()
+        if world_state is not None and hasattr(world_state, "get_economic_invariants")
+        else {}
+    )
+    inventory_raw = raw.get("inventory", {}) if isinstance(raw, Mapping) else {}
+    ledger_raw = raw.get("ledger", {}) if isinstance(raw, Mapping) else {}
+    transfer_raw = raw.get("transfers", {}) if isinstance(raw, Mapping) else {}
+    batches = _integer(runtime.get("causal_effect_batches", 0))
+    rejections = _integer(runtime.get("causal_effect_rejections", 0))
+    failures = _integer(runtime.get("causal_effect_failures", 0))
+    return {
+        "inventory": {
+            "asset_resource_count": _integer(inventory_raw.get("asset_resource_count", 0)),
+            "holder_count": _integer(inventory_raw.get("holder_count", 0)),
+            "total_base_value": round(_number(inventory_raw.get("total_base_value", 0)), 8),
+        },
+        "ledger": {
+            "entries_total": _integer(ledger_raw.get("entries_total", 0)),
+            "issued_base_value": round(_number(ledger_raw.get("issued_base_value", 0)), 8),
+            "destroyed_base_value": round(_number(ledger_raw.get("destroyed_base_value", 0)), 8),
+            "net_non_transfer_base_value": round(
+                _number(ledger_raw.get("net_non_transfer_base_value", 0)), 8
+            ),
+        },
+        "transfers": {
+            "batch_count": _integer(transfer_raw.get("batch_count", 0)),
+            "entry_count": _integer(transfer_raw.get("entry_count", 0)),
+            "debit_base_value": round(_number(transfer_raw.get("debit_base_value", 0)), 8),
+            "credit_base_value": round(_number(transfer_raw.get("credit_base_value", 0)), 8),
+            "net_base_value": round(_number(transfer_raw.get("net_base_value", 0)), 8),
+            "mismatch_batch_count": _integer(transfer_raw.get("mismatch_batch_count", 0)),
+            "incomplete_batch_count": _integer(transfer_raw.get("incomplete_batch_count", 0)),
+            "max_abs_mismatch": round(_number(transfer_raw.get("max_abs_mismatch", 0)), 8),
+            "conserved": bool(transfer_raw.get("conserved", True)),
+        },
+        "causal_effects": {
+            "batches": batches,
+            "commands": _integer(runtime.get("causal_effect_commands", 0)),
+            "rejections": rejections,
+            "failures": failures,
+            "rejection_rate": _ratio(rejections + failures, batches),
+        },
+    }
+
+
 def _agent_and_memory_snapshot(orchestrator: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     agents = list(getattr(orchestrator, "agents", {}).values())
     busy = sum(bool(getattr(agent, "is_busy", False)) for agent in agents)
@@ -221,6 +269,7 @@ class OperationalMetricsCollector:
             if hasattr(self.orchestrator, "operational_metrics_snapshot")
             else {}
         )
+        economy = _economy_snapshot(self.orchestrator, runtime)
         router = {
             key: _integer(runtime.get(key, 0))
             for key in (
@@ -260,6 +309,7 @@ class OperationalMetricsCollector:
                 agent_turns["agent_turn_errors"], agent_turns["agent_turns"]
             ),
             "busy_agent_ratio": _ratio(agents["busy"], agents["total"]),
+            "causal_effect_rejection_rate": economy["causal_effects"]["rejection_rate"],
         }
         thresholds = load_alert_thresholds(self.environ)
         values = {
@@ -290,6 +340,7 @@ class OperationalMetricsCollector:
                 "agent_turns": agent_turns,
                 "agents": agents,
                 "world_commands": world_commands,
+                "economy": economy,
                 "memory": memory,
                 "rates": rates,
             },
@@ -408,6 +459,33 @@ def render_prometheus(snapshot: Mapping[str, Any]) -> str:
         metric_name = f"world_sim_world_command_{key}_total"
         lines.append(f"# TYPE {metric_name} counter")
         lines.append(f"{metric_name} {runtime_world.get(key, 0)}")
+    economy = metrics["economy"]
+    economy_inventory = economy["inventory"]
+    economy_ledger = economy["ledger"]
+    economy_transfers = economy["transfers"]
+    economy_causal = economy["causal_effects"]
+    lines.extend((
+        "# TYPE world_sim_economy_current_base_value gauge",
+        f'world_sim_economy_current_base_value {economy_inventory["total_base_value"]}',
+        "# TYPE world_sim_economy_issued_base_value_total counter",
+        f'world_sim_economy_issued_base_value_total {economy_ledger["issued_base_value"]}',
+        "# TYPE world_sim_economy_destroyed_base_value_total counter",
+        f'world_sim_economy_destroyed_base_value_total {economy_ledger["destroyed_base_value"]}',
+        "# TYPE world_sim_economy_transfer_batches_total counter",
+        f'world_sim_economy_transfer_batches_total {economy_transfers["batch_count"]}',
+        "# TYPE world_sim_economy_transfer_mismatch_batches gauge",
+        f'world_sim_economy_transfer_mismatch_batches {economy_transfers["mismatch_batch_count"]}',
+        "# TYPE world_sim_economy_transfer_incomplete_batches gauge",
+        f'world_sim_economy_transfer_incomplete_batches {economy_transfers["incomplete_batch_count"]}',
+        "# TYPE world_sim_economy_transfer_max_abs_mismatch gauge",
+        f'world_sim_economy_transfer_max_abs_mismatch {economy_transfers["max_abs_mismatch"]}',
+        "# TYPE world_sim_causal_effect_batches_total counter",
+        f'world_sim_causal_effect_batches_total {economy_causal["batches"]}',
+        "# TYPE world_sim_causal_effect_rejections_total counter",
+        f'world_sim_causal_effect_rejections_total {economy_causal["rejections"]}',
+        "# TYPE world_sim_causal_effect_failures_total counter",
+        f'world_sim_causal_effect_failures_total {economy_causal["failures"]}',
+    ))
     lines.append("# TYPE world_sim_operational_rate gauge")
     for rate, value in sorted(metrics["rates"].items()):
         lines.append(f'world_sim_operational_rate{_labels(rate=rate)} {value}')

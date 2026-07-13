@@ -2,14 +2,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  CAUSAL_REPLAY_FIXTURE_FORMAT,
   DLC_CONTENT_EXPORT_FORMAT,
   buildCausalDryRunDraft,
   buildCausalEventCatalog,
   commitContentHistory,
   createContentExport,
   createContentHistory,
+  expandCausalRuleDraft,
   createPromotionMapping,
   generationRollbackFingerprint,
+  normalizeCausalReplayFixture,
   normalizeImportedContent,
   parsePromotionArtifact,
   parsePromotionMapping,
@@ -31,6 +34,8 @@ const base = {
   initial_events: [],
   ongoing_events: [],
   random_events: [],
+  causal_condition_groups: [],
+  causal_rule_templates: [],
   causal_event_rules: [],
   time_rules: [],
   personas: {},
@@ -301,4 +306,83 @@ test('causal event catalog and dry-run draft include unsaved rule changes', () =
   assert.equal(draft.content.causal_event_rules[0].rule_id, 'new')
   assert.equal(content.causal_event_rules[0].rule_id, 'old')
   assert.equal(draft.source_event.event_type, 'unrest')
+})
+
+
+test('causal dry-run draft preserves unsaved world effects without mutating content', () => {
+  const content = {
+    ...base,
+    causal_event_rules: [{ rule_id: 'old', source_event_types: ['shortage'], child_event_type: 'unrest', world_effects: [] }],
+  }
+  const worldEffects = [{
+    effect_type: 'transfer_anchored_value',
+    from_entity_id: 'warehouse', from_resource: 'grain',
+    to_entity_id: 'treasury', to_resource: 'coin', base_value: 25,
+  }]
+  const draft = buildCausalDryRunDraft(
+    content,
+    { rule_id: 'old', source_event_types: ['shortage'], child_event_type: 'unrest', world_effects: worldEffects },
+    0,
+    { event_id: 'studio_preview_source', event_type: 'shortage', severity: 5 },
+  )
+
+  assert.deepEqual(draft.content.causal_event_rules[0].world_effects, worldEffects)
+  assert.deepEqual(content.causal_event_rules[0].world_effects, [])
+  draft.content.causal_event_rules[0].world_effects[0].base_value = 99
+  assert.equal(worldEffects[0].base_value, 25)
+})
+
+
+test('causal authoring templates normalize, diff, and expand deterministically', () => {
+  const authored = {
+    ...base,
+    causal_condition_groups: [{ group_id: 'funded', conditions: [{ kind: 'anchored_inventory', entity_id: 'city', name: 'silver', operator: 'gte', value: 10 }] }],
+    causal_rule_templates: [{ template_id: 'delayed', rule: { delay_days: 2, probability: 0.5, conditions: [{ kind: 'metric', entity_id: 'city', name: 'stability', operator: 'gte', value: 3 }] } }],
+    causal_event_rules: [{ rule_id: 'follow_up', template_id: 'delayed', condition_group_ids: ['funded'], source_event_types: ['seed'], child_event_type: 'result', probability: 1, conditions: [{ kind: 'parameter', entity_id: 'city', name: 'tax', operator: 'gt', value: 0 }] }],
+  }
+  const normalized = normalizeImportedContent(authored)
+  const expanded = expandCausalRuleDraft(normalized, normalized.causal_event_rules[0])
+  assert.equal(expanded.delay_days, 2)
+  assert.equal(expanded.probability, 1)
+  assert.deepEqual(expanded.conditions.map(item => item.kind), ['metric', 'anchored_inventory', 'parameter'])
+  assert.equal(Object.hasOwn(expanded, 'template_id'), false)
+  assert.equal(Object.hasOwn(expanded, 'condition_group_ids'), false)
+
+  const changed = { ...normalized, causal_rule_templates: [{ ...normalized.causal_rule_templates[0], name: 'Changed' }] }
+  const diff = summarizeContentDiff(normalized, changed)
+  assert.equal(diff.entries.some(item => item.section === 'causal_rule_templates' && item.key === 'delayed'), true)
+  assert.throws(() => expandCausalRuleDraft(normalized, { ...normalized.causal_event_rules[0], template_id: 'missing' }), /Unknown causal template/)
+})
+
+
+test('causal replay fixtures normalize deterministic inputs and reject unsafe evidence', () => {
+  const fixture = {
+    format: CAUSAL_REPLAY_FIXTURE_FORMAT,
+    schema_version: '1.0',
+    input: {
+      source_event: {
+        event_id: 'fixture_seed', event_type: 'shortage', severity: 4,
+        target_agents: ['governor'], initial_payload: { region: 'north' }, generated_at: 0,
+      },
+      horizon_days: 30,
+      max_events: 64,
+    },
+    expected: {
+      analysis_fingerprint: 'a'.repeat(64),
+      result_digest: 'b'.repeat(64),
+      summary: { event_count: 3, truncated: false },
+    },
+    unsafe_extension: { api_key: 'secret' },
+  }
+  const normalized = normalizeCausalReplayFixture(fixture)
+  assert.equal(normalized.format, CAUSAL_REPLAY_FIXTURE_FORMAT)
+  assert.equal(normalized.input.source_event.event_type, 'shortage')
+  assert.equal(normalized.input.max_events, 64)
+  assert.equal(Object.hasOwn(normalized, 'unsafe_extension'), false)
+  normalized.input.source_event.initial_payload.region = 'changed'
+  assert.equal(fixture.input.source_event.initial_payload.region, 'north')
+  assert.throws(() => normalizeCausalReplayFixture({ ...fixture, format: 'other' }), /Unsupported causal replay format/)
+  assert.throws(() => normalizeCausalReplayFixture({ ...fixture, expected: { ...fixture.expected, result_digest: 'bad' } }), /digest/)
+  assert.throws(() => normalizeCausalReplayFixture({ ...fixture, input: { ...fixture.input, source_event: { ...fixture.input.source_event, generated_at: -1 } } }), /generated_at/)
+  assert.throws(() => normalizeCausalReplayFixture({ ...fixture, input: { ...fixture.input, source_event: { ...fixture.input.source_event, target_agents: [''] } } }), /target agents/)
 })

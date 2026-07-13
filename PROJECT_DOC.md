@@ -1675,3 +1675,125 @@ Status: **implemented and locally verified**.
 
 - Release identity is `0.14.0`, synchronized across canonical, backend, frontend, lockfile, FastAPI, and README metadata.
 - Acceptance evidence: **419 Python tests passed**; **13 frontend tests passed**; frontend lint/build and Python compile passed. Prompt contracts and deterministic trajectory replay remain part of the required final gate.
+
+
+## Phase checkpoint: transactional causal world effects (2026-07-12)
+
+Status: **implemented and locally verified**.
+
+### Runtime command semantics
+
+- `CausalEventRule.world_effects` supports `adjust_resource`, `set_resource`, `update_status`, `create_ongoing_event`, and `transfer_anchored_value`. Rules are normalized with bounded effect and command counts.
+- Matching rules materialize complete internal `WorldCommand` plans when the child event is scheduled. Quantity, anchor rate, ongoing-event ID, start/end time, and expected result are therefore frozen across DLC reload, generation rollback, restart, and delayed polling.
+- `multiagent_framework/causal_world_effects.py` converts each due child plan into one atomic command batch. Stable IDs use `causal:{event_id}:{index}`, so replay returns stored receipts instead of applying balances or events twice.
+- The Orchestrator commits the batch before waking target Agents or observing the child for downstream causal rules. A rejected or crashed batch produces a bounded safe generated-event summary and stops that branch; no partial world mutation or downstream propagation occurs.
+- Aggregate operational metrics count effect batches, commands, rejections, and crashes without exposing internal command payloads, entity/resource identifiers, event payloads, or credentials.
+
+### Unified anchored-value transfer
+
+- `transfer_anchored_value` freezes debit and credit quantities from the scheduled base value: `debit = base_value / source_anchor_rate`, `credit = base_value / destination_anchor_rate`.
+- Both adjustments execute in the same SQLite transaction. Insufficient source balance, invalid references, or any sibling failure rolls back status changes, inventory writes, ledger rows, ongoing events, and the transfer credit.
+- Inventory ledger metadata records only the internal audit fields needed for reconciliation: anchored base value, frozen anchor rate, and debit/credit side. The two ledger base-value deltas sum to zero.
+
+### Ongoing events and isolated authoring preview
+
+- `create_ongoing_event` emits a deterministic `CREATE_EVENT` command with fixed start/end times and normalized expected results. Existing `apply_matured_events()` remains the authoritative atomic maturity reducer.
+- DLC Registry validates every effect entity/resource reference, requires asset resources for anchored transfers and ongoing inventory deltas, and blocks invalid packages before publication.
+- `causal_analysis.py` applies resource effects atomically to isolated DLC seed facts. Downstream conditions see updated inventory, metrics, and parameters, while live SQLite and the running Orchestrator remain untouched. Rejected preview batches stop downstream traversal.
+- Dry Run nodes expose bounded command previews and effect status only. Full internal command bodies remain absent from Agent payloads and public generated-event APIs.
+
+### DLC Studio
+
+- The causal-rule editor now includes a structured transactional world-effect builder with entity/resource selectors, asset-only transfer selectors, anchor-rate context, ongoing-event result JSON, and validation for all five effect types.
+- Dry Run timelines display command type, entity, resource/quantity, anchored base value, ongoing-event end day, and rejection code without persisting the draft.
+
+### Version identity and acceptance evidence
+
+- Release identity is `0.15.0`, synchronized across `VERSION`, backend package metadata, frontend package metadata/lockfile, FastAPI, and README.
+- Full backend suite: **428 passed**. Frontend: **14 tests passed**, lint passed, and production build passed. Python compile passed.
+- Focused coverage includes anchored-value conservation, atomic rollback, idempotent replay, frozen snapshot semantics, deterministic ongoing-event creation, malformed-plan rejection, isolated downstream fact propagation, Registry references, and unsaved Studio drafts.
+
+
+## Phase checkpoint: anchored-value economic invariants and dashboard (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+### Economic invariant model
+
+- `WorldState.get_economic_invariants()` derives the current asset economy from authoritative SQLite state. For each asset resource it aggregates quantity, catalog anchor rate, base value (`quantity * anchor_rate`), and holder count; the public result never includes entity IDs.
+- Gross positive and negative inventory-ledger flows are separated from transfer credits/debits to compute cumulative issuance, destruction, and non-transfer net base value. Atomic rejected causal batches write no ledger rows and therefore cannot distort these totals.
+- Every newly materialized `transfer_anchored_value` pair receives a stable SHA-256-derived `transfer_id` shared by debit and credit commands. Reconciliation reports batch/entry counts, debit and credit totals, net difference, incomplete batches, mismatched batches, maximum absolute mismatch, and a conservation flag.
+- Scheduler restore remains compatible with `0.15.0` snapshots that lack `transfer_id`. Legacy ledger entries are paired by causal event identity and adjacent effect index; new snapshots validate transfer IDs at 64 characters or fewer.
+
+### API, metrics, and frontend
+
+- `GET /api/world-state/economy` is a static route registered before `/{entity_id}`. It returns economic invariants, simulation time, and aggregate causal-effect batch/command/rejection/failure counts plus rejection rate.
+- `/api/metrics/json` now exposes `economy.inventory`, `economy.ledger`, `economy.transfers`, and `economy.causal_effects`. Prometheus exports current value, issuance/destruction totals, transfer reconciliation signals, and causal-effect rejection/failure counters without adding an uncalibrated production alert threshold.
+- `WorldStateView.jsx` adds a responsive economic dashboard with manual refresh, automatic refresh after asset changes, conservation status, top-eight resource valuation, and causal-effect health.
+- Public economy surfaces intentionally omit entity, command, chain, event, and transfer identifiers as well as credentials, Provider metadata, Prompt/message/memory bodies, filesystem paths, and raw exceptions.
+
+### Restart and acceptance evidence
+
+- `tests/integration/test_causal_economic_scenario.py` verifies a multi-hop harvest → distribution → tax → replenishment chain across SQLite and causal-engine restart, including a cross-anchor transfer, a downstream anchored condition, delayed replenishment, ongoing-event maturity, replay idempotency, issuance/destruction accounting, and zero ledger drift.
+- Legacy snapshot tests remove `transfer_id`, restore and execute the pending transfer, then verify conservation through compatibility pairing. Oversized IDs fail closed.
+- Release identity is `0.16.0`, synchronized across `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata, and README.
+- Complete local gate: **434 Python tests passed**, **14 frontend tests passed**, frontend lint/build passed, Python compile passed, Prompt contracts scored **100%**, and deterministic trajectory replay scored **100%**.
+
+The persistent product goal remains active. This checkpoint completes the immediate anchored-economy observability gap while longer production soak tests, credentialed model matrices, reusable causal templates, deeper multi-turn memory evaluation, and task/DLC/Agent model refinement remain ongoing.
+
+
+## Phase checkpoint: reusable causal templates and condition groups (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+### Authoring schema and deterministic expansion
+
+- Bundle content now normalizes package-local `causal_condition_groups` and `causal_rule_templates` collections. Condition groups use stable `group_id` keys and templates use stable `template_id` keys.
+- Authored causal rules may retain `template_id` plus ordered `condition_group_ids`. `multiagent_framework/causal_templates.py` is the single pure expansion boundary and never mutates the source document.
+- Field precedence is engine defaults, then `template.rule`, then authored rule fields. Conditions are additive in deterministic order: template conditions, referenced groups, then inline conditions. Recursive template/group references are rejected.
+- Missing, duplicate, malformed, or nested references produce bounded authoring errors with stable paths. Old DLC documents without the new collections retain their prior rule shape and behavior.
+
+### Runtime and tooling consistency
+
+- Registry validation, causal graph analysis, deterministic Dry Run, and active DLC runtime materialization all consume the same expanded rule documents. Studio preview therefore cannot silently diverge from production semantics.
+- Runtime snapshots and pending causal events remain fully materialized. Editing a template changes future generation fingerprints/configuration, while already committed delayed events keep their original immutable semantics across reload, rollback, and restart.
+- Template and group namespaces are package-local. Active packages still enforce globally unique final `rule_id` values after expansion, preserving existing runtime isolation rules.
+
+### DLC Studio
+
+- Added dedicated condition-group and causal-template tabs, keyed Diff/history/import/export support, structured condition-group rows, and template-default JSON authoring.
+- Causal rules can select a reusable template and multiple ordered condition groups, retain inherited defaults, switch to explicit overrides, inspect resolved delay/probability/condition/effect counts, and Dry Run the current unsaved draft.
+- Client-side expansion mirrors the backend only for immediate author feedback; the backend expansion function remains authoritative for validation and execution.
+
+### Verification and release
+
+- Added focused unit/API/runtime tests for precedence, stable condition order, input immutability, legacy compatibility, invalid references, unsaved template drafts, runtime materialization, import/export, keyed Diff, and catalog expansion.
+- Release identity is `0.17.0`, synchronized across `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata, and README.
+- Verified with **446 Python tests** and **15 frontend tests** before the final compile, prompt-contract, trajectory, lint, build, and diff gates.
+
+The persistent product goal remains active. Reusable authoring now reduces duplicated DLC causal configuration; graph-edge inspection, replay fixture exchange, deeper Agent-driven scenarios, multi-turn memory evaluation, and production soak/calibration remain ongoing.
+
+## Release architecture note: causal graph replay workbench (v0.18.0)
+
+### Resolved graph inspection
+
+`multiagent_framework/causal_analysis.py::analyze_causal_rules()` remains the shared, side-effect-free analysis boundary. Its graph edges now expose stable `edge_id` values plus authoring provenance (`template_id`, ordered `condition_group_ids`, and `inline_condition_count`). Graph nodes expose `incoming_rules` and effective `outgoing_rules`; wildcard rules are included once in each applicable node. Execution semantics still come from the shared causal authoring expander, so the inspector cannot diverge from Registry validation, Dry Run, reload, rollback, or active runtime materialization.
+
+`frontend/src/DLCContentEditors.jsx` renders this payload as a filterable resolved-edge table and horizontally scrollable node summary. This is intentionally an inspection workbench, not a ReactFlow graph-layout claim. The UI shows resolved routing and provenance without changing authoring data.
+
+### Deterministic Replay Fixture
+
+A successful `dry_run_causal_rules()` response includes a secret-free `agentera-causal-replay-v1` fixture. Its input contains the normalized source event, horizon, and event budget. Its expected evidence contains the resolved analysis fingerprint, deterministic result digest, and Dry Run summary. The digest projection contains analysis fingerprint/summary, Dry Run summary, nodes, edges, and pending events, and excludes `replay_fixture` to prevent recursive evidence.
+
+`replay_causal_fixture(content, fixture)` reruns the production causal engine against current content and returns both a fresh report/new baseline and a comparison. `analysis_matches` identifies resolved rule-graph stability; `result_matches` also covers seed facts and simulated execution. `drift_fields` adds summary-level differences such as `summary.event_count`.
+
+`POST /api/dlcs/{dlc_id}/causal-events/replay` accepts optional normalized content, allowing DLC Studio to replay against the current unsaved draft. The endpoint reads the package identity but does not save content, publish/reload a generation, modify the active Runtime, or mutate world state. Frontend import normalization validates schema, SHA-256 evidence, source bounds, target Agent IDs, timestamps, horizon, and event budget; unknown top-level extensions are discarded before the request.
+
+### Release verification
+
+- Release identity: `0.18.0` in `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata through the shared version module, and README.
+- Python: **451 passed**.
+- Frontend Studio tools: **16 passed**; ESLint and Vite production build passed.
+- Prompt contract suite: **100%**.
+- Deterministic trajectory replay: **100%**.
+- Python compile and Git diff checks passed.

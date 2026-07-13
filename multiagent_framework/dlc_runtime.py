@@ -13,6 +13,7 @@ from typing import Any
 
 from .agent_runtime import AgentConfig, BaseAgent, InstitutionAgent, OfficialAgent
 from .court_graph import CourtGraph, Official
+from .causal_templates import expand_causal_rule_document
 from .dlc_registry import (
     DLCManifest, DLCPackage, DLCRegistry, DLCRegistryError,
 )
@@ -629,7 +630,7 @@ class DLCBundleLoader:
             ) for item in content["entity_values"])
             relations.extend(dict(item) for item in content["relations"])
             random_event_templates.extend(copy.deepcopy(content["random_events"]))
-            for causal_rule in content["causal_event_rules"]:
+            for causal_rule in expand_causal_rule_document(content):
                 rule_id = str(causal_rule.get("rule_id", ""))
                 if rule_id in causal_rule_ids:
                     raise DLCRegistryError(f"Duplicate active causal event rule id: {rule_id}")

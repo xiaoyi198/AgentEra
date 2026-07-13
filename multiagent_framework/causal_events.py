@@ -33,6 +33,12 @@ _MAX_PENDING_EVENTS = 10_000
 _MAX_ID_LENGTH = 128
 _MAX_TARGETS = 256
 _MAX_PAYLOAD_KEYS = 256
+_MAX_WORLD_EFFECTS = 32
+_MAX_WORLD_COMMANDS = 64
+_WORLD_EFFECT_TYPES = {
+    "adjust_resource", "set_resource", "update_status",
+    "create_ongoing_event", "transfer_anchored_value",
+}
 
 
 class CausalEventError(ValueError):
@@ -76,6 +82,272 @@ class CausalCondition:
         return condition
 
 
+def _finite_effect_number(value: Any, code: str) -> float:
+    if isinstance(value, bool):
+        raise CausalEventError(code)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CausalEventError(code) from exc
+    if not math.isfinite(number):
+        raise CausalEventError(code)
+    return number
+
+
+def _effect_text(value: Any, code: str, *, limit: int = _MAX_ID_LENGTH) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > limit:
+        raise CausalEventError(code)
+    return text
+
+
+def _normalize_expected_result(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > 64:
+        raise CausalEventError("causal_effect_expected_result_invalid")
+    result: dict[str, Any] = {}
+    if "new_status" in value:
+        status = str(value.get("new_status") or "")
+        if len(status) > 512:
+            raise CausalEventError("causal_effect_expected_result_invalid")
+        if status:
+            result["new_status"] = status
+    deltas = value.get("inventory_deltas", [])
+    if not isinstance(deltas, Sequence) or isinstance(deltas, (str, bytes, bytearray)) or len(deltas) > 32:
+        raise CausalEventError("causal_effect_expected_result_invalid")
+    normalized_deltas: list[dict[str, Any]] = []
+    for raw in deltas:
+        if not isinstance(raw, Mapping):
+            raise CausalEventError("causal_effect_expected_result_invalid")
+        resource = _effect_text(
+            raw.get("resource", raw.get("resource_name", "")),
+            "causal_effect_resource_invalid",
+        )
+        delta = _finite_effect_number(raw.get("delta"), "causal_effect_quantity_invalid")
+        reason = str(raw.get("reason") or "")
+        if len(reason) > 512:
+            raise CausalEventError("causal_effect_reason_invalid")
+        item = {"resource": resource, "delta": delta}
+        if reason:
+            item["reason"] = reason
+        normalized_deltas.append(item)
+    if normalized_deltas:
+        result["inventory_deltas"] = normalized_deltas
+    return result
+
+
+def _normalize_world_effect(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise CausalEventError("causal_effect_invalid")
+    effect_type = str(value.get("effect_type", value.get("type", ""))).strip()
+    if effect_type not in _WORLD_EFFECT_TYPES:
+        raise CausalEventError("causal_effect_type_invalid")
+    reason = str(value.get("reason") or "")
+    if len(reason) > 512:
+        raise CausalEventError("causal_effect_reason_invalid")
+
+    if effect_type in {"adjust_resource", "set_resource"}:
+        result = {
+            "effect_type": effect_type,
+            "entity_id": _effect_text(value.get("entity_id"), "causal_effect_entity_invalid"),
+            "resource_name": _effect_text(value.get("resource_name"), "causal_effect_resource_invalid"),
+        }
+        number_key = "quantity_delta" if effect_type == "adjust_resource" else "quantity"
+        result[number_key] = _finite_effect_number(value.get(number_key), "causal_effect_quantity_invalid")
+        if reason:
+            result["reason"] = reason
+        return result
+
+    if effect_type == "update_status":
+        status = _effect_text(value.get("new_status"), "causal_effect_status_invalid", limit=512)
+        return {
+            "effect_type": effect_type,
+            "entity_id": _effect_text(value.get("entity_id"), "causal_effect_entity_invalid"),
+            "new_status": status,
+        }
+
+    if effect_type == "create_ongoing_event":
+        event_type = _effect_text(value.get("event_type"), "causal_effect_event_type_invalid", limit=64)
+        if not _SAFE_ID.fullmatch(event_type):
+            raise CausalEventError("causal_effect_event_type_invalid")
+        description = str(value.get("description") or "")
+        if len(description) > 1000:
+            raise CausalEventError("causal_effect_description_invalid")
+        duration = _finite_effect_number(value.get("duration_days", 0), "causal_effect_duration_invalid")
+        if not 0 <= duration <= 3650:
+            raise CausalEventError("causal_effect_duration_invalid")
+        return {
+            "effect_type": effect_type,
+            "entity_id": _effect_text(value.get("entity_id"), "causal_effect_entity_invalid"),
+            "event_type": event_type,
+            "description": description,
+            "duration_days": duration,
+            "expected_result": _normalize_expected_result(value.get("expected_result", {})),
+        }
+
+    base_value = _finite_effect_number(value.get("base_value"), "causal_effect_base_value_invalid")
+    if base_value <= 0:
+        raise CausalEventError("causal_effect_base_value_invalid")
+    result = {
+        "effect_type": effect_type,
+        "from_entity_id": _effect_text(value.get("from_entity_id"), "causal_effect_entity_invalid"),
+        "from_resource": _effect_text(value.get("from_resource"), "causal_effect_resource_invalid"),
+        "to_entity_id": _effect_text(value.get("to_entity_id"), "causal_effect_entity_invalid"),
+        "to_resource": _effect_text(value.get("to_resource"), "causal_effect_resource_invalid"),
+        "base_value": base_value,
+    }
+    if reason:
+        result["reason"] = reason
+    return result
+
+
+def _resource_anchor(world_state: Any, name: str) -> float:
+    getter = getattr(world_state, "get_resource_definition", None)
+    definition = getter(name) if callable(getter) else None
+    if definition is None:
+        raise CausalEventError("causal_effect_resource_unavailable")
+    kind = definition.get("kind") if isinstance(definition, Mapping) else getattr(definition, "kind", None)
+    rate = definition.get("anchor_rate") if isinstance(definition, Mapping) else getattr(definition, "anchor_rate", None)
+    if kind != "asset":
+        raise CausalEventError("causal_effect_resource_kind_invalid")
+    anchor = _finite_effect_number(rate, "causal_effect_anchor_invalid")
+    if anchor <= 0:
+        raise CausalEventError("causal_effect_anchor_invalid")
+    return anchor
+
+
+def _materialize_world_commands(
+    effects: Sequence[Mapping[str, Any]], *, world_state: Any, due_at: float,
+    child_id: str, chain_id: str,
+) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = []
+    for index, effect in enumerate(effects):
+        effect_type = str(effect["effect_type"])
+        if effect_type in {"adjust_resource", "set_resource"}:
+            number_key = "quantity_delta" if effect_type == "adjust_resource" else "quantity"
+            payload = {
+                "resource_name": effect["resource_name"],
+                number_key: effect[number_key],
+                "reason": effect.get("reason", ""),
+            }
+            commands.append({"command_type": effect_type, "entity_id": effect["entity_id"], "payload": payload})
+        elif effect_type == "update_status":
+            commands.append({
+                "command_type": "update_status", "entity_id": effect["entity_id"],
+                "payload": {"new_status": effect["new_status"]},
+            })
+        elif effect_type == "create_ongoing_event":
+            ongoing_id = "ongoing_" + hashlib.sha256(f"{child_id}\0{index}".encode("utf-8")).hexdigest()[:24]
+            commands.append({
+                "command_type": "create_event", "entity_id": effect["entity_id"],
+                "payload": {
+                    "event_id": ongoing_id,
+                    "event_type": effect["event_type"],
+                    "description": effect.get("description", ""),
+                    "start_time": due_at,
+                    "end_time": due_at + float(effect["duration_days"]) * GAME_SECONDS_PER_DAY,
+                    "expected_result": dict(effect.get("expected_result", {})),
+                    "source_action_id": chain_id,
+                },
+            })
+        else:
+            from_anchor = _resource_anchor(world_state, str(effect["from_resource"]))
+            to_anchor = _resource_anchor(world_state, str(effect["to_resource"]))
+            base_value = float(effect["base_value"])
+            transfer_id = "transfer_" + hashlib.sha256(
+                f"{child_id}\0{index}".encode("utf-8")
+            ).hexdigest()[:24]
+            audit = {
+                "reason": effect.get("reason", ""),
+                "anchored_base_value": base_value,
+                "anchor_rate": from_anchor,
+                "transfer_side": "debit",
+                "transfer_id": transfer_id,
+            }
+            commands.append({
+                "command_type": "adjust_resource", "entity_id": effect["from_entity_id"],
+                "payload": {
+                    "resource_name": effect["from_resource"],
+                    "quantity_delta": -(base_value / from_anchor),
+                    **audit,
+                },
+            })
+            commands.append({
+                "command_type": "adjust_resource", "entity_id": effect["to_entity_id"],
+                "payload": {
+                    "resource_name": effect["to_resource"],
+                    "quantity_delta": base_value / to_anchor,
+                    "reason": effect.get("reason", ""),
+                    "anchored_base_value": base_value,
+                    "anchor_rate": to_anchor,
+                    "transfer_side": "credit",
+                    "transfer_id": transfer_id,
+                },
+            })
+    if len(commands) > _MAX_WORLD_COMMANDS:
+        raise CausalEventError("causal_effect_command_limit")
+    return commands
+
+
+def _normalize_materialized_command(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise CausalEventError("causal_snapshot_invalid")
+    command_type = str(value.get("command_type", ""))
+    if command_type not in {"adjust_resource", "set_resource", "update_status", "create_event"}:
+        raise CausalEventError("causal_snapshot_invalid")
+    entity_id = _effect_text(value.get("entity_id"), "causal_snapshot_invalid")
+    payload = value.get("payload", {})
+    if not isinstance(payload, Mapping) or len(payload) > 32:
+        raise CausalEventError("causal_snapshot_invalid")
+    if command_type in {"adjust_resource", "set_resource"}:
+        number_key = "quantity_delta" if command_type == "adjust_resource" else "quantity"
+        normalized_payload = {
+            "resource_name": _effect_text(payload.get("resource_name"), "causal_snapshot_invalid"),
+            number_key: _finite_effect_number(payload.get(number_key), "causal_snapshot_invalid"),
+        }
+        reason = str(payload.get("reason") or "")
+        if len(reason) > 512:
+            raise CausalEventError("causal_snapshot_invalid")
+        if reason:
+            normalized_payload["reason"] = reason
+        for key in ("anchored_base_value", "anchor_rate"):
+            if key in payload:
+                normalized_payload[key] = _finite_effect_number(payload[key], "causal_snapshot_invalid")
+        if payload.get("transfer_side") in {"debit", "credit"}:
+            normalized_payload["transfer_side"] = payload["transfer_side"]
+            transfer_id = str(payload.get("transfer_id") or "")
+            if transfer_id:
+                if len(transfer_id) > 64:
+                    raise CausalEventError("causal_snapshot_invalid")
+                normalized_payload["transfer_id"] = transfer_id
+        return {"command_type": command_type, "entity_id": entity_id, "payload": normalized_payload}
+    if command_type == "update_status":
+        return {
+            "command_type": command_type, "entity_id": entity_id,
+            "payload": {"new_status": _effect_text(payload.get("new_status"), "causal_snapshot_invalid", limit=512)},
+        }
+    event_id = _effect_text(payload.get("event_id"), "causal_snapshot_invalid")
+    event_type = _effect_text(payload.get("event_type"), "causal_snapshot_invalid", limit=64)
+    description = str(payload.get("description") or "")
+    source_action_id = str(payload.get("source_action_id") or "")
+    if len(description) > 1000 or len(source_action_id) > _MAX_ID_LENGTH:
+        raise CausalEventError("causal_snapshot_invalid")
+    start_time = _finite_effect_number(payload.get("start_time"), "causal_snapshot_invalid")
+    end_time = _finite_effect_number(payload.get("end_time"), "causal_snapshot_invalid")
+    if start_time < 0 or end_time < start_time:
+        raise CausalEventError("causal_snapshot_invalid")
+    return {
+        "command_type": command_type, "entity_id": entity_id,
+        "payload": {
+            "event_id": event_id, "event_type": event_type,
+            "description": description, "start_time": start_time, "end_time": end_time,
+            "expected_result": _normalize_expected_result(payload.get("expected_result", {})),
+            "source_action_id": source_action_id,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class CausalEventRule:
     rule_id: str
@@ -88,6 +360,7 @@ class CausalEventRule:
     initial_payload: dict[str, Any] = field(default_factory=dict)
     inherit_payload_keys: tuple[str, ...] = ()
     conditions: tuple[CausalCondition, ...] = ()
+    world_effects: tuple[dict[str, Any], ...] = ()
     max_depth: int = 4
     max_fires_per_chain: int = 1
     priority: int = 0
@@ -101,12 +374,14 @@ class CausalEventRule:
         targets = value.get("target_agents", [])
         inherit_keys = value.get("inherit_payload_keys", [])
         conditions = value.get("conditions", [])
+        world_effects = value.get("world_effects", [])
         payload = value.get("initial_payload", {})
         for items, code in (
             (source_types, "causal_source_types_invalid"),
             (targets, "causal_targets_invalid"),
             (inherit_keys, "causal_inherit_keys_invalid"),
             (conditions, "causal_conditions_invalid"),
+            (world_effects, "causal_effects_invalid"),
         ):
             if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
                 raise CausalEventError(code)
@@ -131,6 +406,7 @@ class CausalEventRule:
                 initial_payload=dict(payload),
                 inherit_payload_keys=tuple(str(item).strip() for item in inherit_keys),
                 conditions=tuple(CausalCondition.from_mapping(item) for item in conditions),
+                world_effects=tuple(_normalize_world_effect(item) for item in world_effects),
                 max_depth=int(numeric[3]), max_fires_per_chain=int(numeric[4]),
                 priority=int(numeric[5]), enabled=enabled,
             )
@@ -164,6 +440,8 @@ class CausalEventRule:
             raise CausalEventError("causal_inherit_keys_invalid")
         if _RESERVED_PAYLOAD.intersection(self.initial_payload):
             raise CausalEventError("causal_payload_reserved")
+        if len(self.world_effects) > _MAX_WORLD_EFFECTS:
+            raise CausalEventError("causal_effect_limit")
 
     def fingerprint(self) -> str:
         encoded = json.dumps(
@@ -354,13 +632,23 @@ class CausalEventEngine:
                 "causal_rule_id": rule.rule_id,
                 "causal_depth": next_depth,
             })
+            due_at = float(sim_time) + rule.delay_days * GAME_SECONDS_PER_DAY
+            try:
+                world_commands = _materialize_world_commands(
+                    rule.world_effects, world_state=world_state, due_at=due_at,
+                    child_id=child_id, chain_id=chain_id,
+                )
+            except CausalEventError:
+                self._dropped_count += 1
+                continue
             child = EventObject(
                 event_id=child_id,
                 event_type=rule.child_event_type,
                 severity=max(1, min(10, int(event.severity) + rule.severity_delta)),
                 target_agents=list(rule.target_agents or tuple(event.target_agents)),
                 initial_payload=child_payload,
-                generated_at=float(sim_time) + rule.delay_days * GAME_SECONDS_PER_DAY,
+                generated_at=due_at,
+                world_commands=world_commands,
             )
             self._pending[child_id] = _PendingCausalEvent(child.generated_at, child)
             counts[rule.rule_id] = counts.get(rule.rule_id, 0) + 1
@@ -433,11 +721,14 @@ class CausalEventEngine:
             event_value = raw["event"]
             targets = event_value.get("target_agents", [])
             payload = event_value.get("initial_payload", {})
+            world_commands = event_value.get("world_commands", [])
             if (
                 not isinstance(targets, list)
                 or len(targets) > _MAX_TARGETS
                 or not isinstance(payload, Mapping)
                 or len(payload) > _MAX_PAYLOAD_KEYS
+                or not isinstance(world_commands, list)
+                or len(world_commands) > _MAX_WORLD_COMMANDS
             ):
                 raise CausalEventError("causal_snapshot_invalid")
             try:
@@ -470,6 +761,7 @@ class CausalEventEngine:
                 target_agents=target_ids,
                 initial_payload=dict(payload),
                 generated_at=generated_at,
+                world_commands=[_normalize_materialized_command(item) for item in world_commands],
             )
             new_pending[event.event_id] = _PendingCausalEvent(due_at, event)
 
@@ -520,6 +812,8 @@ class CausalEventEngine:
             "rule_count": len(self._rules),
             "enabled_count": sum(rule.enabled for rule in self._rules),
             "pending_count": len(self._pending),
+            "pending_world_command_count": sum(len(item.event.world_commands) for item in self._pending.values()),
+            "effect_rule_count": sum(bool(rule.world_effects) for rule in self._rules),
             "observed_count": len(self._observed),
             "dropped_count": self._dropped_count,
             "next_due": min((item.due_at for item in self._pending.values()), default=None),

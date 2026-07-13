@@ -2000,3 +2000,183 @@ npm test
 npm run lint
 npm run build
 ```
+
+
+## Transactional causal world-effect development (v0.15.0)
+
+Author world mutations through `world_effects`; never place internal commands in `initial_payload`. Example:
+
+```json
+{
+  "rule_id": "shortage_relief",
+  "source_event_types": ["shortage"],
+  "child_event_type": "relief_dispatched",
+  "delay_days": 1,
+  "probability": 1,
+  "world_effects": [
+    {
+      "effect_type": "transfer_anchored_value",
+      "from_entity_id": "warehouse",
+      "from_resource": "grain",
+      "to_entity_id": "treasury",
+      "to_resource": "coin",
+      "base_value": 100,
+      "reason": "emergency relief"
+    },
+    {
+      "effect_type": "create_ongoing_event",
+      "entity_id": "warehouse",
+      "event_type": "replenishment",
+      "duration_days": 5,
+      "description": "Restock grain",
+      "expected_result": {
+        "inventory_deltas": [{"resource": "grain", "delta": 20}]
+      }
+    }
+  ]
+}
+```
+
+Development invariants:
+
+1. Supported effect types are exactly `adjust_resource`, `set_resource`, `update_status`, `create_ongoing_event`, and `transfer_anchored_value`. Keep authored effects at or below 32 and materialized commands at or below 64.
+2. Materialization happens in `CausalEventEngine.observe()`. Do not defer anchor lookup, quantity conversion, event IDs, or event times until polling/execution; committed delayed semantics must survive reloads and restarts unchanged.
+3. Execution must go through `execute_causal_world_commands()` and `WorldCommandBus.execute_batch(..., atomic=True)`. Never loop over effects with independent database transactions.
+4. Stable command IDs are `causal:{event_id}:{index}`. Changing this format requires a migration and replay-compatibility tests.
+5. Anchored transfers may reference only asset resources with finite positive anchor rates. Debit and credit must share the same authored base value, and their ledger `base_value_delta` sum must remain zero.
+6. A failed effect batch must not wake Agents or feed the child into downstream causal rules. The Orchestrator may publish only bounded status/count/error-code metadata.
+7. Ongoing-event expected inventory deltas may reference only assets. Creation is transactional; maturity remains owned by `WorldState.apply_matured_events()`.
+8. Dry Run may mutate only `_SeedWorldFacts`. It must restore all projected facts after a rejected batch and must never write SQLite, package content, Studio history, or runtime scheduler state.
+9. Studio selectors and client validation are convenience gates, not security boundaries. Registry and runtime normalization remain authoritative.
+10. Any effect-schema change must update snapshots, Registry validation, analysis previews, Studio serialization/UI, tests, README, project docs, optimization plan, and synchronized version metadata.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_world_effects.py tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py
+python -m compileall -q main.py routers multiagent_framework tests
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+
+## Anchored economy invariant development (v0.16.0)
+
+The economy monitor is an audit surface over authoritative inventory and ledger state, not a second economy implementation. Keep mutation semantics in `WorldCommandBus` and computation in `WorldState.get_economic_invariants()`.
+
+Definitions:
+
+1. Current base value is the sum of each applicable asset inventory quantity multiplied by the resource catalog's current positive anchor rate.
+2. Transfer debit and credit entries are identified by `metadata.transfer_side`. Their absolute base-value deltas are removed from gross negative/positive ledger flows before cumulative destruction/issuance is calculated.
+3. New causal transfers must share one deterministic `transfer_id` across adjacent debit and credit plans. The ID is internal audit metadata and must never be exposed through public economy APIs or metrics.
+4. Snapshots created before `0.16.0` may omit `transfer_id`. Preserve restore compatibility and pair those entries by `causal_event_id` plus the debit effect index; the following credit index belongs to the same legacy pair.
+5. A transfer is conserved only when both sides exist and the absolute debit/credit mismatch is at most `1e-6`. Do not silently drop malformed/incomplete groups from mismatch reporting.
+6. Rejected atomic batches must leave inventory, ledger, ongoing events, and downstream causal propagation unchanged. Never synthesize economic corrections outside the transaction.
+
+Public surfaces:
+
+- `GET /api/world-state/economy` returns invariant aggregates plus causal-effect health and simulation time. Register named static routes before `GET /api/world-state/{entity_id}`.
+- `/api/metrics/json` and Prometheus may expose totals, rates, resource names, units, and anchor rates, but not entity/command/event/chain/transfer identifiers, Prompt or message bodies, model credentials, Provider connection metadata, filesystem paths, or raw exceptions.
+- New signals should not be added to deployment alert calibration until same-environment baselines and safety caps are approved. Dashboard status is observational unless a separately reviewed alert threshold exists.
+- `WorldStateView` must refresh economy data on initial load, manual request, and successful asset mutation; failures should remain bounded and must not break entity/inventory management.
+
+Required verification for economy changes:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_economic_invariants.py tests/unit/test_causal_world_effects.py tests/unit/test_operational_metrics.py tests/unit/test_metrics_api.py tests/integration/test_causal_economic_scenario.py
+python -m pytest -q -p no:cacheprovider
+python -m compileall -q main.py routers multiagent_framework tests
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Verified on 2026-07-13 for `0.16.0`: **434 Python tests**, **14 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, and deterministic trajectory replay **100%**.
+
+
+## Reusable causal authoring development (v0.17.0)
+
+The causal engine must remain unaware of Studio authoring conveniences. Keep reusable definitions in DLC content and materialize them through `multiagent_framework.causal_templates.expand_causal_rule_document()` before calling `CausalEventRule.from_mapping()`.
+
+Rules for contributors:
+
+1. Treat `causal_condition_groups` and `causal_rule_templates` as package-local authoring collections. Do not resolve references across DLC packages.
+2. Preserve precedence: engine defaults `<` `template.rule` `<` authored rule. Preserve condition order: template conditions, each `condition_group_ids` entry in authored order, then inline `conditions`.
+3. Do not add recursive references. Template `rule` objects cannot contain `template_id` or `condition_group_ids`; the first version intentionally stays single-level and cycle-free.
+4. The expansion helper must be pure, deterministic, deep-copy mutable values, and strip authoring-only reference keys from final runtime rules.
+5. Registry validation, `causal_analysis.py`, draft Dry Run, and `DLCBundleLoader` must use the same helper. Never implement a second backend merge path.
+6. Pending causal events are immutable materialized commitments. Template edits may affect future generation fingerprints and future source events, but must not rewrite queued events or restored scheduler snapshots.
+7. Frontend `expandCausalRuleDraft()` is for responsive author feedback only. Backend validation/execution remains authoritative. Include both new collections in normalization, export/import, keyed Diff, undo/redo history, counts, and raw content.
+8. Keep template/group IDs stable and safe (`1-64` letters, numbers, dot, underscore, or hyphen). Final active causal `rule_id` uniqueness remains global across materialized packages.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_templates.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_dlc_api.py
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Verified on 2026-07-13 for `0.17.0`: **446 Python tests** and **15 frontend tests** before final repository-wide gates.
+
+## Causal graph replay development workflow (v0.18.0)
+
+### Authoring and inspection flow
+
+1. Open DLC Studio and select a causal rule.
+2. Run **Analyze and preview**. The request uses `buildCausalDryRunDraft()` so the selected rule and other unsaved causal authoring data are analyzed without saving the package.
+3. Inspect the resolved node strip and edge table. Filter by event type, rule ID, template ID, or condition-group ID.
+4. Export the generated `agentera-causal-replay-v1` fixture.
+5. Import the same fixture to verify a match, or change rules/seed facts and import it again to inspect drift.
+
+The resolved-edge inspector is a table/workbench, not a graph-layout canvas. Do not describe it as ReactFlow visualization. Edge provenance is derived from authored references, while routing semantics and fingerprints are derived from the shared expansion/runtime model.
+
+### Replay API
+
+```http
+POST /api/dlcs/{dlc_id}/causal-events/replay
+Content-Type: application/json
+
+{
+  "content": { "...": "optional current unsaved Studio draft" },
+  "fixture": { "format": "agentera-causal-replay-v1", "...": "..." }
+}
+```
+
+If `content` is omitted, replay uses saved package content. If supplied, Registry normalization is applied in memory. The operation must remain read-only: never call save, publish, reload, rollback, generation activation, or world mutation from this endpoint.
+
+### Fixture invariants
+
+- Keep `format` and `schema_version` explicit.
+- Keep source-event bounds aligned with `dry_run_causal_rules()`.
+- Keep the result digest projection deterministic and secret-free.
+- Never include `replay_fixture` inside its own digest projection.
+- Never add full DLC content, Prompt text, API credentials, provider configuration, or raw exceptions to exported evidence.
+- Treat the replay report's fixture as a fresh baseline for current content; imported evidence is comparison input only and is not persisted.
+- Preserve the distinction between rule drift (`analysis_fingerprint`) and seed/execution drift (`result_digest`).
+
+### Required verification
+
+```powershell
+python -m compileall -q main.py routers multiagent_framework tests
+python -m pytest -q -p no:cacheprovider
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+
+cd frontend
+npm test
+npm run lint
+npm run build
+cd ..
+
+git -c safe.directory='F:/?????' diff --check
+```
+
+Verified for `0.18.0`: **451 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.

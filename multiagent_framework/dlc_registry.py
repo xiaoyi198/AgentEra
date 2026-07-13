@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRegistryError
 from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEventRule
+from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 
@@ -386,7 +387,8 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "agents", "initial_events", "ongoing_events", "random_events", "causal_event_rules", "time_rules",
+            "agents", "initial_events", "ongoing_events", "random_events",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -758,11 +760,13 @@ class DLCRegistry:
 
         for duplicate in self._duplicates([item for item in content["causal_event_rules"] if isinstance(item, dict)], "rule_id"):
             add("causal_events.duplicate", f"Duplicate rule_id: {duplicate}", "causal_event_rules")
-        for index, raw_rule in enumerate(content["causal_event_rules"]):
+        try:
+            expanded_causal_rules = expand_causal_rule_document(content)
+        except CausalTemplateError as exc:
+            add("causal_authoring.invalid", str(exc), exc.path or "causal_event_rules")
+            expanded_causal_rules = []
+        for index, raw_rule in enumerate(expanded_causal_rules):
             path = f"causal_event_rules[{index}]"
-            if not isinstance(raw_rule, dict):
-                add("causal_event.invalid_rule", "Causal event rule must be an object", path)
-                continue
             try:
                 rule = CausalEventRule.from_mapping(raw_rule)
             except CausalEventError as exc:
@@ -782,6 +786,35 @@ class DLCRegistry:
                     add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
                 elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
                     add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+            for effect_index, effect in enumerate(rule.world_effects):
+                effect_path = f"{path}.world_effects[{effect_index}]"
+                effect_type = str(effect.get("effect_type", ""))
+                entity_fields = ("from_entity_id", "to_entity_id") if effect_type == "transfer_anchored_value" else ("entity_id",)
+                for field_name in entity_fields:
+                    entity_id = str(effect.get(field_name, ""))
+                    if entity_id not in entity_ids:
+                        add("causal_event.effect_missing_entity", f"Unknown world-effect entity: {entity_id}", f"{effect_path}.{field_name}")
+                resource_fields: tuple[str, ...] = ()
+                if effect_type in {"adjust_resource", "set_resource"}:
+                    resource_fields = ("resource_name",)
+                elif effect_type == "transfer_anchored_value":
+                    resource_fields = ("from_resource", "to_resource")
+                for field_name in resource_fields:
+                    resource_name = str(effect.get(field_name, ""))
+                    resource = resource_map.get(resource_name)
+                    if resource is None:
+                        add("causal_event.effect_missing_resource", f"Unknown world-effect resource: {resource_name}", f"{effect_path}.{field_name}")
+                    elif effect_type == "transfer_anchored_value" and resource.get("kind") != "asset":
+                        add("causal_event.effect_invalid_resource_kind", "Anchored transfers require asset resources", f"{effect_path}.{field_name}")
+                if effect_type == "create_ongoing_event":
+                    for delta_index, delta in enumerate(effect.get("expected_result", {}).get("inventory_deltas", [])):
+                        resource_name = str(delta.get("resource", ""))
+                        resource = resource_map.get(resource_name)
+                        delta_path = f"{effect_path}.expected_result.inventory_deltas[{delta_index}].resource"
+                        if resource is None:
+                            add("causal_event.effect_missing_resource", f"Unknown ongoing-result resource: {resource_name}", delta_path)
+                        elif resource.get("kind") != "asset":
+                            add("causal_event.effect_invalid_resource_kind", "Ongoing inventory deltas require asset resources", delta_path)
 
         for duplicate in self._duplicates([item for item in content["random_events"] if isinstance(item, dict)], "template_id"):
             add("random_events.duplicate", f"Duplicate template_id: {duplicate}", "random_events")

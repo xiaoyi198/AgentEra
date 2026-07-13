@@ -564,6 +564,146 @@ class WorldState:
             } for item in items],
         }
 
+    def get_economic_invariants(self) -> dict[str, Any]:
+        """Return bounded aggregate anchored-value and transfer reconciliation data.
+
+        The snapshot intentionally omits entity, command, chain, and transfer IDs.
+        Inventory totals are computed from current balances while issuance,
+        destruction, and transfer conservation are derived from the immutable
+        ledger. Failed atomic batches never enter the ledger and therefore cannot
+        distort the economic totals.
+        """
+        with closing(self._conn()) as conn, conn:
+            resource_rows = conn.execute(
+                """SELECT r.name AS resource_name, r.unit AS unit,
+                          COALESCE(r.anchor_rate, 1.0) AS anchor_rate,
+                          COALESCE(SUM(CASE WHEN i.quantity IS NOT NULL AND i.quantity != -1
+                                            THEN i.quantity ELSE 0 END), 0) AS quantity,
+                          COALESCE(SUM(CASE WHEN i.quantity IS NOT NULL AND i.quantity != -1
+                                             AND ABS(i.quantity) > 0.000000001
+                                            THEN 1 ELSE 0 END), 0) AS holder_count
+                   FROM resource_catalog r
+                   LEFT JOIN inventory i ON i.item_name = r.name
+                   WHERE r.kind = 'asset'
+                   GROUP BY r.name, r.unit, r.anchor_rate
+                   ORDER BY r.name"""
+            ).fetchall()
+            ledger_summary = conn.execute(
+                """SELECT COUNT(*) AS entries_total,
+                          COALESCE(SUM(CASE WHEN base_value_delta > 0
+                                            THEN base_value_delta ELSE 0 END), 0) AS gross_positive,
+                          COALESCE(SUM(CASE WHEN base_value_delta < 0
+                                            THEN -base_value_delta ELSE 0 END), 0) AS gross_negative
+                   FROM inventory_ledger"""
+            ).fetchone()
+            transfer_rows = conn.execute(
+                """SELECT base_value_delta, metadata
+                   FROM inventory_ledger
+                   WHERE metadata LIKE '%"transfer_side"%'"""
+            ).fetchall()
+
+        resources: list[dict[str, Any]] = []
+        total_base_value = 0.0
+        total_holders = 0
+        for row in resource_rows:
+            quantity = float(row["quantity"] or 0.0)
+            anchor_rate = float(row["anchor_rate"] or 1.0)
+            base_value = quantity * anchor_rate
+            holder_count = int(row["holder_count"] or 0)
+            total_base_value += base_value
+            total_holders += holder_count
+            resources.append({
+                "resource_name": str(row["resource_name"]),
+                "unit": str(row["unit"] or ""),
+                "quantity": round(quantity, 8),
+                "anchor_rate": round(anchor_rate, 8),
+                "base_value": round(base_value, 8),
+                "holder_count": holder_count,
+            })
+
+        transfer_groups: dict[str, dict[str, float | int]] = {}
+        transfer_debit = 0.0
+        transfer_credit = 0.0
+        transfer_entry_count = 0
+        for row in transfer_rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            side = str(metadata.get("transfer_side", ""))
+            if side not in {"debit", "credit"}:
+                continue
+            delta = float(row["base_value_delta"] or 0.0)
+            amount = abs(delta)
+            transfer_entry_count += 1
+            if side == "debit":
+                transfer_debit += amount
+            else:
+                transfer_credit += amount
+
+            transfer_id = str(metadata.get("transfer_id", "")).strip()
+            if not transfer_id:
+                event_id = str(metadata.get("causal_event_id", "legacy"))
+                try:
+                    effect_index = int(metadata.get("effect_index", 0))
+                except (TypeError, ValueError):
+                    effect_index = 0
+                if side == "credit":
+                    effect_index -= 1
+                transfer_id = f"legacy:{event_id}:{effect_index}"
+            group = transfer_groups.setdefault(
+                transfer_id, {"debit": 0.0, "credit": 0.0, "entries": 0},
+            )
+            group[side] = float(group[side]) + amount
+            group["entries"] = int(group["entries"]) + 1
+
+        epsilon = 1e-6
+        mismatch_count = 0
+        incomplete_count = 0
+        max_abs_mismatch = 0.0
+        for group in transfer_groups.values():
+            debit = float(group["debit"])
+            credit = float(group["credit"])
+            mismatch = abs(credit - debit)
+            max_abs_mismatch = max(max_abs_mismatch, mismatch)
+            if not debit or not credit:
+                incomplete_count += 1
+            if mismatch > epsilon:
+                mismatch_count += 1
+
+        gross_positive = float(ledger_summary["gross_positive"] or 0.0)
+        gross_negative = float(ledger_summary["gross_negative"] or 0.0)
+        issued = max(0.0, gross_positive - transfer_credit)
+        destroyed = max(0.0, gross_negative - transfer_debit)
+        return {
+            "schema_version": "1.0",
+            "inventory": {
+                "asset_resource_count": len(resources),
+                "holder_count": total_holders,
+                "total_base_value": round(total_base_value, 8),
+                "by_resource": resources,
+            },
+            "ledger": {
+                "entries_total": int(ledger_summary["entries_total"] or 0),
+                "issued_base_value": round(issued, 8),
+                "destroyed_base_value": round(destroyed, 8),
+                "net_non_transfer_base_value": round(issued - destroyed, 8),
+            },
+            "transfers": {
+                "batch_count": len(transfer_groups),
+                "entry_count": transfer_entry_count,
+                "debit_base_value": round(transfer_debit, 8),
+                "credit_base_value": round(transfer_credit, 8),
+                "net_base_value": round(transfer_credit - transfer_debit, 8),
+                "mismatch_batch_count": mismatch_count,
+                "incomplete_batch_count": incomplete_count,
+                "max_abs_mismatch": round(max_abs_mismatch, 8),
+                "conserved": mismatch_count == 0 and incomplete_count == 0,
+            },
+        }
+
     def get_inventory_ledger(
         self, entity_id: str | None = None, *, command_id: str | None = None,
         limit: int = 200,

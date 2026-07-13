@@ -2,7 +2,7 @@
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
-> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with anchored-value conditions, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 419 Python tests plus 13 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
+> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with transactional world effects and anchored-value conservation, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 451 Python tests plus 16 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
 > 原则：先补基础设施与可观测性，再扩展 DLC 和 Agent 数量；所有核心改造必须可迁移、可回滚、可测试。
 
 ## 1. 总目标
@@ -1184,3 +1184,109 @@ Next priorities:
 5. Add authoring support for reusable condition groups and causal-rule templates across DLC packages without weakening package isolation.
 
 The persistent product goal remains active.
+
+
+## Phase checkpoint: transactional causal world effects and anchored conservation (2026-07-12)
+
+Status: **implemented and locally verified; longer multi-event economic scenarios remain ongoing**.
+
+Completed in this checkpoint:
+
+- added five authored causal world-effect types covering resource adjustment/set, entity status, deterministic ongoing events, and cross-entity anchored-value transfer;
+- materialized immutable command plans at schedule time so anchor conversions, quantities, event identity, and timing cannot drift across reload, rollback, restart, or delayed execution;
+- added atomic, idempotent causal command batches with deterministic receipts and branch suppression on rejection;
+- enforced base-value conservation for transfers across different asset anchor rates and wrote reconciliation metadata to the inventory ledger;
+- connected causal rules to the existing transactional ongoing-event and maturity pipeline;
+- extended isolated Dry Run facts so earlier resource effects influence downstream conditions without mutating live state;
+- added Registry/static-analysis diagnostics for missing effect entities/resources and invalid asset kinds;
+- added a structured DLC Studio world-effect editor and safe command previews for unsaved deterministic drafts;
+- synchronized release identity to `0.15.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **428 Python tests**, **14 frontend tests**, frontend lint/build, and Python compile.
+
+Next priorities:
+
+1. Add longer deterministic scenario fixtures combining transfers, production/consumption, ongoing-event maturity, Agent actions, and multi-hop causal branches.
+2. Add reusable causal templates/condition groups and graph-edge inspection without weakening package isolation or deterministic fingerprints.
+3. Continue multi-turn memory retrieval/compression evaluation and model selection refinement by task, DLC, and Agent.
+4. Run credentialed staging matrices, independent reviews, promotion observation, rollback rehearsal, and longer soak/scale tests.
+5. Add economic invariant dashboards for anchored-value issuance, destruction, transfer conservation, and rejected-batch trends.
+
+The persistent product goal remains active. This checkpoint closes the immediate gap between causal event authoring and authoritative transactional world mutation.
+
+
+## Phase checkpoint: anchored-value economic invariants and dashboard (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added authoritative current base-value aggregation by asset resource, anchor rate, quantity, and holder count;
+- derived cumulative issuance, destruction, and non-transfer net value from the immutable inventory ledger;
+- added stable causal-transfer IDs, debit/credit reconciliation, incomplete/mismatched batch detection, and backward-compatible pairing for `0.15.0` snapshots without transfer IDs;
+- added secret-free `GET /api/world-state/economy`, JSON operational metrics, and Prometheus economy/causal-effect signals;
+- added a responsive World State economic dashboard with automatic/manual refresh, conservation status, top-resource valuation, and causal rejection/failure health;
+- added a deterministic multi-hop economic integration scenario spanning cross-anchor transfer, downstream conditions, delayed causal work, ongoing-event maturity, SQLite restart, causal snapshot restore, and ledger replay idempotency;
+- synchronized release identity to `0.16.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **434 Python tests**, **14 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.
+
+Next priorities:
+
+1. Add reusable causal templates and condition groups plus graph-edge inspection and replay fixture import/export in DLC Studio.
+2. Extend long deterministic scenarios to include real Agent actions, production/consumption policies, multiple branches, and longer restart/soak windows.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect same-environment production economic baselines before defining alert thresholds for mismatch, rejection, issuance spikes, or drift.
+5. Run credentialed model matrices, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+
+The persistent product goal remains active. The unified-value economy is now observable and restart-auditable; production calibration and broader Agent-driven simulation remain ongoing.
+
+
+## Phase checkpoint: reusable causal authoring library (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added package-local reusable condition groups and causal-rule templates with stable IDs and non-recursive references;
+- added one pure deterministic expansion layer with explicit precedence and stable condition ordering;
+- connected Registry validation, causal analysis, unsaved-draft Dry Run, active runtime materialization, reload, rollback, and generation fingerprints to expanded semantics;
+- preserved legacy DLC behavior and immutable pending-event semantics;
+- added DLC Studio tabs for condition groups/templates, keyed Diff/history/import/export, template inheritance/explicit override controls, ordered group selection, resolved summaries, and draft previews;
+- added focused backend/frontend coverage for precedence, immutability, invalid references, API drafts, runtime materialization, and Studio tooling;
+- synchronized release identity to `0.17.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **446 Python tests** and **15 frontend tests** before final quality gates.
+
+Next priorities:
+
+1. Add causal graph-edge inspection and deterministic replay fixture import/export for DLC authors.
+2. Extend long scenarios with real Agent actions, production/consumption policies, multiple branches, and longer restart/soak windows.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect credentialed model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+5. Improve template authoring with structured world-effect defaults, reusable starter libraries, and package migration guidance without adding recursive semantics.
+
+The persistent product goal remains active. This checkpoint removes repeated causal authoring work while retaining deterministic production behavior and package isolation.
+
+## Phase checkpoint: causal graph-edge inspection and deterministic Replay Fixtures (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added stable resolved graph-edge IDs, reusable template/group provenance, inline-condition counts, and effective wildcard-aware outgoing-rule summaries;
+- added a responsive, filterable DLC Studio graph-edge inspector without claiming a full graph-layout visualization;
+- added secret-free `agentera-causal-replay-v1` baselines to deterministic Dry Run reports;
+- added deterministic result digests over analysis summary, Dry Run summary, nodes, edges, and pending work while excluding the fixture itself;
+- added replay comparison that distinguishes resolved-rule drift from seed-fact/execution drift and reports summary field changes;
+- added `POST /api/dlcs/{dlc_id}/causal-events/replay` with support for current unsaved Studio drafts and no save, generation, Runtime, or world-state mutation;
+- added Studio fixture export/import, strict client-side normalization, unsafe-extension stripping, and match/drift feedback;
+- synchronized release identity to `0.18.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **451 Python tests**, **16 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+Next priorities:
+
+1. Extend deterministic scenario fixtures with real Agent actions, production/consumption policies, multiple causal branches, and longer restart/soak windows.
+2. Add author-facing replay fixture libraries, labels, scenario catalogs, and migration guidance while keeping fixtures package-local and secret-free.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect credentialed provider/model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+5. Improve causal authoring ergonomics with structured world-effect defaults and optional graph-layout visualization without changing resolved execution semantics.
+
+The persistent product goal remains active. This checkpoint makes causal authoring changes reproducible and reviewable while preserving deterministic production behavior, package isolation, and read-only Studio analysis.

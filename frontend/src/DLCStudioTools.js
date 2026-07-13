@@ -1,4 +1,5 @@
 export const DLC_CONTENT_EXPORT_FORMAT = 'world-simulator-dlc-content-v1'
+export const CAUSAL_REPLAY_FIXTURE_FORMAT = 'agentera-causal-replay-v1'
 
 const ARRAY_SECTIONS = [
   'resources',
@@ -10,6 +11,8 @@ const ARRAY_SECTIONS = [
   'initial_events',
   'ongoing_events',
   'random_events',
+  'causal_condition_groups',
+  'causal_rule_templates',
   'causal_event_rules',
   'time_rules',
 ]
@@ -26,6 +29,8 @@ const KEYERS = {
   initial_events: item => item?.event_id,
   ongoing_events: item => item?.event_id,
   random_events: item => item?.template_id,
+  causal_condition_groups: item => item?.group_id,
+  causal_rule_templates: item => item?.template_id,
   causal_event_rules: item => item?.rule_id,
   time_rules: item => item?.rule_id,
 }
@@ -340,6 +345,76 @@ export function summarizeGenerationStatus(payload) {
 }
 
 
+export function expandCausalRuleDraft(content, authoredRule) {
+  if (!isObject(content) || !isObject(authoredRule)) throw new Error('Causal rule draft is invalid')
+  const templates = new Map((Array.isArray(content.causal_rule_templates) ? content.causal_rule_templates : [])
+    .filter(isObject).map(item => [String(item.template_id || ''), item]))
+  const groups = new Map((Array.isArray(content.causal_condition_groups) ? content.causal_condition_groups : [])
+    .filter(isObject).map(item => [String(item.group_id || ''), item]))
+  const authored = cloneJson(authoredRule)
+  const templateId = String(authored.template_id || '').trim()
+  const groupIds = Array.isArray(authored.condition_group_ids) ? authored.condition_group_ids.map(value => String(value || '').trim()) : []
+  delete authored.template_id
+  delete authored.condition_group_ids
+  const template = templateId ? templates.get(templateId) : null
+  if (templateId && !template) throw new Error(`Unknown causal template: ${templateId}`)
+  const base = isObject(template?.rule) ? cloneJson(template.rule) : {}
+  const templateConditions = Array.isArray(base.conditions) ? cloneJson(base.conditions) : []
+  delete base.conditions
+  const inlineConditions = Array.isArray(authored.conditions) ? cloneJson(authored.conditions) : []
+  delete authored.conditions
+  const groupedConditions = []
+  for (const groupId of groupIds) {
+    const group = groups.get(groupId)
+    if (!group) throw new Error(`Unknown causal condition group: ${groupId}`)
+    if (!Array.isArray(group.conditions)) throw new Error(`Invalid causal condition group: ${groupId}`)
+    groupedConditions.push(...cloneJson(group.conditions))
+  }
+  return { ...base, ...authored, conditions: [...templateConditions, ...groupedConditions, ...inlineConditions] }
+}
+
+
+export function normalizeCausalReplayFixture(payload) {
+  if (!isObject(payload)) throw new Error('Causal replay fixture root must be an object')
+  if (payload.format !== CAUSAL_REPLAY_FIXTURE_FORMAT) throw new Error(`Unsupported causal replay format: ${payload.format || '<missing>'}`)
+  if (payload.schema_version !== '1.0') throw new Error(`Unsupported causal replay schema: ${payload.schema_version || '<missing>'}`)
+  if (!isObject(payload.input) || !isObject(payload.expected) || !isObject(payload.input.source_event)) throw new Error('Causal replay fixture is incomplete')
+  const source = payload.input.source_event
+  const horizonDays = Number(payload.input.horizon_days)
+  const maxEvents = Number(payload.input.max_events)
+  const severity = Number(source.severity)
+  const generatedAt = Number(source.generated_at ?? 0)
+  const digestPattern = /^[0-9a-f]{64}$/
+  if (!digestPattern.test(String(payload.expected.analysis_fingerprint || '')) || !digestPattern.test(String(payload.expected.result_digest || ''))) throw new Error('Causal replay fixture digest is invalid')
+  if (!isObject(payload.expected.summary) || !Array.isArray(source.target_agents) || !isObject(source.initial_payload)) throw new Error('Causal replay fixture payload is invalid')
+  if (!String(source.event_id || '').trim() || !String(source.event_type || '').trim() || !Number.isInteger(severity) || severity < 1 || severity > 10) throw new Error('Causal replay source event is invalid')
+  if (source.target_agents.length > 256 || source.target_agents.some(value => typeof value !== 'string' || !value.trim())) throw new Error('Causal replay target agents are invalid')
+  if (!Number.isFinite(generatedAt) || generatedAt < 0) throw new Error('Causal replay generated_at is invalid')
+  if (!Number.isFinite(horizonDays) || horizonDays < 0 || horizonDays > 3650 || !Number.isInteger(maxEvents) || maxEvents < 1 || maxEvents > 256) throw new Error('Causal replay limits are invalid')
+  return {
+    format: CAUSAL_REPLAY_FIXTURE_FORMAT,
+    schema_version: '1.0',
+    input: {
+      source_event: {
+        event_id: String(source.event_id),
+        event_type: String(source.event_type),
+        severity,
+        target_agents: source.target_agents.map(value => value.trim()),
+        initial_payload: cloneJson(source.initial_payload),
+        generated_at: generatedAt,
+      },
+      horizon_days: horizonDays,
+      max_events: maxEvents,
+    },
+    expected: {
+      analysis_fingerprint: String(payload.expected.analysis_fingerprint),
+      result_digest: String(payload.expected.result_digest),
+      summary: cloneJson(payload.expected.summary),
+    },
+  }
+}
+
+
 export function buildCausalEventCatalog(content) {
   if (!isObject(content)) return []
   const values = new Set()
@@ -349,7 +424,9 @@ export function buildCausalEventCatalog(content) {
       if (eventType) values.add(eventType)
     }
   }
-  for (const rule of Array.isArray(content.causal_event_rules) ? content.causal_event_rules : []) {
+  for (const authoredRule of Array.isArray(content.causal_event_rules) ? content.causal_event_rules : []) {
+    let rule = authoredRule
+    try { rule = expandCausalRuleDraft(content, authoredRule) } catch { /* keep partial authoring catalog usable */ }
     const childType = typeof rule?.child_event_type === 'string' ? rule.child_event_type.trim() : ''
     if (childType) values.add(childType)
     for (const source of Array.isArray(rule?.source_event_types) ? rule.source_event_types : []) {
