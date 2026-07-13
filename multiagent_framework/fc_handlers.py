@@ -11,8 +11,10 @@ submit_action / request_action 是解析器（产出 AgentAction 而非 dict）�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
+import math
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +29,7 @@ from .types import (
     RouterCommandType,
     TimerEntry,
 )
+from .world_commands import WorldCommand, WorldCommandType
 from .world_state import OngoingEvent, RESOURCE_META
 
 if TYPE_CHECKING:
@@ -238,6 +241,241 @@ def handle_update_inventory(ctx: FCContext, args: dict[str, Any]) -> dict[str, A
     except Exception as exc:
         logger.exception("handle_update_inventory failed: %s", exc)
         return {"ok": False, "error": str(exc)}
+
+
+
+def _positive_finite(value: Any, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name}_invalid")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field_name}_invalid") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{field_name}_invalid")
+    return number
+
+
+def _asset_anchor(world_state: Any, resource_name: str) -> float:
+    definition = world_state.get_resource_definition(resource_name)
+    if definition is None:
+        raise ValueError(f"resource_not_found: {resource_name}")
+    kind = definition.get("kind") if isinstance(definition, dict) else getattr(definition, "kind", None)
+    if kind != "asset":
+        raise ValueError(f"resource_kind_invalid: {resource_name}")
+    raw_rate = definition.get("anchor_rate") if isinstance(definition, dict) else getattr(definition, "anchor_rate", None)
+    try:
+        anchor_rate = float(raw_rate)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"resource_anchor_invalid: {resource_name}") from exc
+    if not math.isfinite(anchor_rate) or anchor_rate <= 0:
+        raise ValueError(f"resource_anchor_invalid: {resource_name}")
+    return anchor_rate
+
+
+def _record_economic_change(ctx: FCContext, change: dict[str, Any], *, replayed: bool) -> None:
+    # An idempotent replay is observable in the tool result/trace, but it must not
+    # claim a second world mutation in ActionResult.changes_made.
+    if ctx.changes_made is not None and not replayed:
+        ctx.changes_made.append(change)
+
+
+def _handle_resource_flow(
+    ctx: FCContext,
+    args: dict[str, Any],
+    *,
+    operation: str,
+) -> dict[str, Any]:
+    try:
+        raw_id = str(args.get("entity_id", "") or "")
+        entity_id, fuzzy = _resolve_entity_id(ctx.world_state, raw_id)
+        resource_name = str(args.get("resource_name", "") or "").strip()
+        quantity = _positive_finite(args.get("quantity"), "quantity")
+        anchor_rate = _asset_anchor(ctx.world_state, resource_name)
+        reason = str(args.get("reason", "") or "")
+        sign = 1.0 if operation == "production" else -1.0
+        command_id = _world_command_id(ctx, f"{operation}_resource") or f"wcmd_{uuid.uuid4().hex}"
+        result = ctx.world_state.command_bus.execute(WorldCommand(
+            command_type=WorldCommandType.ADJUST_RESOURCE,
+            command_id=command_id,
+            entity_id=entity_id,
+            expected_version=args.get("expected_version"),
+            chain_id=ctx.chain_id,
+            sim_time=ctx.sim_time,
+            payload={
+                "resource_name": resource_name,
+                "quantity_delta": sign * quantity,
+                "reason": reason,
+            },
+            metadata={
+                "source": "action_agent",
+                "economic_operation": operation,
+                "anchor_rate": anchor_rate,
+            },
+        ))
+        if not result.ok:
+            return {
+                "ok": False,
+                "operation": operation,
+                "error_code": result.error_code or "world_command_rejected",
+                "error": result.error or "world command rejected",
+                "details": dict(result.result),
+                "command_id": result.command_id,
+                "status": result.status,
+            }
+        reduced = dict(result.result)
+        change = {
+            "type": f"resource_{operation}",
+            "economic_operation": operation,
+            "entity_id": entity_id,
+            "resource_name": resource_name,
+            "quantity_delta": reduced.get("quantity_delta", sign * quantity),
+            "new_quantity": reduced.get("quantity"),
+            "anchor_rate": reduced.get("anchor_rate", anchor_rate),
+            "base_value_delta": reduced.get("base_value_delta", sign * quantity * anchor_rate),
+            "reason": reason,
+            "command_id": result.command_id,
+        }
+        _record_economic_change(ctx, change, replayed=result.replayed)
+        response: dict[str, Any] = {
+            "ok": True,
+            **change,
+            "replayed": result.replayed,
+            "status": result.status,
+        }
+        if fuzzy:
+            response.update({"fuzzy_matched": True, "original_query": raw_id})
+        return response
+    except Exception as exc:
+        logger.exception("handle_%s_resource failed: %s", operation, exc)
+        return {"ok": False, "operation": operation, "error": str(exc)}
+
+
+def handle_produce_resource(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Issue anchored asset value from an explicit production source."""
+    return _handle_resource_flow(ctx, args, operation="production")
+
+
+def handle_consume_resource(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Destroy anchored asset value through explicit consumption or loss."""
+    return _handle_resource_flow(ctx, args, operation="consumption")
+
+
+def handle_transfer_anchored_value(ctx: FCContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Atomically move equal anchored base value between two asset balances."""
+    try:
+        raw_from = str(args.get("from_entity_id", "") or "")
+        raw_to = str(args.get("to_entity_id", "") or "")
+        from_entity_id, from_fuzzy = _resolve_entity_id(ctx.world_state, raw_from)
+        to_entity_id, to_fuzzy = _resolve_entity_id(ctx.world_state, raw_to)
+        from_resource = str(args.get("from_resource", "") or "").strip()
+        to_resource = str(args.get("to_resource", "") or "").strip()
+        if from_entity_id == to_entity_id and from_resource == to_resource:
+            raise ValueError("transfer_same_account")
+        base_value = _positive_finite(args.get("base_value"), "base_value")
+        from_anchor = _asset_anchor(ctx.world_state, from_resource)
+        to_anchor = _asset_anchor(ctx.world_state, to_resource)
+        reason = str(args.get("reason", "") or "")
+        command_scope = _world_command_id(ctx, "transfer_anchored_value") or f"agent-transfer:{uuid.uuid4().hex}"
+        transfer_id = "transfer_" + hashlib.sha256(command_scope.encode("utf-8")).hexdigest()[:24]
+        debit_quantity = -(base_value / from_anchor)
+        credit_quantity = base_value / to_anchor
+
+        def command(
+            *, side: str, entity_id: str, resource_name: str, quantity_delta: float,
+            anchor_rate: float, expected_version: Any,
+        ) -> WorldCommand:
+            audit = {
+                "source": "action_agent",
+                "economic_operation": "transfer",
+                "anchored_base_value": base_value,
+                "anchor_rate": anchor_rate,
+                "transfer_side": side,
+                "transfer_id": transfer_id,
+            }
+            return WorldCommand(
+                command_type=WorldCommandType.ADJUST_RESOURCE,
+                command_id=f"{command_scope}:{side}",
+                entity_id=entity_id,
+                expected_version=expected_version,
+                chain_id=ctx.chain_id,
+                sim_time=ctx.sim_time,
+                payload={
+                    "resource_name": resource_name,
+                    "quantity_delta": quantity_delta,
+                    "reason": reason,
+                    "anchored_base_value": base_value,
+                    "anchor_rate": anchor_rate,
+                    "transfer_side": side,
+                    "transfer_id": transfer_id,
+                },
+                metadata=audit,
+            )
+
+        batch = ctx.world_state.command_bus.execute_batch([
+            command(
+                side="debit", entity_id=from_entity_id, resource_name=from_resource,
+                quantity_delta=debit_quantity, anchor_rate=from_anchor,
+                expected_version=args.get("from_expected_version"),
+            ),
+            command(
+                side="credit", entity_id=to_entity_id, resource_name=to_resource,
+                quantity_delta=credit_quantity, anchor_rate=to_anchor,
+                expected_version=args.get("to_expected_version"),
+            ),
+        ], atomic=True)
+        if not batch.ok:
+            failure = next((item for item in batch.results if item.error_code not in {"batch_rolled_back", "batch_aborted"}), None)
+            failure = failure or next((item for item in batch.results if not item.ok), None)
+            return {
+                "ok": False,
+                "operation": "transfer",
+                "error_code": failure.error_code if failure else "transfer_rejected",
+                "error": failure.error if failure else "anchored transfer rejected",
+                "details": dict(failure.result) if failure else {},
+                "transfer_id": transfer_id,
+                "committed": batch.committed,
+                "results": [item.to_dict() for item in batch.results],
+            }
+        replayed = bool(batch.results) and all(item.replayed for item in batch.results)
+        debit_result = dict(batch.results[0].result)
+        credit_result = dict(batch.results[1].result)
+        change = {
+            "type": "anchored_value_transfer",
+            "economic_operation": "transfer",
+            "transfer_id": transfer_id,
+            "from_entity_id": from_entity_id,
+            "from_resource": from_resource,
+            "from_quantity_delta": debit_result.get("quantity_delta", debit_quantity),
+            "from_anchor_rate": debit_result.get("anchor_rate", from_anchor),
+            "from_new_quantity": debit_result.get("quantity"),
+            "to_entity_id": to_entity_id,
+            "to_resource": to_resource,
+            "to_quantity_delta": credit_result.get("quantity_delta", credit_quantity),
+            "to_anchor_rate": credit_result.get("anchor_rate", to_anchor),
+            "to_new_quantity": credit_result.get("quantity"),
+            "base_value": base_value,
+            "base_value_delta": 0.0,
+            "reason": reason,
+            "command_ids": [item.command_id for item in batch.results],
+        }
+        _record_economic_change(ctx, change, replayed=replayed)
+        response: dict[str, Any] = {
+            "ok": True,
+            **change,
+            "replayed": replayed,
+            "status": "replayed" if replayed else "applied",
+            "committed": batch.committed,
+        }
+        if from_fuzzy or to_fuzzy:
+            response["fuzzy_matches"] = {
+                "from": from_entity_id if from_fuzzy else None,
+                "to": to_entity_id if to_fuzzy else None,
+            }
+        return response
+    except Exception as exc:
+        logger.exception("handle_transfer_anchored_value failed: %s", exc)
+        return {"ok": False, "operation": "transfer", "error": str(exc)}
 
 
 # Ongoing event handlers.
@@ -635,6 +873,9 @@ FC_HANDLERS: dict[str, tuple[Callable, bool]] = {
     "query_entity":          (handle_query_entity, False),
     "update_entity_status":  (handle_update_entity_status, False),
     "update_inventory":      (handle_update_inventory, False),
+    "produce_resource":      (handle_produce_resource, False),
+    "consume_resource":      (handle_consume_resource, False),
+    "transfer_anchored_value": (handle_transfer_anchored_value, False),
     "add_ongoing_event":     (handle_add_ongoing_event, False),
     "modify_ongoing_event":  (handle_modify_ongoing_event, False),
     "delete_ongoing_event":  (handle_delete_ongoing_event, False),
@@ -739,6 +980,7 @@ def parse_request_action(agent_id: str, args: dict[str, Any]) -> AgentAction:
             "description": args.get("description", ""),
             "resources": args.get("resources", ""),
             "severity": args.get("severity", 5),
+            "causal_event_type": args.get("causal_event_type", ""),
         },
     )
 

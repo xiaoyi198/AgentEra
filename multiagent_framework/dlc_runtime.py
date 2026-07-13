@@ -26,6 +26,7 @@ from .prompt_registry import (
     PromptRenderResult,
 )
 from .types import EventObject
+from .gameplay_contract import GameplayContract
 from .world_state import (
     Entity,
     EntityValue,
@@ -63,9 +64,12 @@ class DLCLoadReport:
     random_events: int = 0
     causal_event_rules: int = 0
     time_rules: int = 0
+    actions: int = 0
     seeded_world: bool = False
     model_profiles: dict[str, str] = field(default_factory=dict)
     prompt_hashes: dict[str, str] = field(default_factory=dict)
+    gameplay_configured: bool = False
+    player_identity_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,6 +87,7 @@ class DLCReloadPlan:
     unchanged_agents: list[str] = field(default_factory=list)
     changed_runtime_tasks: list[str] = field(default_factory=list)
     runtime_model_profiles: dict[str, str] = field(default_factory=dict)
+    gameplay_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -117,7 +122,9 @@ class _DLCMaterializedSnapshot:
     random_event_templates: list[dict[str, Any]]
     causal_event_rules: list[dict[str, Any]]
     time_rules: list[dict[str, Any]]
+    action_definitions: list[dict[str, Any]]
     primary_package_id: str
+    gameplay_contract: GameplayContract
     global_prompts: dict[str, str]
     global_prompt_hashes: dict[str, str]
     global_clients: dict[str, Any]
@@ -280,16 +287,23 @@ class AgentFactory:
         *,
         package: DLCPackage,
         agent_sources: list[dict[str, Any]] | None = None,
+        excluded_agent_ids: set[str] | frozenset[str] | None = None,
+        legacy_role_player: bool = True,
     ) -> list[BaseAgent]:
         agents: list[BaseAgent] = []
         sources = {str(item.get("id", "")): item for item in (agent_sources or [])}
+        excluded = set(excluded_agent_ids or ())
         base_client = self.llm_client
         if hasattr(base_client, "for_dlc"):
             base_client = base_client.for_dlc(package.manifest.id)
         resolver = ModelBindingResolver(base_client, package.manifest.model_bindings)
         self.last_bindings = {}
         for official in officials:
-            if official.role == "player" or not official.enabled:
+            if (
+                official.id in excluded
+                or (legacy_role_player and official.role == "player")
+                or not official.enabled
+            ):
                 continue
             config = AgentConfig(
                 agent_id=official.id,
@@ -416,9 +430,22 @@ class DLCBundleLoader:
                 + "; ".join(item.message for item in errors[:5])
             )
         content = self.registry.load_content(package.manifest.id)
+        primary = self.registry.primary_package()
+        package_gameplay = (
+            GameplayContract.from_content(
+                content["gameplay"], content["agents"],
+                package_id=package.manifest.id, package_name=package.manifest.name
+            )
+            if primary is not None and primary.manifest.id == package.manifest.id
+            else GameplayContract(
+                package_id=package.manifest.id, package_name=package.manifest.name
+            )
+        )
 
         # Build prompts and model-bound Agents before mutating world state. Invalid
         # prompt/model bindings therefore fail the package load without partial seeding.
+        # Directly player-controlled Agent records remain addressable court/actor nodes,
+        # but do not receive an autonomous LLM runtime.
         officials = [self._official(item) for item in content["agents"]]
         prompts = PromptRegistry(content, package)
         agents = self.agent_factory.create(
@@ -426,6 +453,8 @@ class DLCBundleLoader:
             prompts,
             package=package,
             agent_sources=content["agents"],
+            excluded_agent_ids=package_gameplay.direct_agent_ids,
+            legacy_role_player=package_gameplay.source != "explicit",
         )
 
         resources = [self._resource(item) for item in content["resources"]]
@@ -496,12 +525,17 @@ class DLCBundleLoader:
             random_events=len(content["random_events"]),
             causal_event_rules=len(content["causal_event_rules"]),
             time_rules=len(content["time_rules"]),
+            actions=len(content["actions"]),
             seeded_world=seed_world,
             model_profiles=dict(self.agent_factory.last_bindings),
             prompt_hashes={
                 agent_id: report.content_hash
                 for agent_id, report in prompts.render_reports.items()
             },
+            gameplay_configured=package_gameplay.configured,
+            player_identity_id=(
+                package_gameplay.player.identity_id if package_gameplay.player else ""
+            ),
         )
 
     def _materialize_active(self) -> _DLCMaterializedSnapshot:
@@ -523,12 +557,18 @@ class DLCBundleLoader:
         causal_event_rules: list[dict[str, Any]] = []
         causal_rule_ids: set[str] = set()
         time_rules: list[dict[str, Any]] = []
+        action_definitions: list[dict[str, Any]] = []
+        action_ids: set[str] = set()
         global_prompts: dict[str, str] = {}
         global_prompt_hashes: dict[str, str] = {}
         global_clients: dict[str, Any] = {}
         global_model_profiles: dict[str, str] = {}
         primary = self.registry.primary_package()
         primary_package_id = primary.manifest.id if primary is not None else ""
+        gameplay_contract = GameplayContract(
+            package_id=primary_package_id,
+            package_name=(primary.manifest.name if primary is not None else ""),
+        )
 
         for package in packages:
             issues = self.registry.validate(package.manifest.id)
@@ -539,6 +579,17 @@ class DLCBundleLoader:
                     + "; ".join(item.message for item in errors[:5])
                 )
             content = self.registry.load_content(package.manifest.id)
+            package_gameplay = GameplayContract(
+                package_id=package.manifest.id, package_name=package.manifest.name
+            )
+            if package.manifest.id == primary_package_id:
+                package_gameplay = GameplayContract.from_content(
+                    content["gameplay"],
+                    content["agents"],
+                    package_id=package.manifest.id,
+                    package_name=package.manifest.name,
+                )
+                gameplay_contract = package_gameplay
             package_hashes[package.manifest.id] = _stable_hash({
                 "manifest": {
                     "id": package.manifest.id,
@@ -555,6 +606,8 @@ class DLCBundleLoader:
                 prompt_registry,
                 package=package,
                 agent_sources=content["agents"],
+                excluded_agent_ids=package_gameplay.direct_agent_ids,
+                legacy_role_player=package_gameplay.source != "explicit",
             )
             package_bindings = dict(self.agent_factory.last_bindings)
             for agent in package_agents:
@@ -637,6 +690,12 @@ class DLCBundleLoader:
                 causal_rule_ids.add(rule_id)
                 causal_event_rules.append(copy.deepcopy(causal_rule))
             time_rules.extend(copy.deepcopy(content["time_rules"]))
+            for action in content["actions"]:
+                action_id = str(action.get("action_id", ""))
+                if action_id in action_ids:
+                    raise DLCRegistryError(f"Duplicate active action id: {action_id}")
+                action_ids.add(action_id)
+                action_definitions.append(copy.deepcopy(action))
             ongoing_events.extend(OngoingEvent(
                 event_id=str(item["event_id"]), entity_id=str(item["entity_id"]),
                 event_type=str(item.get("event_type", "state_change")),
@@ -666,7 +725,9 @@ class DLCBundleLoader:
             random_event_templates=random_event_templates,
             causal_event_rules=causal_event_rules,
             time_rules=time_rules,
+            action_definitions=action_definitions,
             primary_package_id=primary_package_id,
+            gameplay_contract=gameplay_contract,
             global_prompts=global_prompts,
             global_prompt_hashes=global_prompt_hashes,
             global_clients=global_clients,
@@ -729,6 +790,11 @@ class DLCBundleLoader:
             unchanged_agents=unchanged,
             changed_runtime_tasks=changed_runtime_tasks,
             runtime_model_profiles=dict(candidate.global_model_profiles),
+            gameplay_changed=(
+                current is None
+                or current.gameplay_contract.to_dict()
+                != candidate.gameplay_contract.to_dict()
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -739,6 +805,7 @@ class DLCBundleLoader:
                 "random_event_templates": len(candidate.random_event_templates),
                 "causal_event_rules": len(candidate.causal_event_rules),
                 "time_rules": len(candidate.time_rules),
+                "actions": len(candidate.action_definitions),
             },
             warnings=warnings,
             errors=sorted(set(errors)),
@@ -784,7 +851,9 @@ class DLCBundleLoader:
             "random_event_templates": copy.deepcopy(snapshot.random_event_templates),
             "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
             "time_rules": copy.deepcopy(snapshot.time_rules),
+            "action_definitions": copy.deepcopy(snapshot.action_definitions),
             "primary_package_id": snapshot.primary_package_id,
+            "gameplay_contract": snapshot.gameplay_contract.to_dict(),
             "global_prompts": dict(snapshot.global_prompts),
             "global_prompt_hashes": dict(snapshot.global_prompt_hashes),
             "global_model_profiles": dict(snapshot.global_model_profiles),
@@ -905,6 +974,17 @@ class DLCBundleLoader:
         officials = [
             Official(**dict(item)) for item in blueprint.get("officials", [])
         ]
+        archived_gameplay = blueprint.get("gameplay_contract")
+        gameplay_contract = (
+            GameplayContract.from_dict(archived_gameplay)
+            if isinstance(archived_gameplay, dict)
+            else GameplayContract.from_content(
+                {},
+                [asdict(item) for item in officials],
+                package_id=primary_package_id,
+                package_name=primary_package_id,
+            )
+        )
         return _DLCMaterializedSnapshot(
             package_ids=package_ids,
             package_hashes={
@@ -954,7 +1034,9 @@ class DLCBundleLoader:
                 dict(item) for item in blueprint.get("causal_event_rules", [])
             ],
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
+            action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
             primary_package_id=str(blueprint.get("primary_package_id", "")),
+            gameplay_contract=gameplay_contract,
             global_prompts=global_prompts,
             global_prompt_hashes={
                 runtime_id: str(
@@ -1031,7 +1113,9 @@ class DLCBundleLoader:
             random_event_templates=copy.deepcopy(snapshot.random_event_templates),
             causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
             time_rules=copy.deepcopy(snapshot.time_rules),
+            action_definitions=copy.deepcopy(snapshot.action_definitions),
             primary_package_id=snapshot.primary_package_id,
+            gameplay_contract=copy.deepcopy(snapshot.gameplay_contract),
             global_prompts=dict(snapshot.global_prompts),
             global_prompt_hashes=dict(snapshot.global_prompt_hashes),
             global_clients=dict(snapshot.global_clients),
@@ -1342,6 +1426,15 @@ class DLCBundleLoader:
                     self.orchestrator.configure_causal_events(candidate.causal_event_rules)
                 if hasattr(self.orchestrator, "configure_time_rules"):
                     self.orchestrator.configure_time_rules(candidate.time_rules)
+                if hasattr(self.orchestrator, "configure_gameplay_contract"):
+                    self.orchestrator.configure_gameplay_contract(
+                        candidate.gameplay_contract, generation=target_generation
+                    )
+                if hasattr(self.orchestrator, "configure_action_catalog"):
+                    self.orchestrator.configure_action_catalog(
+                        candidate.action_definitions, generation=target_generation,
+                        gameplay=candidate.gameplay_contract,
+                    )
 
                 self.prompt_registries = dict(candidate.prompts)
                 self._managed_agent_ids = set(candidate.agents)
@@ -1475,6 +1568,19 @@ class DLCBundleLoader:
             "retired_memory_archives": len(self._archived_agent_memory),
             "available_generations": self._public_generation_history(),
             "generation_archive": self._archive_public_status(),
+            "gameplay": (
+                self.orchestrator.gameplay_public_state()
+                if hasattr(self.orchestrator, "gameplay_public_state")
+                else {
+                    **(snapshot.gameplay_contract.to_dict() if snapshot else GameplayContract().to_dict()),
+                    "generation": self.generation,
+                }
+            ),
+            "actions": (
+                self.orchestrator.actions_public_state()
+                if hasattr(self.orchestrator, "actions_public_state")
+                else {"configured": bool(snapshot and snapshot.action_definitions), "generation": self.generation, "actions": copy.deepcopy(snapshot.action_definitions) if snapshot else []}
+            ),
             "causal_events": (
                 self.orchestrator.causal_event_status()
                 if hasattr(self.orchestrator, "causal_event_status")
@@ -1525,5 +1631,14 @@ class DLCBundleLoader:
             )
         if hasattr(self.orchestrator, "configure_time_rules"):
             self.orchestrator.configure_time_rules(candidate.time_rules)
+        if hasattr(self.orchestrator, "configure_gameplay_contract"):
+            self.orchestrator.configure_gameplay_contract(
+                candidate.gameplay_contract, generation=self.generation
+            )
+        if hasattr(self.orchestrator, "configure_action_catalog"):
+            self.orchestrator.configure_action_catalog(
+                candidate.action_definitions, generation=self.generation,
+                gameplay=candidate.gameplay_contract,
+            )
         self._remember_generation(self.generation, candidate)
         return reports

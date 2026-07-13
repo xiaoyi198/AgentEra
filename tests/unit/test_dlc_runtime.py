@@ -28,6 +28,7 @@ class FakeOrchestrator:
         self.time_rule_configurations = []
         self.causal_event_configurations = []
         self.operations = []
+        self.gameplay_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -45,6 +46,9 @@ class FakeOrchestrator:
     def configure_causal_events(self, rules) -> None:
         self.operations.append(("causal", [item["rule_id"] for item in rules]))
         self.causal_event_configurations.append(rules)
+
+    def configure_gameplay_contract(self, contract, *, generation=0) -> None:
+        self.gameplay_configurations.append((contract, generation))
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -64,8 +68,8 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
         ],
         "relations": [],
         "agents": [
-            {"id": "player", "name": "Player", "rank": 10, "location_id": "city", "role": "player"},
-            {"id": "mayor", "name": "Mayor", "rank": 2, "location_id": "city", "superior_id": "player", "personality_seed": "steady"},
+            {"id": "player", "name": "Player", "rank": 10, "location_id": "city", "role": "operator"},
+            {"id": "mayor", "name": "Mayor", "rank": 2, "location_id": "city", "superior_id": "player", "personality_seed": "steady", "role": "player"},
             {"id": "office", "name": "Office", "location_id": "city", "agent_type": "institution", "superior_id": "mayor"},
             {"id": "disabled", "name": "Disabled", "location_id": "city", "superior_id": "mayor", "enabled": False},
         ],
@@ -91,6 +95,18 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
             }],
         }],
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
+        "gameplay": {
+            "player": {
+                "identity_id": "station_commander",
+                "display_name": "Station Commander",
+                "actor_id": "player",
+                "controlled_objects": [
+                    {"kind": "entity", "id": "city", "mode": "direct"},
+                    {"kind": "agent", "id": "player", "mode": "direct"},
+                    {"kind": "agent", "id": "mayor", "mode": "command"},
+                ],
+            }
+        },
         "personas": {"steady": "Stay calm."},
         "prompts": {"official_template": "You are {name} at {location}. {personality} Superior: {superior}."},
     })
@@ -126,6 +142,10 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     assert values["tax"] == 0.1
     assert world.list_ongoing_events("city")[0].event_id == "ongoing"
     assert set(orchestrator.agents) == {"mayor", "office"}
+    contract, generation = orchestrator.gameplay_configurations[-1]
+    assert generation == 1
+    assert contract.player.identity_id == "station_commander"
+    assert contract.direct_agent_ids == {"player"}
     assert orchestrator.agents["mayor"].llm.agent_id == "mayor"
     assert "Stay calm." in orchestrator.agents["mayor"].config.system_prompt
     assert orchestrator.events[0].event_id == "evt"
@@ -274,6 +294,7 @@ def test_runtime_hot_reload_preserves_memory_world_state_and_initial_events(tmp_
     })
     content["entities"][0]["current_status"] = "seed-status-must-not-overwrite"
     content["causal_event_rules"][0]["child_event_type"] = "reloaded_welcome"
+    content["gameplay"]["player"]["display_name"] = "Reloaded Commander"
     content["entities"].append({
         "id": "harbor", "type": "location", "name": "Harbor",
         "current_status": "new-location-status",
@@ -288,6 +309,7 @@ def test_runtime_hot_reload_preserves_memory_world_state_and_initial_events(tmp_
     assert preview["added_agents"] == ["scribe"]
     assert preview["removed_agents"] == ["office"]
     assert preview["changed_agents"] == ["mayor"]
+    assert preview["gameplay_changed"] is True
     assert preview["world_changes"]["entities_added"] == 1
     assert "system_prompt" not in str(preview)
     assert "preserve-this-memory" not in str(preview)
@@ -308,6 +330,9 @@ def test_runtime_hot_reload_preserves_memory_world_state_and_initial_events(tmp_
     assert world.get_inventory("harbor")[0].quantity == 3
     assert len(orchestrator.events) == 1
     assert orchestrator.causal_event_configurations[-1][0]["child_event_type"] == "reloaded_welcome"
+    reloaded_contract, reloaded_generation = orchestrator.gameplay_configurations[-1]
+    assert reloaded_generation == 2
+    assert reloaded_contract.player.display_name == "Reloaded Commander"
     assert court.get_official("office") is None
     assert court.get_official("scribe") is not None
     status = loader.public_runtime()
@@ -344,6 +369,7 @@ def test_runtime_generation_rollback_replays_config_without_rewinding_world(tmp_
         "Generation two {name} at {location}. Superior: {superior}."
     )
     content["causal_event_rules"][0]["child_event_type"] = "generation_two_welcome"
+    content["gameplay"]["player"]["display_name"] = "Generation Two Commander"
     content["agents"] = [
         item for item in content["agents"] if item["id"] != "office"
     ]
@@ -380,6 +406,9 @@ def test_runtime_generation_rollback_replays_config_without_rewinding_world(tmp_
     assert result["activation_kind"] == "rollback"
     assert result["source_generation"] == 1
     assert orchestrator.causal_event_configurations[-1][0]["child_event_type"] == "welcome"
+    restored_contract, restored_generation = orchestrator.gameplay_configurations[-1]
+    assert restored_generation == 3
+    assert restored_contract.player.display_name == "Station Commander"
     assert set(orchestrator.agents) == {"mayor", "office"}
     assert "You are Mayor" in orchestrator.agents["mayor"].config.system_prompt
     mayor_memory = list(orchestrator.agents["mayor"].memory)

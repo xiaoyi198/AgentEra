@@ -449,7 +449,7 @@ market_value = anchor_value × scarcity_modifier × region_modifier × event_mod
 
 - `produce_resource`
 - `consume_resource`
-- `transfer_resource`
+- `transfer_anchored_value`（v0.19.0 已接入 ActionAgent）
 - `convert_resource`
 - `reserve_resource`
 - `release_resource`
@@ -1290,3 +1290,69 @@ Next priorities:
 5. Improve causal authoring ergonomics with structured world-effect defaults and optional graph-layout visualization without changing resolved execution semantics.
 
 The persistent product goal remains active. This checkpoint makes causal authoring changes reproducible and reviewable while preserving deterministic production behavior, package isolation, and read-only Studio analysis.
+
+## Phase checkpoint: typed Agent economy and deterministic replay scenarios (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added typed `produce_resource`, `consume_resource`, and `transfer_anchored_value` tools for ActionAgent while retaining legacy `update_inventory` only in `ALL_TOOLS`;
+- enforced finite positive inputs, DLC asset-catalog validation, explicit insufficient-balance failures, anchored conversion, atomic debit/credit batches, and deterministic tool-call replay;
+- bridged `ActionResult` into the causal engine only through explicit `request_action.causal_event_type`, using stable event IDs and bounded secret-free summaries;
+- updated the official ActionAgent Prompt to require typed economic operations and prohibit arbitrary-delta transfer simulation;
+- added a three-round ActionAgent scenario with production, anchored transfer, consumption, multiple causal branches, zero-delay descendants, ongoing-event settlement, SQLite restart, causal snapshot restore, and complete action replay;
+- verified economic invariants (`112` current base value, `120` issued, `8` destroyed, transfer net `0`) and Replay Fixture classification for unchanged, seed-drift, and rule-drift cases;
+- synchronized release identity to `0.19.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **464 Python tests**, **16 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+Next priorities:
+
+1. Extend economic scenarios into longer soak and concurrent-action stress tests, including conflict/retry observability.
+2. Define escrow/in-transit semantics for delayed transport so reserved value is neither double-spendable nor double-counted.
+3. Add DLC Studio authoring support for `request_action.causal_event_type`, safe payload previews, and reusable Agent-economic scenario catalogs.
+4. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+5. Collect credentialed provider/model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+
+The persistent product goal remains active. This checkpoint moves unified-value economics from infrastructure-only coverage into real multi-round Agent behavior and deterministic restart/replay validation.
+
+## Phase checkpoint: DLC player identity and controlled-object contract (v0.20.0, 2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added a theme-neutral `GameplayContract` with stable player identity, optional actor identity, and ordered entity/Agent control objects;
+- defined `direct` versus `command` control semantics and excluded only directly controlled Agents from autonomous LLM construction;
+- made explicit gameplay metadata authoritative over legacy `role=player`, while retaining additive schema-1.0 compatibility inference for existing DLCs and old generation archives;
+- added Registry validation for identity fields, control kind/mode, duplicate controls, local entity/Agent references, and non-empty control sets;
+- bound the primary DLC gameplay contract to atomic runtime generations, reload preview, hot reload, archive restore, rollback, snapshot cloning, load reports, and public runtime state;
+- replaced Orchestrator's theme-specific player-recipient check with the active contract and retained a narrow fallback for legacy/lightweight callers;
+- added `GET /api/gameplay` and a minimal React consumer for package title, player identity, control count, and view labels;
+- upgraded the frontier sample to an explicit non-imperial station-commander contract whose player endpoint uses `role=operator`, proving role-string independence;
+- synchronized release identity to `0.20.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed 66 focused gameplay/Registry/Runtime tests and all 16 frontend tests with frontend lint/build passing before the full release gate.
+
+Next priorities:
+
+1. Add a generic DLC action catalog and permission contract so controlled entities and Agents expose playable operations without theme-specific router branches.
+2. Define generic issue, objective, choice, outcome, and notification contracts that can replace memorial-only assumptions in the main gameplay loop.
+3. Extend DLC Studio with structured gameplay/player/control-object editing, reference selectors, validation feedback, and import/export Diff support.
+4. Introduce a DLC UI manifest for terminology, navigation, panels, widgets, and capability-driven layouts while preserving safe shell fallbacks.
+5. Continue multi-turn memory retrieval/compression evaluation, task-aware model selection, economic stress/retry tests, and credentialed promotion/rollback rehearsal.
+
+The persistent product goal remains active. This checkpoint establishes who the player is and what the player controls, but does not yet complete the generic action, objective, permission, or UI-manifest layers required for a fully DLC-driven game framework.
+
+
+## Phase checkpoint: DLC generic action definitions (v0.21.0, 2026-07-13)
+
+P0.2 of the DLC-driven gameplay framework is complete:
+
+- added a generic action schema covering parameters, target selection, player-control authorization, preconditions, anchored-value costs, authoritative time, cooldown, and composite results;
+- reused deterministic causal world-effect materialization and committed costs/results in one atomic WorldCommand batch;
+- added Generation-bound catalog publication, cross-DLC duplicate detection, encrypted archive restore, runtime/manual-save persistence, and concurrent invocation idempotency;
+- added stable catalog/preview/execute APIs and a DLC Studio Actions editor with import/export, keyed diff, and history support;
+- added a runnable `frontier_patrol` example independent of the Daming theme;
+- added focused backend and frontend regression coverage, including atomic rollback and concurrent duplicate execution.
+
+Next gameplay priority is P0.3: a generic `Issue / Case / DecisionRequest` lifecycle that can offer DLC-authored actions without relying on memorial-specific framework concepts. The long-term gameplay goal remains active.

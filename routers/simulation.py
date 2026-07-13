@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from typing import Any
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from multiagent_framework.action_contract import ActionContractError
 from multiagent_framework.llm_client import LLMConfig
 from multiagent_framework.types import PlayerAction, PlayerActionType
 
@@ -134,6 +136,72 @@ async def get_in_transit():
 
 
 # ── 奏折列表（持久化） ──
+
+
+@router.get("/gameplay")
+async def get_gameplay():
+    """Return the active DLC-authored player identity and control boundary."""
+    if not state.orchestrator:
+        return {
+            "configured": False,
+            "generation": 0,
+            "package_id": "",
+            "package_name": "",
+            "source": "none",
+            "player": None,
+        }
+    return state.orchestrator.gameplay_public_state()
+
+class DLCActionInvocationRequest(BaseModel):
+    invocation_id: str = ""
+    expected_generation: int | None = None
+    actor_id: str = ""
+    control_object_id: str = ""
+    target_id: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+def _action_http_error(exc: ActionContractError) -> HTTPException:
+    status_code = 400
+    if exc.code == "action.not_found":
+        status_code = 404
+    elif exc.code in {
+        "action.generation_conflict", "action.invocation.conflict",
+        "action.not_ready", "action.world_command_failed",
+    }:
+        status_code = 409
+    return HTTPException(status_code=status_code, detail={
+        "code": exc.code, "message": str(exc), "path": exc.path,
+        "details": exc.details,
+    })
+
+
+@router.get("/actions")
+async def get_actions():
+    """Return the current generation's DLC-authored action catalog."""
+    if not state.orchestrator:
+        return {"configured": False, "generation": 0, "fingerprint": "", "actions": []}
+    return state.orchestrator.actions_public_state()
+
+
+@router.post("/actions/{action_id}/preview")
+async def preview_action(action_id: str, req: DLCActionInvocationRequest):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "action.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.preview_dlc_action(action_id, req.model_dump())
+    except ActionContractError as exc:
+        raise _action_http_error(exc) from exc
+
+
+@router.post("/actions/{action_id}/execute")
+async def execute_action(action_id: str, req: DLCActionInvocationRequest):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "action.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.execute_dlc_action(action_id, req.model_dump())
+    except ActionContractError as exc:
+        raise _action_http_error(exc) from exc
 
 
 @router.get("/memorials")

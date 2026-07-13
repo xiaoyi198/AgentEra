@@ -15,6 +15,7 @@ const ARRAY_SECTIONS = [
   'causal_rule_templates',
   'causal_event_rules',
   'time_rules',
+  'actions',
 ]
 const OBJECT_SECTIONS = ['personas', 'prompts']
 const KNOWN_SECTIONS = new Set(['schema_version', ...ARRAY_SECTIONS, ...OBJECT_SECTIONS])
@@ -33,6 +34,7 @@ const KEYERS = {
   causal_rule_templates: item => item?.template_id,
   causal_event_rules: item => item?.rule_id,
   time_rules: item => item?.rule_id,
+  actions: item => item?.action_id,
 }
 
 function isObject(value) {

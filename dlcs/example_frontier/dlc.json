@@ -1,7 +1,7 @@
 {
   "id": "example_frontier",
   "name": "边境哨站示例",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "schema_version": "1.0",
   "description": "用于演示 bundle-v1、统一价值资源和通用 Agent 装载的最小 DLC。",
   "enabled": false,
@@ -10,7 +10,13 @@
   "priority": 10,
   "primary": false,
   "dependencies": [],
-  "entrypoints": { "content": "content.json", "prompts": "prompts" },
+  "entrypoints": {
+    "content": "content.json",
+    "prompts": "prompts"
+  },
   "model_bindings": {},
-  "metadata": { "example": true, "locale": "zh-CN" }
+  "metadata": {
+    "example": true,
+    "locale": "zh-CN"
+  }
 }

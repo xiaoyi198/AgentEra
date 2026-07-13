@@ -11,7 +11,7 @@
 4. **定时器等待** → 模拟古代公文传递的时间延迟
 5. **逐级上报** → 知府 → 布政使 → 内阁 → 皇帝
 6. **皇帝批复** → 批准/驳回/下旨，通过太监传达回基层执行
-7. **ActionAgent 执行** → 查询实体、更新状态、排队延迟事件、增减资源代币
+7. **ActionAgent 执行** → 查询实体、更新状态、排队延迟事件，并通过类型化工具生产、消费或原子转移锚定资产
 8. **OngoingEvent 到期** → 系统自动应用延迟变化（状态更新 + 库存增减）
 
 ---
@@ -51,10 +51,11 @@
 │   ├── __init__.py
 │   ├── types.py                     # 【核心】所有数据结构定义
 │   ├── llm_client.py                # 【核心】OpenAI 兼容 LLM 客户端
-│   ├── fc_tools.py                  # 【核心】FC 工具定义中央注册表（14 个工具）
+│   ├── fc_tools.py                  # 【核心】FC 工具定义中央注册表（18 个工具）
 │   ├── fc_handlers.py               # 【核心】FC 处理函数中央注册表（每工具一个 handler）
 │   ├── agent_runtime.py             # 【核心】Agent 基类 + 官员/机构 Agent 实现
 │   ├── action_agent.py              # 【核心】行动模拟 Agent（读写世界状态 + 排队延迟事件）
+│   ├── action_causal_bridge.py      # ActionResult → 脱敏确定性因果源事件（显式 opt-in）
 │   ├── tianji_agent.py              # 【调试】天玑 AI（全工具注入，独立于主循环）
 │   ├── router.py                    # 【核心】世界运行法则（LLM 驱动的路由中枢）
 │   ├── orchestrator.py              # 【核心】主循环，驱动整个模拟
@@ -212,10 +213,10 @@ run() 主循环（0.25s 间隔）
 
 | 分组常量 | 用途 | 工具数 |
 |---------|------|--------|
-| `ACTION_AGENT_TOOLS` | 世界状态读写 + 事件 CRUD + Agent 列表 + 结束行动 | 9 |
+| `ACTION_AGENT_TOOLS` | 世界查询、类型化经济动作、事件 CRUD、Agent 列表和结束行动 | 11 |
 | `ROUTER_TOOLS` | Agent 调度 | 4 |
 | `AGENT_TOOLS` | Agent 意图表达 | 2 |
-| `ALL_TOOLS` | 天玑用，全量 | 14 |
+| `ALL_TOOLS` | 天玑与兼容调用方使用的全量工具 | 18 |
 
 **扩展规则**：新增工具只需在此文件定义 schema + 加入对应分组，无需改动任何 Agent 文件。
 
@@ -225,7 +226,10 @@ run() 主循环（0.25s 间隔）
 | `list_entities` | ACTION / ALL | `entity_type?`（location/institution/organization） |
 | `query_entity` | ACTION / ALL | `entity_id` |
 | `update_entity_status` | ACTION / ALL | `entity_id, new_status` |
-| `update_inventory` | ACTION / ALL | `entity_id, resource_name, quantity_delta, reason?` |
+| `update_inventory` | ALL（兼容） | `entity_id, resource_name, quantity_delta, reason?` |
+| `produce_resource` | ACTION / ALL | `entity_id, resource_name, quantity, reason?` |
+| `consume_resource` | ACTION / ALL | `entity_id, resource_name, quantity, reason?` |
+| `transfer_anchored_value` | ACTION / ALL | `from_entity_id, to_entity_id, from_resource, to_resource, base_value, reason?` |
 | `add_ongoing_event` | ACTION / ALL | `entity_id, description, duration_days, expected_result, event_type?` |
 | `modify_ongoing_event` | ACTION / ALL | `event_id, description?, duration_days?, expected_result?` |
 | `delete_ongoing_event` | ACTION / ALL | `event_id` |
@@ -235,7 +239,7 @@ run() 主循环（0.25s 间隔）
 | `execute_policy` | ROUTER / ALL | `policy, location, executor?, from_agent?` |
 | `relay_decree` | ROUTER / ALL | `decree, targets, urgency?` |
 | `submit_action` | AGENT / ALL | `action, content, original_intent, is_distorting, urgency?, metadata?` |
-| `request_action` | AGENT / ALL | `action_type, target_location, description, resources?` |
+| `request_action` | AGENT / ALL | `action_type, target_location, description, resources?, causal_event_type?` |
 
 > **注意**：`query_inventory` 已合并进 `query_entity`（一次性返回实体状态 + 库存 + 正在进行的事件）。
 
@@ -257,6 +261,7 @@ run() 主循环（0.25s 间隔）
 | 组 | Handler | 异步 |
 |----|---------|------|
 | 世界状态 | `handle_list_entities / handle_query_entity / handle_update_entity_status / handle_update_inventory` | 否 |
+| 类型化经济动作 | `handle_produce_resource / handle_consume_resource / handle_transfer_anchored_value` | 否 |
 | 正在进行的事件 | `handle_add_ongoing_event / handle_modify_ongoing_event / handle_delete_ongoing_event` | 否 |
 | 行动完成 | `handle_complete_action` | 否 |
 | Agent 列表 | `handle_list_agents` | 否 |
@@ -273,6 +278,17 @@ run() 主循环（0.25s 间隔）
 | `_resolve_entity_id(world_state, entity_id)` | 模糊实体 ID 匹配（精确匹配 → search_entities 的 id/name/description LIKE 搜索） |
 
 **扩展规则**：新增工具只需写一个 handler 函数，加入 `FC_HANDLERS` 字典即可。
+
+### 3.5.1 action_causal_bridge.py — 行动结果因果桥接
+
+**作用**：把完成的 `ActionResult` 转换为确定性、脱敏且有界的 `CausalEvent`，供 DLC 因果规则继续派生世界事件。该桥接严格采用显式 opt-in：只有原始 `request_action` 提供合法 `causal_event_type` 时，`Orchestrator._run_action()` 才会发布事件；未提供时保持历史行为。
+
+**不变量**：
+
+- 事件 ID 由 chain/source/intent/action 等稳定字段生成，同一行动重放得到同一 ID；
+- payload 只保留行动类型、执行者、目标、成功状态、耗时、经济变化数量、经济操作类别和净基础价值变化；
+- 不复制 Prompt、Function Calling 参数、`fc_trace`、完整 `changes_made`、结果叙事正文、API 配置或凭据；
+- 非法事件类型被拒绝，不允许通过通配或自动发布扩大既有 DLC 因果链。
 
 ---
 
@@ -323,13 +339,14 @@ BaseAgent (抽象基类)
 
 **作用**：全工具注入的调试对话 Agent，独立于 Orchestrator 主循环。
 
-**工具集**（四类，共 14 个）：
+**工具集**（五类，共 18 个）：
 | 类别 | 工具 |
 |------|------|
 | 世界状态 | `list_entities / query_entity / update_entity_status / update_inventory / add_ongoing_event / modify_ongoing_event / delete_ongoing_event` |
+| 类型化经济动作 | `produce_resource / consume_resource / transfer_anchored_value` |
 | 行动完成 | `complete_action` |
 | Agent 调度 | `list_agents / wake_agent / execute_policy / relay_decree` |
-| Agent 行为 | `submit_action / request_action` |
+| Agent 行为 | `submit_action / request_action / finish_turn` |
 
 **重要方法**：
 | 方法 | 作用 |
@@ -1797,3 +1814,97 @@ A successful `dry_run_causal_rules()` response includes a secret-free `agentera-
 - Prompt contract suite: **100%**.
 - Deterministic trajectory replay: **100%**.
 - Python compile and Git diff checks passed.
+
+## Release architecture note: typed Agent economy and causal replay scenarios (v0.19.0)
+
+### 类型化经济命令边界
+
+`multiagent_framework/fc_tools.py` 和 `fc_handlers.py` 为 ActionAgent 提供 `produce_resource`、`consume_resource`、`transfer_anchored_value`。输入数量必须是有限正数且资源必须由当前 DLC 声明为 `kind == asset`。消费不会把不足余额静默 clamp 为零；转移把统一 `base_value` 换算成借方与贷方数量，并通过 `WorldState.execute_batch(..., atomic=True)` 保证跨实体写入全成或全退。稳定 command ID、transfer ID 和 tool-call receipt 使重启重放不会重复改库存、追加 ledger 或重复记录 `changes_made`。
+
+旧 `update_inventory` 仍在 `ALL_TOOLS` 中，保证 Tianji、调试 API 和历史调用方兼容；它从 `ACTION_AGENT_TOOLS` 移除，防止行动模型通过任意正负 delta 伪造跨实体转移。生产/消费分别记录基础价值发行/销毁，转移批次保持净基础价值为零。
+
+### ActionResult 因果桥接
+
+`multiagent_framework/action_causal_bridge.py` 是 ActionAgent 与 `CausalEventEngine` 之间的显式边界。`request_action.causal_event_type` 缺省时不发布事件；提供合法值时，Orchestrator 在行动完成后发布稳定 ID 的有界摘要。该设计避免自动把所有行动变成因果源导致循环、重复或通配规则意外触发，同时支持 DLC 明确编排行动后的市场、损耗、审计、补给等分支。
+
+### 确定性长场景
+
+`tests/integration/test_agent_economic_replay_scenario.py` 使用真实多轮 ActionAgent 工具轨迹验证生产、跨锚值转移、消费、两个并行因果分支、零延迟下游、ongoing event 到期、SQLite 重启、`CausalEventEngine.snapshot()/restore()` 和完整行动重放。最终断言基础价值 `112 = 120 issued - 8 destroyed`，两个转移批次、四条转移 ledger 的净基础价值为零。Replay Fixture 还区分规则图漂移与种子库存/执行结果漂移。
+
+### Release verification
+
+- Release identity: `0.19.0` across `VERSION`, backend version module, frontend package/lockfile, FastAPI metadata, and README.
+- Python: **464 passed**.
+- Frontend: **16 passed**; ESLint and Vite production build passed.
+- Prompt contracts: **100%**.
+- Deterministic trajectory replay: **100%**.
+- Python compile and Git diff checks passed.
+
+长期产品 Goal 继续保持 active；下一阶段聚焦更长经济 soak/并发压力、运输中 escrow 语义、DLC Studio 的 Action 因果事件编排、多轮记忆检索/压缩评测和凭证化真实模型/经济基线。
+
+## Release architecture note: DLC player identity gameplay contract (v0.20.0)
+
+### Canonical contract
+
+`multiagent_framework/gameplay_contract.py` is the theme-neutral source of truth for player identity:
+
+- `GameplayContract` owns `package_id`, `package_name`, `source`, and an optional `PlayerIdentity`.
+- `PlayerIdentity` owns stable `identity_id`, UI-facing `display_name`, optional `actor_id`, and ordered `controlled_objects`.
+- A controlled object has `kind = entity | agent` and `mode = direct | command`.
+- `direct` Agent IDs are player endpoints and are excluded from autonomous LLM Agent construction. `command` Agent IDs retain their autonomous runtime and are only marked as commandable.
+- An explicit `gameplay.player` document has authority over legacy Agent roles. If the document is absent, the loader derives a compatibility contract from `agents[].role == "player"`.
+
+### Registry and package ownership
+
+`DLCRegistry._normalize_content()` preserves `gameplay` as an optional object in the backward-compatible content schema. Registry validation checks required identity/display fields, allowed kind/mode values, entity and Agent references, duplicate control objects, and the requirement for at least one controlled object.
+
+Only the active primary DLC contributes the runtime player contract. Secondary packages may carry authoring metadata, but cannot replace the current player identity. This keeps package composition deterministic and prevents ambiguous ownership.
+
+### Generation-safe runtime lifecycle
+
+`DLCBundleLoader` materializes the contract before world activation and stores it in the atomic runtime snapshot. The same contract is included in generation blueprints, reload previews, committed generations, rollback restoration, snapshot clones, load reports, and public runtime state. A gameplay change is therefore published with the same generation boundary as officials, autonomous Agents, Prompt registries, model bindings, and time rules.
+
+Old generation archives remain readable. When an archive has no gameplay payload, restoration derives the legacy contract from archived officials. Rollback never decrements the generation number; it restores the selected historical contract as a newly activated generation.
+
+### Orchestration and API consumption
+
+`Orchestrator.configure_gameplay_contract()` atomically installs the contract and its generation. Player-recipient wake-up routing calls `GameplayContract.is_player_recipient()` whenever a configured contract exists. Legacy `official.role == "player"` fallback remains only for lightweight callers without a configured DLC runtime.
+
+`GET /api/gameplay` returns the stable public contract plus its active generation. The React shell loads this endpoint and uses `package_name`, `player.display_name`, and controlled-object counts for title and view labels, removing the previous hard dependency on “大明/皇帝” terminology. The endpoint exposes no Prompt, memory, provider, model, credential, or private generation archive content.
+
+### Compatibility example and remaining scope
+
+`dlcs/example_frontier` now provides an explicit station-commander contract and intentionally gives its directly controlled Agent the role `operator`. This verifies that the gameplay contract, not a historical theme-specific role string, drives runtime behavior. `daming_court` continues to work through legacy inference until its content is migrated explicitly.
+
+This release completes the first P0 gameplay-framework slice only. Generic action catalogs, issue/objective contracts, player permissions, richer actor semantics, save selection UX, and a complete DLC-provided UI manifest remain active goal work.
+
+Release identity is `0.20.0` across `VERSION`, the backend version module, frontend package/lockfile, FastAPI metadata through the shared version module, and README. Release verification completed with **472 Python tests**, **16 frontend tests**, compile/lint/build, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+
+## Phase checkpoint: DLC-authored generic action contracts (v0.21.0, 2026-07-13)
+
+### Runtime contract
+
+- `multiagent_framework/action_contract.py` defines `ActionDefinition`, `ActionParameter`, `ActionInvocation`, and the generation-published `ActionCatalog`.
+- Authorization is derived from the active `GameplayContract`: actor impersonation, control kind/mode/id violations, uncontrolled targets, unknown entities, and unknown Agents are rejected before execution.
+- Preconditions support anchored inventory, metrics, parameters, and entity status. Costs are authored in `base_value` and converted through the authoritative resource `anchor_rate`.
+- Duration is always produced by `TimeSimulator.estimate()`. Cooldowns support action, control, target, and control-target scopes.
+- Results support transactional world commands, ongoing events, Agent wakeups, emitted events, and nested composites. Cost commands and result commands are committed by one atomic `WorldCommandBus.execute_batch` call.
+- `invocation_id` receipts provide deterministic replay and conflict detection. `ActionCatalog` serializes preview/execute state transitions so concurrent duplicate invocations cannot double-charge inventory.
+
+### DLC and Generation lifecycle
+
+- `DLCRegistry` normalizes and validates the additive `actions` content array, including resource/entity/Agent references and gameplay permission references.
+- `DLCBundleLoader` aggregates active action definitions, rejects cross-package duplicate action IDs, archives them in generation blueprints, and republishes GameplayContract before ActionCatalog on load, reload, and rollback.
+- Action cooldowns and receipts are persisted in automatic runtime state and manual saves. Reconfiguration changes definitions/generation without erasing committed execution state.
+
+### API and Studio
+
+- `GET /api/actions`, `POST /api/actions/{action_id}/preview`, and `POST /api/actions/{action_id}/execute` expose a theme-neutral contract. Generation, invocation, cooldown, and world-command conflicts use structured HTTP errors.
+- DLC Studio includes an Actions tab and preserves actions through import/export, keyed diff, undo/redo, and migration/history operations. Complex action subdocuments remain JSON-authored so new result/precondition modes can be added without rebuilding the form shell.
+- `dlcs/example_frontier/content.json` provides `frontier_patrol`, demonstrating controlled-entity authorization, anchored cost conversion, authoritative time, cooldown, transactional effects, ongoing events, Agent wakeup, and event emission.
+
+### Persistence and verification
+
+- Runtime and manual saves include `action_runtime`; manual save/load also preserves random and causal runtime snapshots.
+- Focused verification covers schema/default/range validation, permissions, targets, preconditions, anchored conversion, atomic rollback, authoritative duration, cooldown, generation conflict, concurrent idempotency, side effects, snapshot/restore, API mapping, Registry references, and Generation archive rollback.

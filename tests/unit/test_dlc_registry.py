@@ -606,3 +606,115 @@ def test_causal_authoring_templates_validate_expanded_references(registry: DLCRe
     issue = next(item for item in issues if item.code == "causal_authoring.invalid")
     assert issue.message == "causal_rule_template_missing"
     assert issue.path == "causal_event_rules[0].template_id"
+
+
+def test_explicit_gameplay_player_contract_validates_theme_neutral_references(registry: DLCRegistry):
+    registry.create(manifest("orbital_station"))
+    content = valid_content(entity_id="orbital_station", agent_id="operations_ai")
+    content["agents"][0]["role"] = "autonomous"
+    content["gameplay"] = {
+        "player": {
+            "identity_id": "station_commander",
+            "display_name": "Station Commander",
+            "actor_id": "commander_actor",
+            "controlled_objects": [
+                {"kind": "entity", "id": "orbital_station", "mode": "direct"},
+                {"kind": "agent", "id": "operations_ai", "mode": "command"},
+            ],
+        }
+    }
+    registry.save_content("orbital_station", content)
+
+    assert not registry.validate("orbital_station")
+    loaded = registry.load_content("orbital_station")
+    assert loaded["gameplay"]["player"]["identity_id"] == "station_commander"
+
+
+def test_gameplay_contract_reports_invalid_modes_duplicates_and_references(registry: DLCRegistry):
+    registry.create(manifest("broken_gameplay"))
+    content = valid_content()
+    content["gameplay"] = {
+        "player": {
+            "identity_id": "operator",
+            "display_name": "Operator",
+            "controlled_objects": [
+                {"kind": "agent", "id": "missing", "mode": "pilot"},
+                {"kind": "agent", "id": "missing", "mode": "direct"},
+                {"kind": "entity", "id": "missing_place", "mode": "direct"},
+            ],
+        }
+    }
+    registry.save_content("broken_gameplay", content)
+
+    codes = {issue.code for issue in registry.validate("broken_gameplay")}
+    assert "gameplay.control.invalid_mode" in codes
+    assert "gameplay.control.duplicate" in codes
+    assert "gameplay.control.missing_agent" in codes
+    assert "gameplay.control.missing_entity" in codes
+
+
+
+def test_action_validation_reports_cross_reference_and_permission_errors(registry: DLCRegistry):
+    registry.create(manifest("broken_actions"))
+    content = valid_content()
+    content["gameplay"] = {
+        "player": {
+            "identity_id": "operator",
+            "actor_id": "player_actor",
+            "controlled_objects": [
+                {"kind": "entity", "id": "place", "mode": "direct"}
+            ],
+        }
+    }
+    content["actions"] = [
+        {
+            "action_id": "broken_action",
+            "display_name": "Broken Action",
+            "target": {
+                "kind": "entity",
+                "required": True,
+                "allowed_ids": ["missing_target"],
+            },
+            "permissions": {
+                "control_modes": ["direct"],
+                "control_kinds": ["entity"],
+                "control_ids": ["missing_control"],
+                "actor_ids": ["wrong_actor"],
+            },
+            "preconditions": [
+                {
+                    "kind": "metric",
+                    "entity_id": "missing_entity",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                }
+            ],
+            "costs": [
+                {
+                    "entity_id": "missing_entity",
+                    "resource_name": "morale",
+                    "base_value": 1,
+                }
+            ],
+            "duration": {"action_type": "broken_action"},
+            "result": {
+                "mode": "wake_agent",
+                "agent_id": "missing_agent",
+                "payload": {},
+            },
+        }
+    ]
+    registry.save_content("broken_actions", content)
+
+    codes = {issue.code for issue in registry.validate("broken_actions")}
+    assert {
+        "action.target.unknown_id",
+        "action.permissions.unknown_control",
+        "action.permissions.unknown_actor",
+        "action.precondition.resource_kind",
+        "action.precondition.unknown_entity",
+        "action.cost.resource_kind",
+        "action.cost.unknown_entity",
+        "action.result.unknown_agent",
+    } <= codes

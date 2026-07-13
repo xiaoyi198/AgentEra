@@ -178,10 +178,10 @@ async def _run_mock_world_scenario(tmp_path) -> None:
         LLMResponse(tool_calls=[_tool_call("action-query", "query_entity", {
             "entity_id": TARGET_LOCATION,
         })], input_tokens=18, output_tokens=4),
-        LLMResponse(tool_calls=[_tool_call("action-spend", "update_inventory", {
+        LLMResponse(tool_calls=[_tool_call("action-spend", "consume_resource", {
             "entity_id": OFFICIAL_ID,
             "resource_name": GRAIN,
-            "quantity_delta": -20,
+            "quantity": 20,
             "reason": "Dispatch relief grain",
         })], input_tokens=18, output_tokens=4),
         LLMResponse(tool_calls=[_tool_call("action-event", "add_ongoing_event", {

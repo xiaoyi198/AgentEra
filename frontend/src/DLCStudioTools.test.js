@@ -38,6 +38,7 @@ const base = {
   causal_rule_templates: [],
   causal_event_rules: [],
   time_rules: [],
+  actions: [],
   personas: {},
   prompts: {},
 }
@@ -385,4 +386,57 @@ test('causal replay fixtures normalize deterministic inputs and reject unsafe ev
   assert.throws(() => normalizeCausalReplayFixture({ ...fixture, expected: { ...fixture.expected, result_digest: 'bad' } }), /digest/)
   assert.throws(() => normalizeCausalReplayFixture({ ...fixture, input: { ...fixture.input, source_event: { ...fixture.input.source_event, generated_at: -1 } } }), /generated_at/)
   assert.throws(() => normalizeCausalReplayFixture({ ...fixture, input: { ...fixture.input, source_event: { ...fixture.input.source_event, target_agents: [''] } } }), /target agents/)
+})
+
+
+
+test('import normalization fills missing actions with an empty array', () => {
+  const source = { ...base }
+  delete source.actions
+  const normalized = normalizeImportedContent(source)
+  assert.deepEqual(normalized.actions, [])
+  assert.throws(() => normalizeImportedContent({ ...base, actions: {} }), /actions must be an array/)
+})
+
+
+test('action diff is keyed by action_id', () => {
+  const before = {
+    ...base,
+    actions: [{ action_id: 'patrol', display_name: 'Patrol', costs: [] }],
+  }
+  const after = {
+    ...base,
+    actions: [
+      { action_id: 'patrol', display_name: 'Patrol Updated', costs: [] },
+      { action_id: 'trade', display_name: 'Trade', costs: [] },
+    ],
+  }
+  const diff = summarizeContentDiff(before, after)
+  assert.deepEqual(
+    diff.entries.filter(item => item.section === 'actions'),
+    [
+      { section: 'actions', key: 'patrol', type: 'changed' },
+      { section: 'actions', key: 'trade', type: 'added' },
+    ],
+  )
+})
+
+
+test('action import export preserves complex contract fields', () => {
+  const action = {
+    action_id: 'patrol',
+    display_name: 'Patrol',
+    parameters: [{ name: 'gain', type: 'number', default: 5 }],
+    target: { kind: 'entity', required: true, allowed_ids: ['station'] },
+    permissions: { control_modes: ['direct'], control_kinds: ['entity'] },
+    preconditions: [{ kind: 'metric', entity_id: '$target', name: 'alert', operator: 'lte', value: 80 }],
+    costs: [{ entity_id: '$control', resource_name: 'credits', base_value: 10 }],
+    duration: { action_type: 'patrol', proposed_days: 1 },
+    cooldown: { days: 3, scope: 'control_target' },
+    result: { mode: 'wake_agent', agent_id: 'guard', payload: { target: '$target' } },
+  }
+  const exported = createContentExport({ id: 'demo', name: 'Demo', version: '1.0.0' }, { ...base, actions: [action] })
+  const imported = normalizeImportedContent(exported)
+  assert.deepEqual(imported.actions, [action])
+  assert.notEqual(imported.actions[0], action)
 })

@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.18.0**
+> 当前版本：**v0.21.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -12,8 +12,12 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
+- **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
+- **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则和通用行动。
+- **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
+- **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
@@ -91,6 +95,89 @@ npm run dev -- --host
 - DLC Studio：`http://localhost:3000/dlc.html`
 - 天玑调试界面：`http://localhost:3000/tianji.html`
 - 后端 OpenAPI：`http://localhost:8000/docs`
+
+## DLC 玩法契约 (v0.20.0)
+
+主 DLC 可在 `content.json` 中声明题材无关的玩家身份和控制对象：
+
+```json
+{
+  "gameplay": {
+    "player": {
+      "identity_id": "station_commander",
+      "display_name": "Station Commander",
+      "actor_id": "commander_actor",
+      "controlled_objects": [
+        {"kind": "entity", "id": "orbital_station", "mode": "direct"},
+        {"kind": "agent", "id": "operations_ai", "mode": "direct"},
+        {"kind": "agent", "id": "science_ai", "mode": "command"}
+      ]
+    }
+  }
+}
+```
+
+- `kind` 支持 `entity` 与 `agent`；`mode` 支持 `direct` 与 `command`。
+- `direct` Agent 是玩家直接接收端，不创建自主 LLM Agent；`command` Agent 仍自主运行，但属于玩家可命令对象。
+- 只有 primary DLC 提供当前运行时玩家契约，避免多个内容包争夺玩家身份。
+- 显式 `gameplay.player` 优先于旧 `agents[].role == "player"`；未配置时继续从旧角色自动推导，兼容现有“大明朝廷”内容。
+- `GET /api/gameplay` 返回稳定的题材无关契约。主界面标题、玩家身份、控制对象数量和视角按钮使用该接口，不再依赖“皇帝”等硬编码。
+- GameplayContract 与 DLC Generation 一起归档、热重载和回滚，旧归档缺失字段时也会使用兼容推导。
+
+## DLC 通用行动契约 (v0.21.0)
+
+DLC 的 `content.json` 可新增 `actions` 数组。框架负责解释并执行规则，DLC 负责行动名称、参数、成本、条件和结果内容：
+
+```json
+{
+  "actions": [
+    {
+      "action_id": "frontier_patrol",
+      "display_name": "组织边境巡逻",
+      "parameters": [
+        {"name": "alert_gain", "type": "number", "default": 8, "minimum": 1, "maximum": 20}
+      ],
+      "target": {"kind": "entity", "required": true, "controlled_only": true},
+      "permissions": {
+        "control_modes": ["direct"],
+        "control_kinds": ["entity"],
+        "control_ids": ["边境哨站"]
+      },
+      "preconditions": [
+        {"kind": "anchored_inventory", "entity_id": "$control", "name": "边境银券", "operator": "gte", "base_value": 10}
+      ],
+      "costs": [
+        {"entity_id": "$control", "resource_name": "边境银券", "base_value": 10}
+      ],
+      "duration": {"action_type": "frontier_patrol", "proposed_days": 1},
+      "cooldown": {"days": 3, "scope": "control_target"},
+      "result": {
+        "mode": "wake_agent",
+        "agent_id": "哨站守备官",
+        "payload": {"target_id": "$target"}
+      }
+    }
+  ]
+}
+```
+
+运行时约束：
+
+- 参数支持 `string`、`integer`、`number`、`boolean`，并支持 required/default/enum/minimum/maximum。
+- 目标支持 `none`、`entity`、`agent`；权限从同一 Generation 的 `GameplayContract.controlled_objects` 校验，拒绝 actor 冒用。
+- 成本统一用 `base_value` 声明，再按资源目录中的 `anchor_rate` 换算实际库存数量；成本与世界效果在同一原子批次提交。
+- 耗时由 `TimeSimulator` 决定，LLM 或客户端只能提供有界输入提示，不能直接指定权威完成时间。
+- 结果支持 `world_commands`、`ongoing_event`、`wake_agent`、`emit_event` 和 `composite`。
+- `invocation_id` 是执行幂等键；相同请求可安全回放，不同请求复用同一 ID 会返回冲突。`expected_generation` 用于拒绝过期界面提交。
+- 冷却、执行 receipt 与行动定义一起支持存档恢复；热重载和 Generation 回滚不会清空已经承诺的冷却或回执。
+
+通用 API：
+
+- `GET /api/actions`：读取当前 Generation 的行动目录。
+- `POST /api/actions/{action_id}/preview`：无副作用预览权限、条件、成本、耗时、冷却、命令和副作用。
+- `POST /api/actions/{action_id}/execute`：按原子世界命令执行行动并记录幂等 receipt。
+
+`example_frontier` 包含可执行的 `frontier_patrol` 示例，DLC Studio 的“行动”页签可编辑基础字段以及参数、目标、权限、条件、成本、耗时、冷却和结果 JSON。
 
 ## 经济监控
 
@@ -189,3 +276,17 @@ The DLC Studio causal-rule preview now includes a resolved edge inspector rather
 Every deterministic Dry Run returns an `agentera-causal-replay-v1` fixture containing only the source event, bounded replay controls, analysis fingerprint, result digest, and summary baseline. The digest covers the resolved analysis summary, simulated nodes, event edges, pending work, and Dry Run summary; it deliberately excludes the fixture itself, full DLC content, Prompt text, API keys, and model configuration.
 
 `POST /api/dlcs/{dlc_id}/causal-events/replay` compares an imported baseline with the current content or an unsaved Studio draft. It distinguishes resolved-rule drift (`analysis_fingerprint`) from seed-fact or execution drift (`result_digest` and summary fields). Import and replay do not save the fixture, write DLC files, reload a generation, or mutate live world state. Release `0.18.0` is verified with **451 Python tests**, **16 frontend tests**, frontend lint/build, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.
+
+## Agent 经济重放场景 (v0.19.0)
+
+ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`consume_resource` 和 `transfer_anchored_value`。生产与消费只接受 DLC 资源目录中的资产资源；跨实体、跨资源调拨统一填写 `base_value`，运行时按双方 `anchor_rate` 换算借贷数量，并通过原子批次确保余额不足时整批回滚。旧 `update_inventory` 继续保留在全量工具集中以兼容 Tianji、调试接口和旧调用方，但不再暴露给 ActionAgent。
+
+`request_action` 新增可选 `causal_event_type`。只有调用方显式提供合法事件类型时，Orchestrator 才会通过 `action_causal_bridge.py` 发布确定性、脱敏的行动结果摘要；默认行为不会自动扩展因果链。摘要只包含行动类型、执行者、目标、成功状态、耗时和经济变化聚合，不包含 Prompt、FC 参数、完整轨迹、叙事正文或凭据。
+
+新的确定性长场景覆盖三轮 ActionAgent 工具调用、生产/消费、跨锚值守恒转移、多个因果分支、零延迟下游、ongoing event 到期、SQLite 与因果快照重启恢复、命令重放幂等，以及 Replay Fixture 对规则漂移和种子/执行漂移的分类。Release `0.19.0` 通过 **464 个 Python 测试**、**16 个前端测试**、Python 编译、前端 lint/build、Prompt contracts **100%**、确定性 trajectory replay **100%** 和 Git diff 检查。
+
+## DLC player identity gameplay contract (v0.20.0)
+
+Release `0.20.0` introduces a theme-neutral `GameplayContract` for the primary DLC. It validates player identity and controlled entity/Agent references, distinguishes direct control from command authority, excludes directly controlled Agents from autonomous LLM construction, and lets explicit gameplay metadata override legacy `role=player` markers. The contract is carried through initial load, generation snapshots, encrypted archive blueprints, hot reload, rollback, Orchestrator player-recipient routing, and `GET /api/gameplay`.
+
+The bundled frontier example now declares a non-imperial station-commander contract while keeping its player-like Agent role set to `operator`, proving that runtime behavior no longer depends on a theme-specific role string. The React shell consumes the public contract for package title, identity, control count, and view labels. This is the first P0 gameplay-framework slice; generic actions, issues/objectives, permissions, and a complete DLC UI manifest remain future work. Release `0.20.0` is verified with **472 Python tests**, **16 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Git diff checks.
