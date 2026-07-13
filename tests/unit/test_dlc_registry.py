@@ -651,3 +651,70 @@ def test_gameplay_contract_reports_invalid_modes_duplicates_and_references(regis
     assert "gameplay.control.duplicate" in codes
     assert "gameplay.control.missing_agent" in codes
     assert "gameplay.control.missing_entity" in codes
+
+
+
+def test_action_validation_reports_cross_reference_and_permission_errors(registry: DLCRegistry):
+    registry.create(manifest("broken_actions"))
+    content = valid_content()
+    content["gameplay"] = {
+        "player": {
+            "identity_id": "operator",
+            "actor_id": "player_actor",
+            "controlled_objects": [
+                {"kind": "entity", "id": "place", "mode": "direct"}
+            ],
+        }
+    }
+    content["actions"] = [
+        {
+            "action_id": "broken_action",
+            "display_name": "Broken Action",
+            "target": {
+                "kind": "entity",
+                "required": True,
+                "allowed_ids": ["missing_target"],
+            },
+            "permissions": {
+                "control_modes": ["direct"],
+                "control_kinds": ["entity"],
+                "control_ids": ["missing_control"],
+                "actor_ids": ["wrong_actor"],
+            },
+            "preconditions": [
+                {
+                    "kind": "metric",
+                    "entity_id": "missing_entity",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                }
+            ],
+            "costs": [
+                {
+                    "entity_id": "missing_entity",
+                    "resource_name": "morale",
+                    "base_value": 1,
+                }
+            ],
+            "duration": {"action_type": "broken_action"},
+            "result": {
+                "mode": "wake_agent",
+                "agent_id": "missing_agent",
+                "payload": {},
+            },
+        }
+    ]
+    registry.save_content("broken_actions", content)
+
+    codes = {issue.code for issue in registry.validate("broken_actions")}
+    assert {
+        "action.target.unknown_id",
+        "action.permissions.unknown_control",
+        "action.permissions.unknown_actor",
+        "action.precondition.resource_kind",
+        "action.precondition.unknown_entity",
+        "action.cost.resource_kind",
+        "action.cost.unknown_entity",
+        "action.result.unknown_agent",
+    } <= codes

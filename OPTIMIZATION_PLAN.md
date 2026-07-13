@@ -1342,3 +1342,17 @@ Next priorities:
 5. Continue multi-turn memory retrieval/compression evaluation, task-aware model selection, economic stress/retry tests, and credentialed promotion/rollback rehearsal.
 
 The persistent product goal remains active. This checkpoint establishes who the player is and what the player controls, but does not yet complete the generic action, objective, permission, or UI-manifest layers required for a fully DLC-driven game framework.
+
+
+## Phase checkpoint: DLC generic action definitions (v0.21.0, 2026-07-13)
+
+P0.2 of the DLC-driven gameplay framework is complete:
+
+- added a generic action schema covering parameters, target selection, player-control authorization, preconditions, anchored-value costs, authoritative time, cooldown, and composite results;
+- reused deterministic causal world-effect materialization and committed costs/results in one atomic WorldCommand batch;
+- added Generation-bound catalog publication, cross-DLC duplicate detection, encrypted archive restore, runtime/manual-save persistence, and concurrent invocation idempotency;
+- added stable catalog/preview/execute APIs and a DLC Studio Actions editor with import/export, keyed diff, and history support;
+- added a runnable `frontier_patrol` example independent of the Daming theme;
+- added focused backend and frontend regression coverage, including atomic rollback and concurrent duplicate execution.
+
+Next gameplay priority is P0.3: a generic `Issue / Case / DecisionRequest` lifecycle that can offer DLC-authored actions without relying on memorial-specific framework concepts. The long-term gameplay goal remains active.

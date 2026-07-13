@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.20.0**
+> 当前版本：**v0.21.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,8 +15,9 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则和通用行动。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
+- **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
@@ -122,6 +123,61 @@ npm run dev -- --host
 - 显式 `gameplay.player` 优先于旧 `agents[].role == "player"`；未配置时继续从旧角色自动推导，兼容现有“大明朝廷”内容。
 - `GET /api/gameplay` 返回稳定的题材无关契约。主界面标题、玩家身份、控制对象数量和视角按钮使用该接口，不再依赖“皇帝”等硬编码。
 - GameplayContract 与 DLC Generation 一起归档、热重载和回滚，旧归档缺失字段时也会使用兼容推导。
+
+## DLC 通用行动契约 (v0.21.0)
+
+DLC 的 `content.json` 可新增 `actions` 数组。框架负责解释并执行规则，DLC 负责行动名称、参数、成本、条件和结果内容：
+
+```json
+{
+  "actions": [
+    {
+      "action_id": "frontier_patrol",
+      "display_name": "组织边境巡逻",
+      "parameters": [
+        {"name": "alert_gain", "type": "number", "default": 8, "minimum": 1, "maximum": 20}
+      ],
+      "target": {"kind": "entity", "required": true, "controlled_only": true},
+      "permissions": {
+        "control_modes": ["direct"],
+        "control_kinds": ["entity"],
+        "control_ids": ["边境哨站"]
+      },
+      "preconditions": [
+        {"kind": "anchored_inventory", "entity_id": "$control", "name": "边境银券", "operator": "gte", "base_value": 10}
+      ],
+      "costs": [
+        {"entity_id": "$control", "resource_name": "边境银券", "base_value": 10}
+      ],
+      "duration": {"action_type": "frontier_patrol", "proposed_days": 1},
+      "cooldown": {"days": 3, "scope": "control_target"},
+      "result": {
+        "mode": "wake_agent",
+        "agent_id": "哨站守备官",
+        "payload": {"target_id": "$target"}
+      }
+    }
+  ]
+}
+```
+
+运行时约束：
+
+- 参数支持 `string`、`integer`、`number`、`boolean`，并支持 required/default/enum/minimum/maximum。
+- 目标支持 `none`、`entity`、`agent`；权限从同一 Generation 的 `GameplayContract.controlled_objects` 校验，拒绝 actor 冒用。
+- 成本统一用 `base_value` 声明，再按资源目录中的 `anchor_rate` 换算实际库存数量；成本与世界效果在同一原子批次提交。
+- 耗时由 `TimeSimulator` 决定，LLM 或客户端只能提供有界输入提示，不能直接指定权威完成时间。
+- 结果支持 `world_commands`、`ongoing_event`、`wake_agent`、`emit_event` 和 `composite`。
+- `invocation_id` 是执行幂等键；相同请求可安全回放，不同请求复用同一 ID 会返回冲突。`expected_generation` 用于拒绝过期界面提交。
+- 冷却、执行 receipt 与行动定义一起支持存档恢复；热重载和 Generation 回滚不会清空已经承诺的冷却或回执。
+
+通用 API：
+
+- `GET /api/actions`：读取当前 Generation 的行动目录。
+- `POST /api/actions/{action_id}/preview`：无副作用预览权限、条件、成本、耗时、冷却、命令和副作用。
+- `POST /api/actions/{action_id}/execute`：按原子世界命令执行行动并记录幂等 receipt。
+
+`example_frontier` 包含可执行的 `frontier_patrol` 示例，DLC Studio 的“行动”页签可编辑基础字段以及参数、目标、权限、条件、成本、耗时、冷却和结果 JSON。
 
 ## 经济监控
 

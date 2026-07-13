@@ -21,7 +21,8 @@ from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEvent
 from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
-from .gameplay_contract import normalize_gameplay_document, validate_gameplay_document
+from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
+from .action_contract import normalize_action_document, validate_action_definitions
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -389,7 +390,7 @@ class DLCRegistry:
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
             "agents", "initial_events", "ongoing_events", "random_events",
-            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -402,6 +403,7 @@ class DLCRegistry:
             normalized["gameplay"] = normalize_gameplay_document(
                 normalized.get("gameplay", {})
             )
+            normalized["actions"] = normalize_action_document(normalized.get("actions", []))
         except TypeError as exc:
             raise DLCRegistryError(str(exc)) from exc
         return normalized
@@ -647,6 +649,17 @@ class DLCRegistry:
             content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
         ):
             add(gameplay_issue.code, gameplay_issue.message, gameplay_issue.path)
+        gameplay_contract = GameplayContract.from_content(
+            content["gameplay"], agents, package_id=manifest.id,
+            package_name=manifest.name, derive_legacy=True,
+        )
+        action_resources = {str(item.get("name", "")): item for item in RESOURCE_TOKENS}
+        action_resources.update(resource_map)
+        for action_issue in validate_action_definitions(
+            content["actions"], entity_ids=entity_ids, agent_ids=agent_ids,
+            resources=action_resources, gameplay=gameplay_contract,
+        ):
+            add(action_issue.code, action_issue.message, action_issue.path)
 
         agent_bindings = bindings.get("agents", {}) if isinstance(bindings.get("agents", {}), dict) else {}
         for bound_agent in agent_bindings:

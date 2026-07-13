@@ -2267,7 +2267,7 @@ Authoring rules:
 
 - `agent/direct`: the record remains available as an official/actor node and can receive player-targeted output, but `AgentFactory` must not create an autonomous LLM Agent for it.
 - `agent/command`: the Agent remains autonomous and may also be addressed through future player-command workflows.
-- `entity/direct`: declares a directly controlled world entity. v0.20.0 exposes the declaration but does not yet implement a generic permission/action system for every entity kind.
+- `entity/direct`: declares a directly controlled world entity. v0.20.0 exposed the declaration; v0.21.0 uses it as an authorization principal for DLC-authored generic actions.
 
 Never use `role == "player"` to reinterpret an Agent when an explicit gameplay contract exists. `AgentFactory.create(..., legacy_role_player=False)` is required in both initial package load and active-generation materialization for explicit contracts.
 
@@ -2318,3 +2318,64 @@ git -c safe.directory='F:/世界模拟器' diff --check
 The focused gameplay/Registry/Runtime suite for v0.20.0 contains 68 tests. Also inspect the real bundled packages: `daming_court` must produce a valid `legacy_role` contract, while `example_frontier` must validate its explicit non-imperial contract without errors.
 
 Verified for `0.20.0`: **472 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.
+
+
+## Generic DLC action development workflow (v0.21.0)
+
+### Files and ownership
+
+- `multiagent_framework/action_contract.py`: action schema parsing, parameter normalization, authorization, preconditions, anchored costs, duration, cooldown, result compilation, idempotency, and snapshots.
+- `multiagent_framework/dlc_registry.py`: authoring-time syntax and cross-reference validation.
+- `multiagent_framework/dlc_runtime.py`: active-package aggregation, duplicate detection, Generation archive/restore, and publication order.
+- `routers/simulation.py`: stable catalog, preview, and execute API.
+- `frontend/src/DLCContentEditors.jsx`: Actions editor; `frontend/src/DLCStudioTools.js`: normalization, import/export, history, and keyed diff.
+
+### Authoring rules
+
+1. Add actions to `content.json.actions`; keep the content schema version at `1.0` because the field is additive and defaults to an empty array.
+2. Use safe, package-stable `action_id` and parameter names. An action ID must be unique across all simultaneously active DLC packages.
+3. Declare `permissions.control_modes`, `control_kinds`, optional `control_ids`, and optional `actor_ids`. These must agree with the active primary DLC GameplayContract.
+4. Declare asset costs in `base_value`, never in client-computed quantity. Runtime reads the resource catalog and calculates `quantity = base_value / anchor_rate`.
+5. Use `$actor`, `$control`, `$target`, `$duration_days`, and `$param.<name>` only in supported template fields. Registry validation rejects malformed or unknown parameter references.
+6. Use `TimeSimulator` rules for authoritative duration. An action's duration object supplies workload/severity/resource/distance inputs but does not bypass the selected rule.
+7. Prefer `composite` when an action must combine world mutations, an ongoing event, an Agent wakeup, and/or a public source event.
+
+### Runtime invariants
+
+- Preview is side-effect free and may omit `invocation_id`; execute requires a non-empty client-generated `invocation_id`.
+- Send `expected_generation` from the catalog response. A stale client receives `action.generation_conflict` instead of executing against a changed action definition.
+- Never charge costs in callbacks. Costs and all world-command results must remain in the single atomic batch. Wake/event callbacks run only after commit and callback failure is reported without pretending the committed world transaction rolled back.
+- Do not clear ActionCatalog receipts or cooldowns during configure/reload. They represent already committed gameplay history.
+- The catalog uses an `RLock`; keep receipt lookup, preview, world commit, cooldown update, and receipt write in the serialized execute path to prevent concurrent duplicate charges.
+- A failed atomic batch must leave both costs and result changes unapplied. Test this with a validly compiled command that violates a reducer constraint at commit time.
+
+### API request
+
+```json
+{
+  "invocation_id": "client-generated-stable-id",
+  "expected_generation": 3,
+  "actor_id": "",
+  "control_object_id": "frontier_station",
+  "target_id": "frontier_station",
+  "parameters": {"alert_gain": 8}
+}
+```
+
+Use `POST /api/actions/{action_id}/preview` before confirmation, then reuse the normalized choices with a fresh invocation ID for `execute`. Treat 409 as a refresh/reconcile path for generation, invocation, cooldown, or world-command conflicts.
+
+### Required verification
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_action_contract.py tests/unit/test_action_api.py
+python -m pytest -q -p no:cacheprovider tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py tests/unit/test_dlc_api.py tests/unit/test_gameplay_contract.py
+python -m compileall -q multiagent_framework routers main.py
+
+Push-Location frontend
+npm test -- --run
+npm run lint
+npm run build
+Pop-Location
+```
+
+Also validate the real `example_frontier` package and execute its action against a temporary `WorldState` when changing effect materialization, anchored cost semantics, or persistence ordering.

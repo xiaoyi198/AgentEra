@@ -11,6 +11,7 @@ from collections import deque
 from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
+from .action_contract import ActionCatalog
 from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
@@ -87,6 +88,7 @@ class Orchestrator:
         self.agents: dict[str, BaseAgent] = {}
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
+        self.action_catalog = ActionCatalog()
         self._gameplay_generation: int = 0
         self._gameplay_contract_published: bool = False
         self._memory_compressor = memory_compressor
@@ -194,6 +196,62 @@ class Orchestrator:
             **self._gameplay_contract.to_dict(),
             "generation": self._gameplay_generation,
         }
+
+    def configure_action_catalog(
+        self, definitions: list[dict[str, Any]], *, generation: int = 0,
+        gameplay: GameplayContract | None = None,
+    ) -> None:
+        """Publish DLC action definitions without clearing receipts or cooldowns."""
+        self.action_catalog.configure(
+            definitions, generation=generation,
+            gameplay=gameplay or self._gameplay_contract,
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def actions_public_state(self) -> dict[str, Any]:
+        return self.action_catalog.public_state()
+
+    def _action_agent_ids(self) -> set[str]:
+        result = set(self.agents)
+        player = self._gameplay_contract.player
+        if player is not None:
+            result.update(item.id for item in player.controlled_objects if item.kind == "agent")
+        return result
+
+    def preview_dlc_action(self, action_id: str, invocation: dict[str, Any]) -> dict[str, Any]:
+        return self.action_catalog.preview(
+            action_id, invocation, world_state=self.world_state,
+            time_simulator=self.time_simulator, sim_time=self._sim_time,
+            available_agent_ids=self._action_agent_ids(),
+        )
+
+    def _wake_from_dlc_action(
+        self, agent_id: str, payload: dict[str, Any], metadata: dict[str, Any],
+    ) -> None:
+        self._pending_wakeups.append({
+            "target": agent_id, "payload": payload,
+            "chain_id": str(metadata.get("chain_id", "")),
+            "event_id": "",
+        })
+
+    def execute_dlc_action(self, action_id: str, invocation: dict[str, Any]) -> dict[str, Any]:
+        result = self.action_catalog.execute(
+            action_id, invocation, world_state=self.world_state,
+            time_simulator=self.time_simulator, sim_time=self._sim_time,
+            available_agent_ids=self._action_agent_ids(),
+            wake_callback=self._wake_from_dlc_action, emit_callback=self.inject_event,
+        )
+        self.action_log.append({
+            "kind": "dlc_action", "action_id": action_id,
+            "invocation_id": result.get("invocation_id", ""),
+            "sim_time": self._sim_time, "generation": result.get("generation", 0),
+            "replayed": bool(result.get("replayed", False)),
+            "ok": bool(result.get("ok", False)),
+        })
+        if self.persistor and not result.get("replayed", False):
+            self.persistor.mark_state_dirty()
+        return result
 
     def _is_player_recipient(self, target_id: str, official: Any = None) -> bool:
         if getattr(self, "_gameplay_contract_published", False):
@@ -529,6 +587,7 @@ class Orchestrator:
             "random_events": self.random_event_generator.snapshot(),
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
+            "action_runtime": self.action_catalog.snapshot(),
             "agent_memories": agent_memories,
         }
 
@@ -543,6 +602,9 @@ class Orchestrator:
         )
         self.causal_event_engine.restore(
             state.get("causal_events", {}), sim_time=self._sim_time
+        )
+        self.action_catalog.restore(
+            state.get("action_runtime", {}), sim_time=self._sim_time
         )
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})

@@ -202,6 +202,19 @@ def _normalize_world_effect(value: Any) -> dict[str, Any]:
     return result
 
 
+def normalize_world_effect(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Public deterministic normalizer shared by causal and player actions."""
+    return _normalize_world_effect(value)
+
+
+def normalize_world_effects(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        raise CausalEventError("world_effects_invalid")
+    if len(values) > _MAX_WORLD_EFFECTS:
+        raise CausalEventError("world_effects_invalid")
+    return [normalize_world_effect(value) for value in values]
+
+
 def _resource_anchor(world_state: Any, name: str) -> float:
     getter = getattr(world_state, "get_resource_definition", None)
     definition = getter(name) if callable(getter) else None
@@ -288,6 +301,17 @@ def _materialize_world_commands(
     if len(commands) > _MAX_WORLD_COMMANDS:
         raise CausalEventError("causal_effect_command_limit")
     return commands
+
+
+def materialize_world_commands(
+    effects: Sequence[Mapping[str, Any]], *, world_state: Any, due_at: float,
+    source_id: str, chain_id: str,
+) -> list[dict[str, Any]]:
+    """Compile normalized world effects into immutable WorldCommand plans."""
+    return _materialize_world_commands(
+        effects, world_state=world_state, due_at=due_at,
+        child_id=source_id, chain_id=chain_id,
+    )
 
 
 def _normalize_materialized_command(value: Any) -> dict[str, Any]:

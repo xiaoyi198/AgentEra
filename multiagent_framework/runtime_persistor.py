@@ -70,6 +70,11 @@ class RuntimePersistor:
                         if hasattr(self._orch, "time_rule_status")
                         else {}
                     ),
+                    "action_runtime": (
+                        self._orch.action_catalog.snapshot()
+                        if hasattr(self._orch, "action_catalog")
+                        else {}
+                    ),
                 }
                 _atomic_write(
                     STATE_FILE,

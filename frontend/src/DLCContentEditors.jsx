@@ -82,6 +82,7 @@ const EMPTY = {
   causal_rule_templates: { template_id: '', name: '', description: '', rule: { delay_days: 1, probability: 1, max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true } },
   causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], world_effects: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
+  actions: { action_id: '', display_name: '', description: '', parameters: [], target: { kind: 'none' }, permissions: {}, preconditions: [], costs: [], duration: {}, cooldown: {}, result: { mode: 'world_commands', effects: [] }, enabled: true },
 }
 
 const TITLES = {
@@ -95,6 +96,7 @@ const TITLES = {
   causal_rule_templates: T.causalRuleTemplates,
   causal_event_rules: T.causalEvents,
   time_rules: T.timeRules,
+  actions: '行动',
 }
 
 function deepClone(value) {
@@ -113,6 +115,17 @@ function parseObject(value, label) {
     throw new Error(`${label}: ${error.message}`)
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${label}: ${T.jsonObjectOnly}`)
+  return parsed
+}
+
+function parseArray(value, label) {
+  let parsed
+  try {
+    parsed = JSON.parse(value || '[]')
+  } catch (error) {
+    throw new Error(`${label}: ${error.message}`)
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${label}: JSON array required`)
   return parsed
 }
 
@@ -135,6 +148,10 @@ function normalizedListForm(kind, value) {
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
+  if (kind === 'actions') {
+    for (const field of ['parameters', 'preconditions', 'costs']) source[`_${field}_text`] = JSON.stringify(Array.isArray(source[field]) ? source[field] : [], null, 2)
+    for (const field of ['target', 'permissions', 'duration', 'cooldown', 'result']) source[`_${field}_text`] = jsonText(source[field])
+  }
   return source
 }
 
@@ -245,6 +262,21 @@ function serializeListForm(kind, form) {
       for (const field of ['target_agents', 'delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled']) delete data[field]
     }
   }
+  if (kind === 'actions') {
+    data.action_id = String(data.action_id || '').trim()
+    data.display_name = String(data.display_name || '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(data.action_id)) throw new Error('Action ID must be a safe identifier.')
+    if (!data.display_name) throw new Error('Action display name is required.')
+    for (const field of ['parameters', 'preconditions', 'costs']) {
+      data[field] = parseArray(data[`_${field}_text`], field)
+      delete data[`_${field}_text`]
+    }
+    for (const field of ['target', 'permissions', 'duration', 'cooldown', 'result']) {
+      data[field] = parseObject(data[`_${field}_text`], field)
+      delete data[`_${field}_text`]
+    }
+    data.enabled = Boolean(data.enabled)
+  }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     delete data._action_types_text
@@ -283,6 +315,7 @@ function listLabel(kind, item) {
   if (kind === 'causal_rule_templates') return [item.template_id || T.templateId, item.name || 'Reusable defaults']
   if (kind === 'causal_event_rules') return [item.rule_id || T.ruleId, `${(item.source_event_types || []).join(', ')} \u2192 ${item.child_event_type || ''}`]
   if (kind === 'time_rules') return [item.rule_id || T.ruleId, `${(item.action_types || []).join(', ')} \u00b7 p${item.priority || 0}`]
+  if (kind === 'actions') return [item.display_name || item.action_id || '行动', item.action_id || '']
   return [item.event_id || T.eventId, `${item.entity_id || ''} \u00b7 ${item.event_type || ''}`]
 }
 
@@ -297,6 +330,7 @@ function requiredKey(kind, form) {
   if (kind === 'causal_rule_templates') return form.template_id
   if (kind === 'causal_event_rules') return form.rule_id && form.child_event_type && String(form._source_types_text || '').trim()
   if (kind === 'time_rules') return form.rule_id && String(form._action_types_text || '').trim()
+  if (kind === 'actions') return form.action_id && form.display_name
   return false
 }
 
@@ -730,6 +764,14 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
           onExportReplay={exportCausalReplay}
           onImportReplay={importCausalReplay}
         />
+      </>}
+
+      {kind === 'actions' && <>
+        <div className="dlc-row"><label>Action ID<input value={form.action_id || ''} onChange={event => set('action_id', event.target.value)} placeholder="frontier_patrol" /></label><label>Display name<input value={form.display_name || ''} onChange={event => set('display_name', event.target.value)} /></label></div>
+        <label>Description<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
+        <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
+        {[['parameters', 'Parameters (JSON array)'], ['target', 'Target (JSON object)'], ['permissions', 'Permissions (JSON object)'], ['preconditions', 'Preconditions (JSON array)'], ['costs', 'Anchored costs (JSON array)'], ['duration', 'Duration (JSON object)'], ['cooldown', 'Cooldown (JSON object)'], ['result', 'Result (JSON object)']].map(([field, label]) => <label key={field}>{label}<textarea className="dlc-json-field" rows={field === 'result' ? 12 : 7} spellCheck="false" value={form[`_${field}_text`] || ''} onChange={event => set(`_${field}_text`, event.target.value)} /></label>)}
+        <div className="dlc-editor-callout">Costs are declared in anchored base value. Preview and execution share deterministic permission, time, cooldown and world-command rules.</div>
       </>}
 
       {kind === 'time_rules' && <>

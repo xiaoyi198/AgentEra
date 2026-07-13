@@ -302,6 +302,10 @@ def _load_runtime_state(orch: Orchestrator) -> None:
                 orch.causal_event_engine.restore(
                     s.get("causal_events", {}), sim_time=orch._sim_time
                 )
+            if hasattr(orch, "action_catalog"):
+                orch.action_catalog.restore(
+                    s.get("action_runtime", {}), sim_time=orch._sim_time
+                )
             logger.info("Restored state: sim_time=%.1f, %d memorials",
                         orch._sim_time, len(orch.memorials))
         except Exception as e:

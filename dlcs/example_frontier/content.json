@@ -143,5 +143,137 @@
         }
       ]
     }
-  }
+  },
+  "actions": [
+    {
+      "action_id": "frontier_patrol",
+      "display_name": "组织边境巡逻",
+      "description": "由玩家控制哨站发起巡逻，消耗按统一价值锚计算的银券并提高警戒度。",
+      "enabled": true,
+      "parameters": [
+        {
+          "name": "alert_gain",
+          "type": "number",
+          "display_name": "警戒提升",
+          "required": false,
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20
+        }
+      ],
+      "target": {
+        "kind": "entity",
+        "required": true,
+        "allowed_ids": [
+          "边境哨站"
+        ],
+        "entity_types": [
+          "location"
+        ],
+        "controlled_only": true
+      },
+      "permissions": {
+        "control_modes": [
+          "direct"
+        ],
+        "control_kinds": [
+          "entity"
+        ],
+        "control_ids": [
+          "边境哨站"
+        ],
+        "actor_ids": [
+          "边境指挥官"
+        ]
+      },
+      "preconditions": [
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "边境银券",
+          "operator": "gte",
+          "base_value": 10
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "警戒度",
+          "operator": "lte",
+          "value": 95
+        }
+      ],
+      "costs": [
+        {
+          "entity_id": "$control",
+          "resource_name": "边境银券",
+          "base_value": 10,
+          "reason": "组织边境巡逻"
+        }
+      ],
+      "duration": {
+        "action_type": "frontier_patrol",
+        "proposed_days": 1,
+        "severity": 4,
+        "resource_value": 10,
+        "distance_days": 0
+      },
+      "cooldown": {
+        "days": 3,
+        "scope": "control_target"
+      },
+      "result": {
+        "mode": "composite",
+        "results": [
+          {
+            "mode": "world_commands",
+            "effects": [
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "警戒度",
+                "quantity_delta": "$param.alert_gain",
+                "reason": "巡逻提升警戒"
+              }
+            ]
+          },
+          {
+            "mode": "ongoing_event",
+            "effect": {
+              "effect_type": "create_ongoing_event",
+              "entity_id": "$target",
+              "event_type": "patrol",
+              "description": "巡逻队正在检查边境道路与哨点",
+              "duration_days": "$duration_days",
+              "expected_result": {
+                "new_status": "巡逻完成，边境警戒稳定"
+              }
+            }
+          },
+          {
+            "mode": "wake_agent",
+            "agent_id": "哨站守备官",
+            "payload": {
+              "description": "执行玩家下达的边境巡逻任务",
+              "alert_gain": "$param.alert_gain",
+              "target_id": "$target"
+            }
+          },
+          {
+            "mode": "emit_event",
+            "event": {
+              "event_type": "frontier_patrol_started",
+              "severity": 4,
+              "target_agents": [
+                "哨站守备官"
+              ],
+              "initial_payload": {
+                "target_id": "$target",
+                "action_id": "frontier_patrol"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

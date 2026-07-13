@@ -1879,3 +1879,32 @@ Old generation archives remain readable. When an archive has no gameplay payload
 This release completes the first P0 gameplay-framework slice only. Generic action catalogs, issue/objective contracts, player permissions, richer actor semantics, save selection UX, and a complete DLC-provided UI manifest remain active goal work.
 
 Release identity is `0.20.0` across `VERSION`, the backend version module, frontend package/lockfile, FastAPI metadata through the shared version module, and README. Release verification completed with **472 Python tests**, **16 frontend tests**, compile/lint/build, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+
+## Phase checkpoint: DLC-authored generic action contracts (v0.21.0, 2026-07-13)
+
+### Runtime contract
+
+- `multiagent_framework/action_contract.py` defines `ActionDefinition`, `ActionParameter`, `ActionInvocation`, and the generation-published `ActionCatalog`.
+- Authorization is derived from the active `GameplayContract`: actor impersonation, control kind/mode/id violations, uncontrolled targets, unknown entities, and unknown Agents are rejected before execution.
+- Preconditions support anchored inventory, metrics, parameters, and entity status. Costs are authored in `base_value` and converted through the authoritative resource `anchor_rate`.
+- Duration is always produced by `TimeSimulator.estimate()`. Cooldowns support action, control, target, and control-target scopes.
+- Results support transactional world commands, ongoing events, Agent wakeups, emitted events, and nested composites. Cost commands and result commands are committed by one atomic `WorldCommandBus.execute_batch` call.
+- `invocation_id` receipts provide deterministic replay and conflict detection. `ActionCatalog` serializes preview/execute state transitions so concurrent duplicate invocations cannot double-charge inventory.
+
+### DLC and Generation lifecycle
+
+- `DLCRegistry` normalizes and validates the additive `actions` content array, including resource/entity/Agent references and gameplay permission references.
+- `DLCBundleLoader` aggregates active action definitions, rejects cross-package duplicate action IDs, archives them in generation blueprints, and republishes GameplayContract before ActionCatalog on load, reload, and rollback.
+- Action cooldowns and receipts are persisted in automatic runtime state and manual saves. Reconfiguration changes definitions/generation without erasing committed execution state.
+
+### API and Studio
+
+- `GET /api/actions`, `POST /api/actions/{action_id}/preview`, and `POST /api/actions/{action_id}/execute` expose a theme-neutral contract. Generation, invocation, cooldown, and world-command conflicts use structured HTTP errors.
+- DLC Studio includes an Actions tab and preserves actions through import/export, keyed diff, undo/redo, and migration/history operations. Complex action subdocuments remain JSON-authored so new result/precondition modes can be added without rebuilding the form shell.
+- `dlcs/example_frontier/content.json` provides `frontier_patrol`, demonstrating controlled-entity authorization, anchored cost conversion, authoritative time, cooldown, transactional effects, ongoing events, Agent wakeup, and event emission.
+
+### Persistence and verification
+
+- Runtime and manual saves include `action_runtime`; manual save/load also preserves random and causal runtime snapshots.
+- Focused verification covers schema/default/range validation, permissions, targets, preconditions, anchored conversion, atomic rollback, authoritative duration, cooldown, generation conflict, concurrent idempotency, side effects, snapshot/restore, API mapping, Registry references, and Generation archive rollback.

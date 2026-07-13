@@ -242,3 +242,48 @@ def test_corrupt_archive_does_not_prevent_current_runtime_start(tmp_path: Path):
         issue["code"] == "archive_signature_invalid"
         for issue in status["issues"]
     )
+
+
+
+def _archived_action(display_name: str) -> dict:
+    return {
+        "action_id": "issue_relief",
+        "display_name": display_name,
+        "target": {"kind": "none", "required": False},
+        "permissions": {
+            "control_modes": ["direct"],
+            "control_kinds": ["agent"],
+            "control_ids": ["player"],
+        },
+        "costs": [
+            {
+                "entity_id": "city",
+                "resource_name": "credits",
+                "base_value": 2,
+            }
+        ],
+        "duration": {"action_type": "relief", "proposed_days": 1},
+        "result": {"mode": "wake_agent", "agent_id": "mayor", "payload": {}},
+    }
+
+
+def test_generation_archive_restores_action_definitions(tmp_path: Path):
+    registry = _registry(tmp_path)
+    content = registry.load_content("sample")
+    content["actions"] = [_archived_action("Generation One Relief")]
+    registry.save_content("sample", content)
+
+    orchestrator = FakeOrchestrator()
+    loader = _loader(tmp_path, registry, orchestrator)
+    loader.load_active(seed_world=True)
+    assert loader.public_runtime()["actions"]["actions"][0]["display_name"] == "Generation One Relief"
+
+    content = registry.load_content("sample")
+    content["actions"] = [_archived_action("Generation Two Relief")]
+    registry.save_content("sample", content)
+    asyncio.run(loader.reload_active())
+    assert loader.public_runtime()["actions"]["actions"][0]["display_name"] == "Generation Two Relief"
+
+    result = asyncio.run(loader.rollback_active(1))
+    assert result["source_generation"] == 1
+    assert loader.public_runtime()["actions"]["actions"][0]["display_name"] == "Generation One Relief"
