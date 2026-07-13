@@ -19,6 +19,7 @@ from .causal_events import CausalEventEngine
 from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
+from .gameplay_contract import GameplayContract
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -85,6 +86,9 @@ class Orchestrator:
 
         self.agents: dict[str, BaseAgent] = {}
         self.agent_generation: int = 0
+        self._gameplay_contract = GameplayContract()
+        self._gameplay_generation: int = 0
+        self._gameplay_contract_published: bool = False
         self._memory_compressor = memory_compressor
         initial_bindings: dict[str, RuntimeTaskBinding] = {
             ROUTER_TASK: RuntimeTaskBinding(
@@ -174,6 +178,28 @@ class Orchestrator:
         # Execution-layer idempotency guard; Router owns the first guard.
         self._executed_command_keys: set[str] = set()
         self._executed_command_order: deque[str] = deque(maxlen=5000)
+
+    def configure_gameplay_contract(
+        self, contract: GameplayContract, *, generation: int = 0
+    ) -> None:
+        """Atomically publish the active DLC player identity/control contract."""
+        if not isinstance(contract, GameplayContract):
+            raise TypeError("contract must be a GameplayContract")
+        self._gameplay_contract = contract
+        self._gameplay_generation = max(0, int(generation))
+        self._gameplay_contract_published = True
+
+    def gameplay_public_state(self) -> dict[str, Any]:
+        return {
+            **self._gameplay_contract.to_dict(),
+            "generation": self._gameplay_generation,
+        }
+
+    def _is_player_recipient(self, target_id: str, official: Any = None) -> bool:
+        if getattr(self, "_gameplay_contract_published", False):
+            return self._gameplay_contract.is_player_recipient(target_id)
+        # Compatibility for callers that construct Orchestrator without a DLC loader.
+        return bool(official and getattr(official, "role", "") == "player")
 
     @staticmethod
     def _bind_runtime_component(component: Any, hub: RuntimeBindingsHub | None = None) -> None:
@@ -770,7 +796,7 @@ class Orchestrator:
             for wakeup in self._pending_wakeups:
                 target_id = wakeup["target"]
                 official = self.court.get_official(target_id)
-                if official and official.role == "player":
+                if self._is_player_recipient(target_id, official):
                     player_wakeups.append(wakeup)
                 elif self.agents.get(target_id):
                     if target_id not in merged_agent_wakeups:

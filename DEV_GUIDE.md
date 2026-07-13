@@ -2230,3 +2230,91 @@ git -c safe.directory='F:/世界模拟器' diff --check
 长场景必须断言：多轮 FC 顺序、发行/销毁价值、转移净值为零、余额不足原子回滚、SQLite/因果快照恢复、ongoing event 成熟、完整 action replay 幂等，以及 Replay Fixture 对规则漂移与种子/执行漂移的不同分类。
 
 Verified for `0.19.0`: **464 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.
+
+## DLC gameplay contract development workflow (v0.20.0)
+
+### Authoring schema
+
+Add the optional `gameplay` object to the primary DLC's `content.json`:
+
+```json
+{
+  "gameplay": {
+    "player": {
+      "identity_id": "station_commander",
+      "display_name": "Station Commander",
+      "actor_id": "commander_actor",
+      "controlled_objects": [
+        {"kind": "entity", "id": "orbital_station", "mode": "direct"},
+        {"kind": "agent", "id": "operations_ai", "mode": "direct"},
+        {"kind": "agent", "id": "science_ai", "mode": "command"}
+      ]
+    }
+  }
+}
+```
+
+Authoring rules:
+
+1. Keep `identity_id` stable across display-name changes and localization updates.
+2. Use `actor_id` for the world actor associated with the player; it is optional in v0.20.0 and is not yet a general authorization principal.
+3. Every controlled object must reference an entity or Agent declared in the same normalized DLC content.
+4. `kind` is exactly `entity` or `agent`; `mode` is exactly `direct` or `command`.
+5. Do not duplicate the same `kind + id` pair. A player contract must control at least one object.
+6. Only the primary DLC becomes the active player contract. Do not rely on gameplay metadata in a secondary package to override it.
+
+### Direct versus command Agent semantics
+
+- `agent/direct`: the record remains available as an official/actor node and can receive player-targeted output, but `AgentFactory` must not create an autonomous LLM Agent for it.
+- `agent/command`: the Agent remains autonomous and may also be addressed through future player-command workflows.
+- `entity/direct`: declares a directly controlled world entity. v0.20.0 exposes the declaration but does not yet implement a generic permission/action system for every entity kind.
+
+Never use `role == "player"` to reinterpret an Agent when an explicit gameplay contract exists. `AgentFactory.create(..., legacy_role_player=False)` is required in both initial package load and active-generation materialization for explicit contracts.
+
+### Compatibility and migration
+
+Existing DLCs can omit `gameplay`. `GameplayContract.from_content()` then selects the first enabled legacy Agent with `role == "player"`, creates a direct Agent control object, and reports `source = legacy_role`. Explicit contracts report `source = explicit` and always win over legacy roles.
+
+Keep the normalized content schema at `1.0` for this optional additive field. Do not force unrelated historical bundles through a schema migration solely to adopt v0.20.0. When an old generation archive lacks gameplay data, restore derives a compatibility contract from archived officials.
+
+### Runtime invariants
+
+Gameplay data must move with the atomic DLC generation:
+
+- preview reports `gameplay_changed`;
+- load/reload/rollback install the contract with the target generation;
+- snapshot clone and generation archive blueprint retain the contract;
+- rollback restores old gameplay content as a new monotonically increasing generation;
+- `public_runtime()["gameplay"]` and `Orchestrator.gameplay_public_state()` expose the same active contract;
+- directly controlled Agent IDs never appear in the autonomous runtime Agent map.
+
+If adding fields, update `to_dict()`, `from_dict()`, normalization, validation, archive compatibility, public API tests, reload/rollback tests, and frontend fallback behavior together.
+
+### API and frontend rules
+
+`GET /api/gameplay` is the theme-neutral client contract. Keep it safe and stable: package identity, source, configured state, player identity, controlled objects, and active generation are allowed. Do not expose Prompt text, memories, model/provider configuration, credentials, filesystem paths, or raw archive payloads.
+
+The main React UI must retain a safe fallback when the endpoint is unavailable, but new labels should prefer `package_name` and `player.display_name`. Avoid adding new “皇帝”, “大明”, “奏折”, or other theme assumptions to generic shell components.
+
+### Required verification
+
+```powershell
+python -m py_compile multiagent_framework/gameplay_contract.py multiagent_framework/dlc_registry.py multiagent_framework/dlc_runtime.py multiagent_framework/orchestrator.py routers/simulation.py main.py
+python -m pytest -q -p no:cacheprovider tests/unit/test_gameplay_contract.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py
+python -m compileall -q multiagent_framework routers tests
+python -m pytest -q -p no:cacheprovider
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+
+cd frontend
+npm test
+npm run lint
+npm run build
+cd ..
+
+git -c safe.directory='F:/世界模拟器' diff --check
+```
+
+The focused gameplay/Registry/Runtime suite for v0.20.0 contains 68 tests. Also inspect the real bundled packages: `daming_court` must produce a valid `legacy_role` contract, while `example_frontier` must validate its explicit non-imperial contract without errors.
+
+Verified for `0.20.0`: **472 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.

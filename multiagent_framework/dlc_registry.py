@@ -21,6 +21,7 @@ from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEvent
 from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
+from .gameplay_contract import normalize_gameplay_document, validate_gameplay_document
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -397,6 +398,12 @@ class DLCRegistry:
             value = normalized.setdefault(key, {})
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
+        try:
+            normalized["gameplay"] = normalize_gameplay_document(
+                normalized.get("gameplay", {})
+            )
+        except TypeError as exc:
+            raise DLCRegistryError(str(exc)) from exc
         return normalized
     def normalize_content_document(self, content: dict[str, Any]) -> dict[str, Any]:
         """Normalize an in-memory draft without writing it to the package."""
@@ -636,6 +643,11 @@ class DLCRegistry:
         entity_ids = {str(item.get("id", "")) for item in entities if item.get("id")}
         agent_ids = {str(item.get("id", "")) for item in agents if item.get("id")}
         resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
+        for gameplay_issue in validate_gameplay_document(
+            content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
+        ):
+            add(gameplay_issue.code, gameplay_issue.message, gameplay_issue.path)
+
         agent_bindings = bindings.get("agents", {}) if isinstance(bindings.get("agents", {}), dict) else {}
         for bound_agent in agent_bindings:
             if str(bound_agent) not in agent_ids:

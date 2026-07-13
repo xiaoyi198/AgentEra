@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.19.0**
+> 当前版本：**v0.20.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -16,6 +16,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
+- **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
@@ -93,6 +94,34 @@ npm run dev -- --host
 - DLC Studio：`http://localhost:3000/dlc.html`
 - 天玑调试界面：`http://localhost:3000/tianji.html`
 - 后端 OpenAPI：`http://localhost:8000/docs`
+
+## DLC 玩法契约 (v0.20.0)
+
+主 DLC 可在 `content.json` 中声明题材无关的玩家身份和控制对象：
+
+```json
+{
+  "gameplay": {
+    "player": {
+      "identity_id": "station_commander",
+      "display_name": "Station Commander",
+      "actor_id": "commander_actor",
+      "controlled_objects": [
+        {"kind": "entity", "id": "orbital_station", "mode": "direct"},
+        {"kind": "agent", "id": "operations_ai", "mode": "direct"},
+        {"kind": "agent", "id": "science_ai", "mode": "command"}
+      ]
+    }
+  }
+}
+```
+
+- `kind` 支持 `entity` 与 `agent`；`mode` 支持 `direct` 与 `command`。
+- `direct` Agent 是玩家直接接收端，不创建自主 LLM Agent；`command` Agent 仍自主运行，但属于玩家可命令对象。
+- 只有 primary DLC 提供当前运行时玩家契约，避免多个内容包争夺玩家身份。
+- 显式 `gameplay.player` 优先于旧 `agents[].role == "player"`；未配置时继续从旧角色自动推导，兼容现有“大明朝廷”内容。
+- `GET /api/gameplay` 返回稳定的题材无关契约。主界面标题、玩家身份、控制对象数量和视角按钮使用该接口，不再依赖“皇帝”等硬编码。
+- GameplayContract 与 DLC Generation 一起归档、热重载和回滚，旧归档缺失字段时也会使用兼容推导。
 
 ## 经济监控
 
@@ -199,3 +228,9 @@ ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`cons
 `request_action` 新增可选 `causal_event_type`。只有调用方显式提供合法事件类型时，Orchestrator 才会通过 `action_causal_bridge.py` 发布确定性、脱敏的行动结果摘要；默认行为不会自动扩展因果链。摘要只包含行动类型、执行者、目标、成功状态、耗时和经济变化聚合，不包含 Prompt、FC 参数、完整轨迹、叙事正文或凭据。
 
 新的确定性长场景覆盖三轮 ActionAgent 工具调用、生产/消费、跨锚值守恒转移、多个因果分支、零延迟下游、ongoing event 到期、SQLite 与因果快照重启恢复、命令重放幂等，以及 Replay Fixture 对规则漂移和种子/执行漂移的分类。Release `0.19.0` 通过 **464 个 Python 测试**、**16 个前端测试**、Python 编译、前端 lint/build、Prompt contracts **100%**、确定性 trajectory replay **100%** 和 Git diff 检查。
+
+## DLC player identity gameplay contract (v0.20.0)
+
+Release `0.20.0` introduces a theme-neutral `GameplayContract` for the primary DLC. It validates player identity and controlled entity/Agent references, distinguishes direct control from command authority, excludes directly controlled Agents from autonomous LLM construction, and lets explicit gameplay metadata override legacy `role=player` markers. The contract is carried through initial load, generation snapshots, encrypted archive blueprints, hot reload, rollback, Orchestrator player-recipient routing, and `GET /api/gameplay`.
+
+The bundled frontier example now declares a non-imperial station-commander contract while keeping its player-like Agent role set to `operator`, proving that runtime behavior no longer depends on a theme-specific role string. The React shell consumes the public contract for package title, identity, control count, and view labels. This is the first P0 gameplay-framework slice; generic actions, issues/objectives, permissions, and a complete DLC UI manifest remain future work. Release `0.20.0` is verified with **472 Python tests**, **16 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Git diff checks.

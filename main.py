@@ -17,6 +17,7 @@ from multiagent_framework.chain_log import ChainLog
 from multiagent_framework.court_graph import CourtGraph
 from multiagent_framework.dlc_registry import DLCRegistry, DLCRegistryError
 from multiagent_framework.dlc_runtime import DLCBundleLoader, ModelBindingResolver
+from multiagent_framework.gameplay_contract import GameplayContract
 from multiagent_framework.model_gateway import ModelGateway, TaskLLMClient
 from multiagent_framework.model_generation_archive import ModelGenerationArchiveStore
 from multiagent_framework.orchestrator import Orchestrator
@@ -255,6 +256,22 @@ def _load_legacy_dlc(
         agents = create_agents(officials, prompts_dir, llm)
         for agent in agents:
             orch.register_agent(agent)
+        orch.configure_gameplay_contract(
+            GameplayContract.from_content(
+                {},
+                [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "role": item.role,
+                    }
+                    for item in officials
+                ],
+                package_id="legacy_fallback",
+                package_name="Legacy World",
+            ),
+            generation=0,
+        )
         logger.info("Loaded %d officials, %d agents", len(officials), len(agents))
     else:
         logger.warning("No officials config found at %s", officials_path)

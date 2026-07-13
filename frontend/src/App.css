@@ -1178,3 +1178,29 @@ body {
   .ws-economy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ws-economy-resources { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.player-identity {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 180px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--gold) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--gold) 8%, transparent);
+  line-height: 1.1;
+}
+.player-identity strong {
+  overflow: hidden;
+  color: var(--gold-bright, var(--gold));
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-identity small {
+  color: var(--text-dim);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 9px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}

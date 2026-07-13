@@ -136,6 +136,21 @@ async def get_in_transit():
 # ── 奏折列表（持久化） ──
 
 
+@router.get("/gameplay")
+async def get_gameplay():
+    """Return the active DLC-authored player identity and control boundary."""
+    if not state.orchestrator:
+        return {
+            "configured": False,
+            "generation": 0,
+            "package_id": "",
+            "package_name": "",
+            "source": "none",
+            "player": None,
+        }
+    return state.orchestrator.gameplay_public_state()
+
+
 @router.get("/memorials")
 async def get_memorials():
     """返回当前所有待处理奏折（后端持久化，刷新不丢）."""

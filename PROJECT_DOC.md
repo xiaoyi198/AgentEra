@@ -1841,3 +1841,41 @@ A successful `dry_run_causal_rules()` response includes a secret-free `agentera-
 - Python compile and Git diff checks passed.
 
 长期产品 Goal 继续保持 active；下一阶段聚焦更长经济 soak/并发压力、运输中 escrow 语义、DLC Studio 的 Action 因果事件编排、多轮记忆检索/压缩评测和凭证化真实模型/经济基线。
+
+## Release architecture note: DLC player identity gameplay contract (v0.20.0)
+
+### Canonical contract
+
+`multiagent_framework/gameplay_contract.py` is the theme-neutral source of truth for player identity:
+
+- `GameplayContract` owns `package_id`, `package_name`, `source`, and an optional `PlayerIdentity`.
+- `PlayerIdentity` owns stable `identity_id`, UI-facing `display_name`, optional `actor_id`, and ordered `controlled_objects`.
+- A controlled object has `kind = entity | agent` and `mode = direct | command`.
+- `direct` Agent IDs are player endpoints and are excluded from autonomous LLM Agent construction. `command` Agent IDs retain their autonomous runtime and are only marked as commandable.
+- An explicit `gameplay.player` document has authority over legacy Agent roles. If the document is absent, the loader derives a compatibility contract from `agents[].role == "player"`.
+
+### Registry and package ownership
+
+`DLCRegistry._normalize_content()` preserves `gameplay` as an optional object in the backward-compatible content schema. Registry validation checks required identity/display fields, allowed kind/mode values, entity and Agent references, duplicate control objects, and the requirement for at least one controlled object.
+
+Only the active primary DLC contributes the runtime player contract. Secondary packages may carry authoring metadata, but cannot replace the current player identity. This keeps package composition deterministic and prevents ambiguous ownership.
+
+### Generation-safe runtime lifecycle
+
+`DLCBundleLoader` materializes the contract before world activation and stores it in the atomic runtime snapshot. The same contract is included in generation blueprints, reload previews, committed generations, rollback restoration, snapshot clones, load reports, and public runtime state. A gameplay change is therefore published with the same generation boundary as officials, autonomous Agents, Prompt registries, model bindings, and time rules.
+
+Old generation archives remain readable. When an archive has no gameplay payload, restoration derives the legacy contract from archived officials. Rollback never decrements the generation number; it restores the selected historical contract as a newly activated generation.
+
+### Orchestration and API consumption
+
+`Orchestrator.configure_gameplay_contract()` atomically installs the contract and its generation. Player-recipient wake-up routing calls `GameplayContract.is_player_recipient()` whenever a configured contract exists. Legacy `official.role == "player"` fallback remains only for lightweight callers without a configured DLC runtime.
+
+`GET /api/gameplay` returns the stable public contract plus its active generation. The React shell loads this endpoint and uses `package_name`, `player.display_name`, and controlled-object counts for title and view labels, removing the previous hard dependency on “大明/皇帝” terminology. The endpoint exposes no Prompt, memory, provider, model, credential, or private generation archive content.
+
+### Compatibility example and remaining scope
+
+`dlcs/example_frontier` now provides an explicit station-commander contract and intentionally gives its directly controlled Agent the role `operator`. This verifies that the gameplay contract, not a historical theme-specific role string, drives runtime behavior. `daming_court` continues to work through legacy inference until its content is migrated explicitly.
+
+This release completes the first P0 gameplay-framework slice only. Generic action catalogs, issue/objective contracts, player permissions, richer actor semantics, save selection UX, and a complete DLC-provided UI manifest remain active goal work.
+
+Release identity is `0.20.0` across `VERSION`, the backend version module, frontend package/lockfile, FastAPI metadata through the shared version module, and README. Release verification completed with **472 Python tests**, **16 frontend tests**, compile/lint/build, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.

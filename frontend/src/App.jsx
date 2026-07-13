@@ -164,6 +164,9 @@ function App() {
   const { connected, lastMessage } = useWebSocket(WS_URL)
 
   const [memorials, setMemorials] = useState([])
+  const [gameplay, setGameplay] = useState({
+    configured: false, package_id: '', package_name: '', player: null,
+  })
   const [selectedMemorial, setSelectedMemorial] = useState(null)
   const [inTransit, setInTransit] = useState([])
   const [simTime, setSimTime] = useState(0)
@@ -210,6 +213,16 @@ function App() {
         if (Array.isArray(data) && data.length > 0) {
           setMemorials(data)
         }
+      })
+      .catch(() => {})
+  }, [])
+
+
+  useEffect(() => {
+    fetch(`${API_BASE}/gameplay`)
+      .then(r => r.json())
+      .then(data => {
+        if (data && typeof data === 'object') setGameplay(data)
       })
       .catch(() => {})
   }, [])
@@ -336,18 +349,34 @@ function App() {
     }
   }
 
+  const controlledObjects = gameplay.player?.controlled_objects || []
+  const playerDisplayName = gameplay.player?.display_name || '\u73a9\u5bb6'
+  const worldTitle = gameplay.package_name || '\u4e16\u754c\u6a21\u62df\u5668'
+  const worldSubtitle = gameplay.configured
+    ? `${playerDisplayName} / ${controlledObjects.length} controlled objects`
+    : 'DLC-driven world simulation'
+
   return (
     <div className="app">
       <header className="header">
         <div className="header-brand">
-          <span className="brand-seal" aria-hidden="true">明</span>
+          <span className="brand-seal" aria-hidden="true">{worldTitle.slice(0, 1)}</span>
           <div className="brand-copy">
-            <h1>大明朝廷</h1>
-            <p>山河为局 · 百官为棋</p>
+            <h1>{worldTitle}</h1>
+            <p>{worldSubtitle}</p>
           </div>
         </div>
         <div className="header-info">
           <span className="day-counter">{timeStrFull(simTime)}</span>
+          {gameplay.configured && (
+            <span
+              className="player-identity"
+              title={controlledObjects.map(item => `${item.kind}:${item.id} (${item.mode})`).join(' / ')}
+            >
+              <strong>{playerDisplayName}</strong>
+              <small>{controlledObjects.length} controls</small>
+            </span>
+          )}
           <span className={`ws-status ${connected ? 'on' : 'off'}`}>
             <i aria-hidden="true" />{connected ? '世界已连接' : '世界离线'}
           </span>
@@ -371,7 +400,7 @@ function App() {
             className={`btn ${currentView === 'god' ? 'active' : 'ghost'}`}
             onClick={() => setCurrentView(v => v === 'god' ? 'emperor' : 'god')}
           >
-            {currentView === 'god' ? '皇帝视角' : '上帝视角'}
+            {currentView === 'god' ? `${playerDisplayName}\u89c6\u89d2` : '\u4e0a\u5e1d\u89c6\u89d2'}
           </button>
           <button
             className={`btn ${currentView === 'world' ? 'active' : 'ghost'}`}

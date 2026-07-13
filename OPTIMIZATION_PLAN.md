@@ -1315,3 +1315,30 @@ Next priorities:
 5. Collect credentialed provider/model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
 
 The persistent product goal remains active. This checkpoint moves unified-value economics from infrastructure-only coverage into real multi-round Agent behavior and deterministic restart/replay validation.
+
+## Phase checkpoint: DLC player identity and controlled-object contract (v0.20.0, 2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added a theme-neutral `GameplayContract` with stable player identity, optional actor identity, and ordered entity/Agent control objects;
+- defined `direct` versus `command` control semantics and excluded only directly controlled Agents from autonomous LLM construction;
+- made explicit gameplay metadata authoritative over legacy `role=player`, while retaining additive schema-1.0 compatibility inference for existing DLCs and old generation archives;
+- added Registry validation for identity fields, control kind/mode, duplicate controls, local entity/Agent references, and non-empty control sets;
+- bound the primary DLC gameplay contract to atomic runtime generations, reload preview, hot reload, archive restore, rollback, snapshot cloning, load reports, and public runtime state;
+- replaced Orchestrator's theme-specific player-recipient check with the active contract and retained a narrow fallback for legacy/lightweight callers;
+- added `GET /api/gameplay` and a minimal React consumer for package title, player identity, control count, and view labels;
+- upgraded the frontier sample to an explicit non-imperial station-commander contract whose player endpoint uses `role=operator`, proving role-string independence;
+- synchronized release identity to `0.20.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed 66 focused gameplay/Registry/Runtime tests and all 16 frontend tests with frontend lint/build passing before the full release gate.
+
+Next priorities:
+
+1. Add a generic DLC action catalog and permission contract so controlled entities and Agents expose playable operations without theme-specific router branches.
+2. Define generic issue, objective, choice, outcome, and notification contracts that can replace memorial-only assumptions in the main gameplay loop.
+3. Extend DLC Studio with structured gameplay/player/control-object editing, reference selectors, validation feedback, and import/export Diff support.
+4. Introduce a DLC UI manifest for terminology, navigation, panels, widgets, and capability-driven layouts while preserving safe shell fallbacks.
+5. Continue multi-turn memory retrieval/compression evaluation, task-aware model selection, economic stress/retry tests, and credentialed promotion/rollback rehearsal.
+
+The persistent product goal remains active. This checkpoint establishes who the player is and what the player controls, but does not yet complete the generic action, objective, permission, or UI-manifest layers required for a fully DLC-driven game framework.

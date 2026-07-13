@@ -116,5 +116,32 @@
       "priority": 0,
       "enabled": true
     }
-  ]
+  ],
+  "gameplay": {
+    "player": {
+      "identity_id": "frontier_commander",
+      "display_name": "边境指挥官",
+      "actor_id": "边境指挥官",
+      "controlled_objects": [
+        {
+          "kind": "entity",
+          "id": "边境哨站",
+          "mode": "direct",
+          "display_name": "边境哨站"
+        },
+        {
+          "kind": "agent",
+          "id": "边境指挥官",
+          "mode": "direct",
+          "display_name": "边境指挥官"
+        },
+        {
+          "kind": "agent",
+          "id": "哨站守备官",
+          "mode": "command",
+          "display_name": "守备官"
+        }
+      ]
+    }
+  }
 }
