@@ -11,6 +11,7 @@ from collections import deque
 from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
+from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
@@ -1184,6 +1185,19 @@ class Orchestrator:
         })
 
         # 若无接收方，直接结束
+        try:
+            causal_source = build_action_causal_event(
+                result, payload, chain_id=chain_id, source_event_id=event_id,
+                generated_at=self._sim_time,
+            )
+        except ValueError as exc:
+            self._record_operational_metric("action_causal_event_rejections")
+            logger.warning("Action causal event rejected: %s", exc)
+        else:
+            if causal_source is not None:
+                self.inject_event(causal_source)
+                self._record_operational_metric("action_causal_events")
+
         if not source_agent_id:
             return
 

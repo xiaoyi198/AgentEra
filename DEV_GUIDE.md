@@ -2176,7 +2176,57 @@ npm run lint
 npm run build
 cd ..
 
-git -c safe.directory='F:/?????' diff --check
+git -c safe.directory='F:/世界模拟器' diff --check
 ```
 
 Verified for `0.18.0`: **451 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.
+
+## Agent economic tool and causal replay workflow (v0.19.0)
+
+### ActionAgent 工具选择
+
+| 业务动作 | 必须使用 | 禁止做法 |
+|---|---|---|
+| 生产、采集、征收资产 | `produce_resource` | 用任意正 `quantity_delta` 模拟发行 |
+| 消耗、损失、销毁资产 | `consume_resource` | 余额不足时静默 clamp 到零 |
+| 跨实体拨款、调粮、兑换 | `transfer_anchored_value` | 用两次独立库存更新拼接转移 |
+| 延迟效果 | `add_ongoing_event` | 在行动完成前假装未来结果已落账 |
+
+贡献者必须保持以下约束：
+
+1. `quantity`/`base_value` 只接受有限正数；拒绝零、负数、`NaN`、`Infinity` 和 bool。
+2. 三个经济工具只接受 DLC 资源目录中 `kind == asset` 的资源。
+3. `transfer_anchored_value` 的 API 输入是统一基础价值，不是双方库存数量。换算公式为 `debit = -(base_value / from_anchor)`、`credit = base_value / to_anchor`。
+4. 借贷命令必须使用原子 `execute_batch`；任何余额或写入失败都不得留下半笔交易。
+5. command ID、transfer ID 和 tool-call receipt 必须确定性稳定。相同 tool call 重放不能重复写库存、ledger 或 `changes_made`。
+6. 旧 `update_inventory` 只保留给 `ALL_TOOLS` 兼容调用方，不得重新加入 `ACTION_AGENT_TOOLS`。
+
+### 显式 ActionResult 因果事件
+
+只有业务确实需要把行动结果作为后续因果源时，`request_action` 才设置 `causal_event_type`。省略字段必须保持旧行为。不要改成“所有 ActionResult 自动发布”，否则旧 DLC 的通配规则、循环和重放语义会被扩大。
+
+`build_action_causal_event()` 的 payload 必须保持有界和脱敏。允许行动身份、成功状态、耗时和经济汇总；禁止 Prompt、FC 参数、完整 `fc_trace`、完整变化对象、结果叙事、Provider/API 配置、凭据和原始异常。新增字段时必须补充秘密隔离与确定性测试。
+
+### 场景与门禁
+
+经济/因果改动至少运行：
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_agent_economic_tools.py tests/integration/test_agent_economic_replay_scenario.py tests/integration/test_mock_world_scenario.py
+python -m compileall -q multiagent_framework routers tests
+python -m pytest -q -p no:cacheprovider
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+
+cd frontend
+npm test
+npm run lint
+npm run build
+cd ..
+
+git -c safe.directory='F:/世界模拟器' diff --check
+```
+
+长场景必须断言：多轮 FC 顺序、发行/销毁价值、转移净值为零、余额不足原子回滚、SQLite/因果快照恢复、ongoing event 成熟、完整 action replay 幂等，以及 Replay Fixture 对规则漂移与种子/执行漂移的不同分类。
+
+Verified for `0.19.0`: **464 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.

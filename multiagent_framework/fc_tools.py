@@ -85,6 +85,76 @@ UPDATE_INVENTORY_TOOL = {
     },
 }
 
+
+PRODUCE_RESOURCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "produce_resource",
+        "description": (
+            "为实体生产、采集或征收正数量的资产资源。"
+            "资源必须在 DLC 目录中声明为 kind=asset；系统按 anchor_rate 记录统一基础价值发行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "接收资产的实体 ID"},
+                "resource_name": {"type": "string", "description": "DLC 资源目录中的资源名称"},
+                "quantity": {"type": "number", "exclusiveMinimum": 0, "description": "生产数量，必须大于 0"},
+                "reason": {"type": "string", "description": "生产、采集或征收原因"},
+                "expected_version": {"type": "integer", "minimum": 0, "description": "可选的实体乐观锁版本"},
+            },
+            "required": ["entity_id", "resource_name", "quantity", "reason"],
+        },
+    },
+}
+
+CONSUME_RESOURCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "consume_resource",
+        "description": (
+            "从实体库存消费、损失或销毁正数量的资产资源；余额不足时明确失败，不会静默归零。"
+            "系统按 anchor_rate 记录统一基础价值销毁。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "扣减资产的实体 ID"},
+                "resource_name": {"type": "string", "description": "DLC 资源目录中的资源名称"},
+                "quantity": {"type": "number", "exclusiveMinimum": 0, "description": "消费数量，必须大于 0"},
+                "reason": {"type": "string", "description": "消费、损失或销毁原因"},
+                "expected_version": {"type": "integer", "minimum": 0, "description": "可选的实体乐观锁版本"},
+            },
+            "required": ["entity_id", "resource_name", "quantity", "reason"],
+        },
+    },
+}
+
+TRANSFER_ANCHORED_VALUE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "transfer_anchored_value",
+        "description": (
+            "按统一基础价值在两个实体/资产资源之间原子转移，系统依据双方 anchor_rate 换算数量。"
+            "用于拨款、调粮、兑换等守恒转移；余额不足时借贷两侧整批回滚，禁止拆成独立库存更新。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_entity_id": {"type": "string", "description": "转出实体 ID"},
+                "from_resource": {"type": "string", "description": "转出资产资源名称"},
+                "to_entity_id": {"type": "string", "description": "转入实体 ID"},
+                "to_resource": {"type": "string", "description": "转入资产资源名称"},
+                "base_value": {"type": "number", "exclusiveMinimum": 0, "description": "要转移的统一基础价值，必须大于 0"},
+                "reason": {"type": "string", "description": "转移原因"},
+                "from_expected_version": {"type": "integer", "minimum": 0, "description": "可选的转出实体版本"},
+                "to_expected_version": {"type": "integer", "minimum": 0, "description": "可选的转入实体版本"},
+            },
+            "required": ["from_entity_id", "from_resource", "to_entity_id", "to_resource", "base_value", "reason"],
+        },
+    },
+}
+
 ADD_ONGOING_EVENT_TOOL = {
     "type": "function",
     "function": {
@@ -343,6 +413,14 @@ REQUEST_ACTION_TOOL = {
                     "maximum": 10,
                     "description": "Optional problem severity; omit when unknown.",
                 },
+                "causal_event_type": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                    "description": (
+                        "可选的行动结果因果事件类型。仅当 DLC 明确需要把本次 ActionResult 作为后续因果源时填写；"
+                        "省略时保持旧行为，不自动发布事件。"
+                    ),
+                },
             },
             "required": ["action_type", "target_location", "description"],
         },
@@ -421,7 +499,9 @@ ACTION_AGENT_TOOLS = [
     LIST_ENTITIES_TOOL,
     QUERY_ENTITY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
-    UPDATE_INVENTORY_TOOL,
+    PRODUCE_RESOURCE_TOOL,
+    CONSUME_RESOURCE_TOOL,
+    TRANSFER_ANCHORED_VALUE_TOOL,
     ADD_ONGOING_EVENT_TOOL,
     MODIFY_ONGOING_EVENT_TOOL,
     DELETE_ONGOING_EVENT_TOOL,
@@ -457,6 +537,9 @@ ALL_TOOLS = [
     QUERY_ENTITY_TOOL,
     UPDATE_ENTITY_STATUS_TOOL,
     UPDATE_INVENTORY_TOOL,
+    PRODUCE_RESOURCE_TOOL,
+    CONSUME_RESOURCE_TOOL,
+    TRANSFER_ANCHORED_VALUE_TOOL,
     ADD_ONGOING_EVENT_TOOL,
     MODIFY_ONGOING_EVENT_TOOL,
     DELETE_ONGOING_EVENT_TOOL,

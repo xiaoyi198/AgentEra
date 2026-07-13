@@ -449,7 +449,7 @@ market_value = anchor_value × scarcity_modifier × region_modifier × event_mod
 
 - `produce_resource`
 - `consume_resource`
-- `transfer_resource`
+- `transfer_anchored_value`（v0.19.0 已接入 ActionAgent）
 - `convert_resource`
 - `reserve_resource`
 - `release_resource`
@@ -1290,3 +1290,28 @@ Next priorities:
 5. Improve causal authoring ergonomics with structured world-effect defaults and optional graph-layout visualization without changing resolved execution semantics.
 
 The persistent product goal remains active. This checkpoint makes causal authoring changes reproducible and reviewable while preserving deterministic production behavior, package isolation, and read-only Studio analysis.
+
+## Phase checkpoint: typed Agent economy and deterministic replay scenarios (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added typed `produce_resource`, `consume_resource`, and `transfer_anchored_value` tools for ActionAgent while retaining legacy `update_inventory` only in `ALL_TOOLS`;
+- enforced finite positive inputs, DLC asset-catalog validation, explicit insufficient-balance failures, anchored conversion, atomic debit/credit batches, and deterministic tool-call replay;
+- bridged `ActionResult` into the causal engine only through explicit `request_action.causal_event_type`, using stable event IDs and bounded secret-free summaries;
+- updated the official ActionAgent Prompt to require typed economic operations and prohibit arbitrary-delta transfer simulation;
+- added a three-round ActionAgent scenario with production, anchored transfer, consumption, multiple causal branches, zero-delay descendants, ongoing-event settlement, SQLite restart, causal snapshot restore, and complete action replay;
+- verified economic invariants (`112` current base value, `120` issued, `8` destroyed, transfer net `0`) and Replay Fixture classification for unchanged, seed-drift, and rule-drift cases;
+- synchronized release identity to `0.19.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **464 Python tests**, **16 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+Next priorities:
+
+1. Extend economic scenarios into longer soak and concurrent-action stress tests, including conflict/retry observability.
+2. Define escrow/in-transit semantics for delayed transport so reserved value is neither double-spendable nor double-counted.
+3. Add DLC Studio authoring support for `request_action.causal_event_type`, safe payload previews, and reusable Agent-economic scenario catalogs.
+4. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+5. Collect credentialed provider/model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+
+The persistent product goal remains active. This checkpoint moves unified-value economics from infrastructure-only coverage into real multi-round Agent behavior and deterministic restart/replay validation.

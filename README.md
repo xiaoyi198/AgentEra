@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.18.0**
+> 当前版本：**v0.19.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -12,6 +12,8 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
+- **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
+- **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
@@ -189,3 +191,11 @@ The DLC Studio causal-rule preview now includes a resolved edge inspector rather
 Every deterministic Dry Run returns an `agentera-causal-replay-v1` fixture containing only the source event, bounded replay controls, analysis fingerprint, result digest, and summary baseline. The digest covers the resolved analysis summary, simulated nodes, event edges, pending work, and Dry Run summary; it deliberately excludes the fixture itself, full DLC content, Prompt text, API keys, and model configuration.
 
 `POST /api/dlcs/{dlc_id}/causal-events/replay` compares an imported baseline with the current content or an unsaved Studio draft. It distinguishes resolved-rule drift (`analysis_fingerprint`) from seed-fact or execution drift (`result_digest` and summary fields). Import and replay do not save the fixture, write DLC files, reload a generation, or mutate live world state. Release `0.18.0` is verified with **451 Python tests**, **16 frontend tests**, frontend lint/build, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.
+
+## Agent 经济重放场景 (v0.19.0)
+
+ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`consume_resource` 和 `transfer_anchored_value`。生产与消费只接受 DLC 资源目录中的资产资源；跨实体、跨资源调拨统一填写 `base_value`，运行时按双方 `anchor_rate` 换算借贷数量，并通过原子批次确保余额不足时整批回滚。旧 `update_inventory` 继续保留在全量工具集中以兼容 Tianji、调试接口和旧调用方，但不再暴露给 ActionAgent。
+
+`request_action` 新增可选 `causal_event_type`。只有调用方显式提供合法事件类型时，Orchestrator 才会通过 `action_causal_bridge.py` 发布确定性、脱敏的行动结果摘要；默认行为不会自动扩展因果链。摘要只包含行动类型、执行者、目标、成功状态、耗时和经济变化聚合，不包含 Prompt、FC 参数、完整轨迹、叙事正文或凭据。
+
+新的确定性长场景覆盖三轮 ActionAgent 工具调用、生产/消费、跨锚值守恒转移、多个因果分支、零延迟下游、ongoing event 到期、SQLite 与因果快照重启恢复、命令重放幂等，以及 Replay Fixture 对规则漂移和种子/执行漂移的分类。Release `0.19.0` 通过 **464 个 Python 测试**、**16 个前端测试**、Python 编译、前端 lint/build、Prompt contracts **100%**、确定性 trajectory replay **100%** 和 Git diff 检查。
