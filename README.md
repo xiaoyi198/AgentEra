@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.17.0**
+> 当前版本：**v0.18.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -16,6 +16,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
+- **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
 - **事务化因果世界效果**：因果规则可原子调整资源、状态、延迟事件和跨实体锚定价值转移；失败时整体回滚，重启重放保持幂等。
 - **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
@@ -180,3 +181,11 @@ npm run build
 DLC bundle content can define package-local `causal_condition_groups` and `causal_rule_templates`. A causal rule may select one template and multiple condition groups. Runtime precedence is `engine defaults < template.rule < authored rule`; condition order is template conditions, referenced groups in author order, then inline conditions. References are expanded by one pure deterministic backend function before Registry validation, static analysis, draft Dry Run, and runtime materialization. Templates and groups are not recursive and never cross DLC package boundaries.
 
 DLC Studio provides dedicated condition-group and causal-template tabs, keyed import/export Diff and history, template inheritance versus explicit override controls, multi-group selection, resolved counts, and unsaved-draft preview. Release `0.17.0` is verified with 446 Python tests and 15 frontend tests.
+
+## Causal graph replay workbench (v0.18.0)
+
+The DLC Studio causal-rule preview now includes a resolved edge inspector rather than a full node-layout canvas. Authors can filter edges by event type, rule ID, template ID, or condition-group ID, then inspect source-to-child routing, priority, delay, probability, target mode, resolved condition/effect counts, and reusable authoring provenance. Node summaries include incoming and effective outgoing rules, including wildcard routes.
+
+Every deterministic Dry Run returns an `agentera-causal-replay-v1` fixture containing only the source event, bounded replay controls, analysis fingerprint, result digest, and summary baseline. The digest covers the resolved analysis summary, simulated nodes, event edges, pending work, and Dry Run summary; it deliberately excludes the fixture itself, full DLC content, Prompt text, API keys, and model configuration.
+
+`POST /api/dlcs/{dlc_id}/causal-events/replay` compares an imported baseline with the current content or an unsaved Studio draft. It distinguishes resolved-rule drift (`analysis_fingerprint`) from seed-fact or execution drift (`result_digest` and summary fields). Import and replay do not save the fixture, write DLC files, reload a generation, or mutate live world state. Release `0.18.0` is verified with **451 Python tests**, **16 frontend tests**, frontend lint/build, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.

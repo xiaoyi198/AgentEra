@@ -2125,3 +2125,58 @@ npm run build
 ```
 
 Verified on 2026-07-13 for `0.17.0`: **446 Python tests** and **15 frontend tests** before final repository-wide gates.
+
+## Causal graph replay development workflow (v0.18.0)
+
+### Authoring and inspection flow
+
+1. Open DLC Studio and select a causal rule.
+2. Run **Analyze and preview**. The request uses `buildCausalDryRunDraft()` so the selected rule and other unsaved causal authoring data are analyzed without saving the package.
+3. Inspect the resolved node strip and edge table. Filter by event type, rule ID, template ID, or condition-group ID.
+4. Export the generated `agentera-causal-replay-v1` fixture.
+5. Import the same fixture to verify a match, or change rules/seed facts and import it again to inspect drift.
+
+The resolved-edge inspector is a table/workbench, not a graph-layout canvas. Do not describe it as ReactFlow visualization. Edge provenance is derived from authored references, while routing semantics and fingerprints are derived from the shared expansion/runtime model.
+
+### Replay API
+
+```http
+POST /api/dlcs/{dlc_id}/causal-events/replay
+Content-Type: application/json
+
+{
+  "content": { "...": "optional current unsaved Studio draft" },
+  "fixture": { "format": "agentera-causal-replay-v1", "...": "..." }
+}
+```
+
+If `content` is omitted, replay uses saved package content. If supplied, Registry normalization is applied in memory. The operation must remain read-only: never call save, publish, reload, rollback, generation activation, or world mutation from this endpoint.
+
+### Fixture invariants
+
+- Keep `format` and `schema_version` explicit.
+- Keep source-event bounds aligned with `dry_run_causal_rules()`.
+- Keep the result digest projection deterministic and secret-free.
+- Never include `replay_fixture` inside its own digest projection.
+- Never add full DLC content, Prompt text, API credentials, provider configuration, or raw exceptions to exported evidence.
+- Treat the replay report's fixture as a fresh baseline for current content; imported evidence is comparison input only and is not persisted.
+- Preserve the distinction between rule drift (`analysis_fingerprint`) and seed/execution drift (`result_digest`).
+
+### Required verification
+
+```powershell
+python -m compileall -q main.py routers multiagent_framework tests
+python -m pytest -q -p no:cacheprovider
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+
+cd frontend
+npm test
+npm run lint
+npm run build
+cd ..
+
+git -c safe.directory='F:/?????' diff --check
+```
+
+Verified for `0.18.0`: **451 Python tests**, **16 frontend tests**, Prompt contracts **100%**, trajectory replay **100%**, compile/lint/build/diff gates passed.

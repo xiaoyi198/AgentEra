@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft } from './DLCStudioTools.js'
+import { useMemo, useRef, useState } from 'react'
+import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft, normalizeCausalReplayFixture } from './DLCStudioTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -449,15 +449,39 @@ function CausalWorldEffectBuilder({ value, entities, resources, onChange }) {
   </section>
 }
 
-function CausalDryRunPanel({ report, busy, sourceType, severity, horizonDays, eventTypes, onSourceType, onSeverity, onHorizonDays, onRun }) {
+function CausalGraphInspector({ analysis }) {
+  const [filter, setFilter] = useState('')
+  const query = filter.trim().toLowerCase()
+  const edges = (analysis?.edges || []).filter(edge => !query || [
+    edge.rule_id, edge.source_event_type, edge.child_event_type, edge.template_id,
+    ...(edge.condition_group_ids || []),
+  ].some(value => String(value || '').toLowerCase().includes(query)))
+
+  return <section className="dlc-causal-graph">
+    <div className="dlc-condition-header"><div><strong>Resolved causal graph edges</strong><small>Inspect expanded routing, reusable authoring provenance, timing, conditions, and effects.</small></div><label>Filter<input value={filter} onChange={event => setFilter(event.target.value)} placeholder="event, rule, template, group" /></label></div>
+    <div className="dlc-causal-node-strip">{(analysis?.nodes || []).map(node => <article key={node.event_type}><strong>{node.event_type}</strong><small>{(node.origins || []).join(' / ') || 'derived'}</small><code>{node.incoming_rules?.length || 0} in / {node.outgoing_rules?.length || 0} out</code></article>)}</div>
+    <div className="dlc-causal-edge-list">
+      {!edges.length && <div className="dlc-condition-empty">No graph edge matches the current filter.</div>}
+      {edges.map(edge => <article key={edge.edge_id || `${edge.rule_id}:${edge.source_event_type}`} className={!edge.enabled ? 'disabled' : ''}>
+        <div className="dlc-causal-edge-route"><code>{edge.source_event_type}</code><span>&rarr;</span><code>{edge.child_event_type}</code></div>
+        <div className="dlc-causal-edge-meta"><strong>{edge.rule_id}</strong><span>p{edge.priority} / {edge.delay_days}d / probability {edge.probability}</span><span>{edge.condition_count} conditions / {edge.world_effect_count} effects / {edge.target_mode} targets</span></div>
+        <div className="dlc-causal-edge-authoring">{edge.template_id ? <code>template:{edge.template_id}</code> : <code>inline rule</code>}{(edge.condition_group_ids || []).map(groupId => <code key={groupId}>group:{groupId}</code>)}<small>{edge.inline_condition_count || 0} inline conditions</small></div>
+      </article>)}
+    </div>
+  </section>
+}
+
+function CausalDryRunPanel({ report, replayComparison, busy, sourceType, severity, horizonDays, eventTypes, onSourceType, onSeverity, onHorizonDays, onRun, onExportReplay, onImportReplay }) {
+  const replayInputRef = useRef(null)
   return <section className="dlc-causal-preview">
-    <div className="dlc-condition-header"><div><strong>Deterministic chain preview</strong><small>Runs against this unsaved draft and DLC seed facts without changing live world state.</small></div></div>
+    <div className="dlc-condition-header"><div><strong>Deterministic chain preview</strong><small>Runs against this unsaved draft and DLC seed facts without changing live world state.</small></div><div className="dlc-causal-replay-actions"><input ref={replayInputRef} type="file" accept="application/json,.json" hidden onChange={onImportReplay} /><button type="button" disabled={!report?.replay_fixture} onClick={onExportReplay}>Export replay fixture</button><button type="button" disabled={busy} onClick={() => replayInputRef.current?.click()}>Import and replay</button></div></div>
     <div className="dlc-causal-preview-controls">
       <label>Source event type<input list="causal-event-type-catalog" value={sourceType} onChange={event => onSourceType(event.target.value)} placeholder="shortage" /><datalist id="causal-event-type-catalog">{eventTypes.map(item => <option key={item} value={item} />)}</datalist></label>
       <label>Severity<input type="number" min="1" max="10" step="1" value={severity} onChange={event => onSeverity(event.target.value)} /></label>
       <label>Horizon days<input type="number" min="0" max="3650" step="1" value={horizonDays} onChange={event => onHorizonDays(event.target.value)} /></label>
       <button type="button" className="primary" disabled={busy || !sourceType.trim()} onClick={onRun}>{busy ? 'Analyzing...' : 'Analyze and preview'}</button>
     </div>
+    {replayComparison && <div className={`dlc-causal-replay-result ${replayComparison.matches ? 'match' : 'drift'}`}><strong>{replayComparison.matches ? 'Replay matches baseline' : 'Replay drift detected'}</strong><span>{replayComparison.matches ? 'Rules, seed-dependent results, timeline, and pending work are deterministic.' : (replayComparison.drift_fields || []).join(', ')}</span><code>{String(replayComparison.actual_result_digest || '').slice(0, 16)}</code></div>}
     {report && <>
       <div className="dlc-causal-summary">
         <article><span>Rules</span><strong>{report.analysis.summary.enabled_count}/{report.analysis.summary.rule_count}</strong></article>
@@ -466,13 +490,14 @@ function CausalDryRunPanel({ report, busy, sourceType, severity, horizonDays, ev
         <article><span>Pending</span><strong>{report.summary.pending_count}</strong></article>
       </div>
       {!!report.analysis.issues.length && <div className="dlc-causal-issues">{report.analysis.issues.map((issue, index) => <div key={`${issue.code}-${index}`} className={issue.severity}><strong>{issue.severity}</strong><code>{issue.code}</code><span>{issue.message}</span>{!!issue.rule_ids.length && <small>{issue.rule_ids.join(', ')}</small>}</div>)}</div>}
+      <CausalGraphInspector analysis={report.analysis} />
       <div className="dlc-causal-timeline">{report.nodes.map((node, index) => <div className="dlc-causal-node" key={node.event_id}><span>Day {Number(node.day).toFixed(2)}</span><strong>{node.event_type}</strong><code>{node.event_id}</code><small>severity {node.severity} / depth {node.causal_depth}</small>{node.world_command_count > 0 && <small>{node.world_effect_status || 'planned'} / {node.world_command_count} world command{node.world_command_count === 1 ? '' : 's'}</small>}{!!node.world_commands?.length && <div className="dlc-causal-command-list">{node.world_commands.map((command, commandIndex) => <code key={`${node.event_id}-command-${commandIndex}`}>{command.command_type} ? {command.entity_id}{command.resource_name ? ` ? ${command.resource_name}` : ''}{command.quantity_delta != null ? ` ? ${Number(command.quantity_delta).toFixed(4)}` : ''}{command.quantity != null ? ` ? ${Number(command.quantity).toFixed(4)}` : ''}{command.anchored_base_value != null ? ` ? base ${Number(command.anchored_base_value).toFixed(2)}` : ''}{command.end_day != null ? ` ? ends day ${Number(command.end_day).toFixed(2)}` : ''}</code>)}</div>}{node.world_effect_error_code && <small className="dlc-editor-error">{node.world_effect_error_code}</small>}{index < report.nodes.length - 1 && <i>-&gt;</i>}</div>)}</div>
       {report.summary.truncated && <div className="dlc-editor-error">Preview reached the event limit while due events remained.</div>}
     </>}
   </section>
 }
 
-export function StructuredContentEditor({ kind, content, selected, onSelect, onSaveContent, onAnalyzeCausal, busy = false }) {
+export function StructuredContentEditor({ kind, content, selected, onSelect, onSaveContent, onAnalyzeCausal, onReplayCausal, busy = false }) {
   const items = content[kind] || []
   const entities = content.entities || []
   const agents = content.agents || []
@@ -490,6 +515,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const [previewHorizon, setPreviewHorizon] = useState(365)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewReport, setPreviewReport] = useState(null)
+  const [replayComparison, setReplayComparison] = useState(null)
 
   const resolvedCausalRule = useMemo(() => {
     if (kind !== 'causal_event_rules') return null
@@ -550,12 +576,48 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         max_events: 128,
       })
       setPreviewReport(report)
+      setReplayComparison(null)
     } catch (caught) {
       setError(caught.message)
     } finally {
       setPreviewBusy(false)
     }
   }
+  const exportCausalReplay = () => {
+    const fixture = previewReport?.replay_fixture
+    if (!fixture) return
+    const blob = new Blob([`${JSON.stringify(fixture, null, 2)}\n`], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    const safeRuleId = String(form.rule_id || 'causal-rule').replace(/[^a-zA-Z0-9_-]+/g, '_')
+    anchor.href = url
+    anchor.download = `${safeRuleId}-replay.json`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+  const importCausalReplay = async event => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const fixture = normalizeCausalReplayFixture(JSON.parse(await file.text()))
+      const rule = serializeListForm('causal_event_rules', formForSerialization())
+      const draft = buildCausalDryRunDraft(content, rule, selectedIndex, fixture.input.source_event)
+      setPreviewBusy(true)
+      setError('')
+      const replay = await onReplayCausal({ content: draft.content, fixture })
+      setPreviewSourceType(fixture.input.source_event.event_type)
+      setPreviewSeverity(fixture.input.source_event.severity)
+      setPreviewHorizon(fixture.input.horizon_days)
+      setPreviewReport(replay.report)
+      setReplayComparison(replay.comparison)
+    } catch (caught) {
+      setError(caught.message)
+    } finally {
+      setPreviewBusy(false)
+      event.target.value = ''
+    }
+  }
+
   const save = () => {
     try {
       const data = serializeListForm(kind, kind === 'causal_event_rules' ? formForSerialization() : form)
@@ -655,6 +717,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
         <CausalDryRunPanel
           report={previewReport}
+          replayComparison={replayComparison}
           busy={previewBusy}
           sourceType={previewSourceType}
           severity={previewSeverity}
@@ -664,6 +727,8 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
           onSeverity={setPreviewSeverity}
           onHorizonDays={setPreviewHorizon}
           onRun={runCausalPreview}
+          onExportReplay={exportCausalReplay}
+          onImportReplay={importCausalReplay}
         />
       </>}
 

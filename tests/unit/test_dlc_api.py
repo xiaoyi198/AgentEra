@@ -177,3 +177,61 @@ def test_causal_dry_run_api_expands_unsaved_template_draft(tmp_path: Path):
             assert registry.load_content("template_draft")["causal_rule_templates"] == []
     finally:
         state.orchestrator = previous
+
+
+def test_causal_replay_api_uses_unsaved_draft_and_reports_drift(tmp_path: Path):
+    registry = DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
+    registry.create({"id": "causal_replay", "name": "Causal Replay", "version": "0.1.0"})
+    saved = registry.load_content("causal_replay")
+    draft = {
+        **saved,
+        "causal_event_rules": [{
+            "rule_id": "seed_to_result",
+            "source_event_types": ["seed"],
+            "child_event_type": "result",
+            "delay_days": 2,
+            "probability": 1,
+            "max_depth": 4,
+            "max_fires_per_chain": 1,
+        }],
+    }
+    orchestrator = type("Orchestrator", (), {"dlc_registry": registry})()
+    app = FastAPI()
+    app.include_router(router)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with TestClient(app) as client:
+            preview = client.post(
+                "/api/dlcs/causal_replay/causal-events/dry-run",
+                json={
+                    "content": draft,
+                    "source_event": {"event_type": "seed", "severity": 5},
+                    "horizon_days": 10,
+                    "max_events": 16,
+                },
+            )
+            assert preview.status_code == 200
+            fixture = preview.json()["replay_fixture"]
+
+            replay = client.post(
+                "/api/dlcs/causal_replay/causal-events/replay",
+                json={"content": draft, "fixture": fixture},
+            )
+            assert replay.status_code == 200
+            assert replay.json()["comparison"]["matches"] is True
+            assert registry.load_content("causal_replay")["causal_event_rules"] == []
+
+            changed = {
+                **draft,
+                "causal_event_rules": [{**draft["causal_event_rules"][0], "delay_days": 4}],
+            }
+            drift = client.post(
+                "/api/dlcs/causal_replay/causal-events/replay",
+                json={"content": changed, "fixture": fixture},
+            )
+            assert drift.status_code == 200
+            assert drift.json()["comparison"]["matches"] is False
+            assert "analysis_fingerprint" in drift.json()["comparison"]["drift_fields"]
+    finally:
+        state.orchestrator = previous

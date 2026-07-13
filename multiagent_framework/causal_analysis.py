@@ -10,9 +10,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+import copy
 import hashlib
 import json
 import math
+import re
 from typing import Any
 
 from .causal_events import (
@@ -28,6 +30,9 @@ from .world_state import EntityValue, InventoryItem, ResourceDefinition
 
 _MAX_DRY_RUN_EVENTS = 256
 _MAX_HORIZON_DAYS = 3650.0
+CAUSAL_REPLAY_FIXTURE_FORMAT = "agentera-causal-replay-v1"
+_CAUSAL_REPLAY_SCHEMA_VERSION = "1.0"
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 class _SeedWorldFacts:
@@ -283,9 +288,29 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
     source_counts: dict[str, int] = defaultdict(int)
     produced_by: dict[str, list[str]] = defaultdict(list)
 
+    authoring_index: dict[str, dict[str, Any]] = {}
+    for raw_rule in _list_field(content, "causal_event_rules"):
+        if not isinstance(raw_rule, Mapping):
+            continue
+        rule_id = str(raw_rule.get("rule_id", "")).strip()
+        if not rule_id or rule_id in authoring_index:
+            continue
+        group_ids = raw_rule.get("condition_group_ids", [])
+        authoring_index[rule_id] = {
+            "template_id": str(raw_rule.get("template_id", "")).strip(),
+            "condition_group_ids": [str(item).strip() for item in group_ids] if isinstance(group_ids, list) else [],
+            "inline_condition_count": len(raw_rule.get("conditions", [])) if isinstance(raw_rule.get("conditions", []), list) else 0,
+        }
+
     for rule in rules:
+        provenance = authoring_index.get(rule.rule_id, {
+            "template_id": "", "condition_group_ids": [], "inline_condition_count": len(rule.conditions),
+        })
         for source in rule.source_event_types:
-            edge = {**_rule_payload(rule), "source_event_type": source}
+            edge = {**_rule_payload(rule), **provenance, "source_event_type": source}
+            edge["edge_id"] = hashlib.sha256(
+                f"{rule.rule_id}\0{source}\0{rule.child_event_type}".encode("utf-8")
+            ).hexdigest()[:20]
             edges.append(edge)
             event_types.update((source, rule.child_event_type))
             if rule.enabled:
@@ -434,11 +459,16 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
     for event_type in sorted(event_types):
         if event_type == "*":
             continue
+        outgoing_rules = sorted(
+            rule.rule_id for rule in enabled
+            if event_type in rule.source_event_types or "*" in rule.source_event_types
+        )
         graph_nodes.append({
             "event_type": event_type,
             "origins": sorted(origins.get(event_type, ())),
             "incoming_rules": sorted(produced_by.get(event_type, ())),
-            "outgoing_count": source_counts.get(event_type, 0) + source_counts.get("*", 0),
+            "outgoing_rules": outgoing_rules,
+            "outgoing_count": len(outgoing_rules),
         })
 
     fingerprint_source = json.dumps([rule.fingerprint() for rule in rules], separators=(",", ":"))
@@ -594,7 +624,7 @@ def dry_run_causal_rules(
 
     remaining = engine.snapshot()["pending"]
     pending_due = sum(float(item["due_at"]) <= horizon_at for item in remaining)
-    return {
+    report = {
         "schema_version": "1.0",
         "analysis": analyze_causal_rules(content),
         "source_event": _event_payload(source),
@@ -619,4 +649,135 @@ def dry_run_causal_rules(
             }
             for item in remaining[:_MAX_DRY_RUN_EVENTS]
         ],
+    }
+    report["replay_fixture"] = build_causal_replay_fixture(report)
+    return report
+
+
+def _causal_replay_projection(report: Mapping[str, Any]) -> dict[str, Any]:
+    analysis = report.get("analysis", {})
+    if not isinstance(analysis, Mapping):
+        raise CausalEventError("causal_replay_report_invalid")
+    return {
+        "analysis_fingerprint": str(analysis.get("fingerprint", "")),
+        "analysis_summary": copy.deepcopy(analysis.get("summary", {})),
+        "summary": copy.deepcopy(report.get("summary", {})),
+        "nodes": copy.deepcopy(report.get("nodes", [])),
+        "edges": copy.deepcopy(report.get("edges", [])),
+        "pending": copy.deepcopy(report.get("pending", [])),
+    }
+
+
+def _causal_replay_digest(report: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        _causal_replay_projection(report), ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_causal_replay_fixture(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a deterministic, secret-free replay fixture from a dry-run report."""
+
+    source = report.get("source_event", {})
+    analysis = report.get("analysis", {})
+    summary = report.get("summary", {})
+    if not isinstance(source, Mapping) or not isinstance(analysis, Mapping) or not isinstance(summary, Mapping):
+        raise CausalEventError("causal_replay_report_invalid")
+    source_event = {
+        "event_id": str(source.get("event_id", "")),
+        "event_type": str(source.get("event_type", "")),
+        "severity": source.get("severity", 5),
+        "target_agents": copy.deepcopy(source.get("target_agents", [])),
+        "initial_payload": copy.deepcopy(source.get("initial_payload", {})),
+        "generated_at": source.get("generated_at", 0.0),
+    }
+    return {
+        "format": CAUSAL_REPLAY_FIXTURE_FORMAT,
+        "schema_version": _CAUSAL_REPLAY_SCHEMA_VERSION,
+        "input": {
+            "source_event": source_event,
+            "horizon_days": report.get("horizon_days", 365.0),
+            "max_events": report.get("max_events", 128),
+        },
+        "expected": {
+            "analysis_fingerprint": str(analysis.get("fingerprint", "")),
+            "result_digest": _causal_replay_digest(report),
+            "summary": copy.deepcopy(dict(summary)),
+        },
+    }
+
+
+def _normalize_causal_replay_fixture(fixture: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(fixture, Mapping):
+        raise CausalEventError("causal_replay_fixture_invalid")
+    if fixture.get("format") != CAUSAL_REPLAY_FIXTURE_FORMAT:
+        raise CausalEventError("causal_replay_format_invalid")
+    if fixture.get("schema_version") != _CAUSAL_REPLAY_SCHEMA_VERSION:
+        raise CausalEventError("causal_replay_schema_invalid")
+    replay_input = fixture.get("input")
+    expected = fixture.get("expected")
+    if not isinstance(replay_input, Mapping) or not isinstance(expected, Mapping):
+        raise CausalEventError("causal_replay_fixture_invalid")
+    source_event = replay_input.get("source_event")
+    if not isinstance(source_event, Mapping):
+        raise CausalEventError("causal_replay_fixture_invalid")
+    result_digest = str(expected.get("result_digest", "")).lower()
+    analysis_fingerprint = str(expected.get("analysis_fingerprint", "")).lower()
+    if not _SHA256_HEX.fullmatch(result_digest) or not _SHA256_HEX.fullmatch(analysis_fingerprint):
+        raise CausalEventError("causal_replay_digest_invalid")
+    expected_summary = expected.get("summary")
+    if not isinstance(expected_summary, Mapping):
+        raise CausalEventError("causal_replay_fixture_invalid")
+    return {
+        "format": CAUSAL_REPLAY_FIXTURE_FORMAT,
+        "schema_version": _CAUSAL_REPLAY_SCHEMA_VERSION,
+        "input": {
+            "source_event": copy.deepcopy(dict(source_event)),
+            "horizon_days": replay_input.get("horizon_days", 365.0),
+            "max_events": replay_input.get("max_events", 128),
+        },
+        "expected": {
+            "analysis_fingerprint": analysis_fingerprint,
+            "result_digest": result_digest,
+            "summary": copy.deepcopy(dict(expected_summary)),
+        },
+    }
+
+
+def replay_causal_fixture(content: Mapping[str, Any], fixture: Mapping[str, Any]) -> dict[str, Any]:
+    """Replay an exported fixture against current content and report deterministic drift."""
+
+    normalized = _normalize_causal_replay_fixture(fixture)
+    replay_input = normalized["input"]
+    report = dry_run_causal_rules(
+        content,
+        replay_input["source_event"],
+        horizon_days=replay_input["horizon_days"],
+        max_events=replay_input["max_events"],
+    )
+    actual_digest = _causal_replay_digest(report)
+    actual_analysis = str(report["analysis"]["fingerprint"])
+    expected = normalized["expected"]
+    drift_fields: list[str] = []
+    if actual_analysis != expected["analysis_fingerprint"]:
+        drift_fields.append("analysis_fingerprint")
+    if actual_digest != expected["result_digest"]:
+        drift_fields.append("result_digest")
+    actual_summary = report["summary"]
+    for key in sorted(set(expected["summary"]) | set(actual_summary)):
+        if expected["summary"].get(key) != actual_summary.get(key):
+            drift_fields.append(f"summary.{key}")
+    return {
+        "schema_version": _CAUSAL_REPLAY_SCHEMA_VERSION,
+        "comparison": {
+            "matches": not drift_fields,
+            "analysis_matches": actual_analysis == expected["analysis_fingerprint"],
+            "result_matches": actual_digest == expected["result_digest"],
+            "expected_analysis_fingerprint": expected["analysis_fingerprint"],
+            "actual_analysis_fingerprint": actual_analysis,
+            "expected_result_digest": expected["result_digest"],
+            "actual_result_digest": actual_digest,
+            "drift_fields": drift_fields,
+        },
+        "report": report,
     }

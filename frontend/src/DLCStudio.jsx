@@ -528,6 +528,7 @@ export default function DLCStudio() {
   }
   const saveStructuredContent = (nextContent, success) => stageContentChange(nextContent, success, { operation: tab })
   const analyzeCausalDraft = payload => request(`${API}/${encodeURIComponent(selectedId)}/causal-events/dry-run`, { method: 'POST', body: JSON.stringify(payload) })
+  const replayCausalDraft = payload => request(`${API}/${encodeURIComponent(selectedId)}/causal-events/replay`, { method: 'POST', body: JSON.stringify(payload) })
   const saveItem = (key, data) => {
     const payload = { ...data }
     if (tab === 'agents') {
@@ -640,7 +641,7 @@ export default function DLCStudio() {
                 : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'prompts' ? <PromptEditor key={`prompts:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
-                      : <StructuredContentEditor key={`${tab}:${selectedItem}`} kind={tab} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} onAnalyzeCausal={analyzeCausalDraft} busy={busy} />}
+                      : <StructuredContentEditor key={`${tab}:${selectedItem}`} kind={tab} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} onAnalyzeCausal={analyzeCausalDraft} onReplayCausal={replayCausalDraft} busy={busy} />}
         </>}
       </section>
     </main>

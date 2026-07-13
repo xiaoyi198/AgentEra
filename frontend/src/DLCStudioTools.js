@@ -1,4 +1,5 @@
 export const DLC_CONTENT_EXPORT_FORMAT = 'world-simulator-dlc-content-v1'
+export const CAUSAL_REPLAY_FIXTURE_FORMAT = 'agentera-causal-replay-v1'
 
 const ARRAY_SECTIONS = [
   'resources',
@@ -370,6 +371,47 @@ export function expandCausalRuleDraft(content, authoredRule) {
     groupedConditions.push(...cloneJson(group.conditions))
   }
   return { ...base, ...authored, conditions: [...templateConditions, ...groupedConditions, ...inlineConditions] }
+}
+
+
+export function normalizeCausalReplayFixture(payload) {
+  if (!isObject(payload)) throw new Error('Causal replay fixture root must be an object')
+  if (payload.format !== CAUSAL_REPLAY_FIXTURE_FORMAT) throw new Error(`Unsupported causal replay format: ${payload.format || '<missing>'}`)
+  if (payload.schema_version !== '1.0') throw new Error(`Unsupported causal replay schema: ${payload.schema_version || '<missing>'}`)
+  if (!isObject(payload.input) || !isObject(payload.expected) || !isObject(payload.input.source_event)) throw new Error('Causal replay fixture is incomplete')
+  const source = payload.input.source_event
+  const horizonDays = Number(payload.input.horizon_days)
+  const maxEvents = Number(payload.input.max_events)
+  const severity = Number(source.severity)
+  const generatedAt = Number(source.generated_at ?? 0)
+  const digestPattern = /^[0-9a-f]{64}$/
+  if (!digestPattern.test(String(payload.expected.analysis_fingerprint || '')) || !digestPattern.test(String(payload.expected.result_digest || ''))) throw new Error('Causal replay fixture digest is invalid')
+  if (!isObject(payload.expected.summary) || !Array.isArray(source.target_agents) || !isObject(source.initial_payload)) throw new Error('Causal replay fixture payload is invalid')
+  if (!String(source.event_id || '').trim() || !String(source.event_type || '').trim() || !Number.isInteger(severity) || severity < 1 || severity > 10) throw new Error('Causal replay source event is invalid')
+  if (source.target_agents.length > 256 || source.target_agents.some(value => typeof value !== 'string' || !value.trim())) throw new Error('Causal replay target agents are invalid')
+  if (!Number.isFinite(generatedAt) || generatedAt < 0) throw new Error('Causal replay generated_at is invalid')
+  if (!Number.isFinite(horizonDays) || horizonDays < 0 || horizonDays > 3650 || !Number.isInteger(maxEvents) || maxEvents < 1 || maxEvents > 256) throw new Error('Causal replay limits are invalid')
+  return {
+    format: CAUSAL_REPLAY_FIXTURE_FORMAT,
+    schema_version: '1.0',
+    input: {
+      source_event: {
+        event_id: String(source.event_id),
+        event_type: String(source.event_type),
+        severity,
+        target_agents: source.target_agents.map(value => value.trim()),
+        initial_payload: cloneJson(source.initial_payload),
+        generated_at: generatedAt,
+      },
+      horizon_days: horizonDays,
+      max_events: maxEvents,
+    },
+    expected: {
+      analysis_fingerprint: String(payload.expected.analysis_fingerprint),
+      result_digest: String(payload.expected.result_digest),
+      summary: cloneJson(payload.expected.summary),
+    },
+  }
 }
 
 

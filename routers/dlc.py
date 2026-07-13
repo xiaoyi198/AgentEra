@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from multiagent_framework.causal_analysis import dry_run_causal_rules
+from multiagent_framework.causal_analysis import dry_run_causal_rules, replay_causal_fixture
 from multiagent_framework.causal_events import CausalEventError
 from multiagent_framework.dlc_registry import DLCRegistry, DLCRegistryError
 from routers import _state as state
@@ -64,6 +64,11 @@ class CausalDryRunRequest(BaseModel):
     source_event: dict[str, Any]
     horizon_days: float = Field(default=365.0, ge=0, le=3650)
     max_events: int = Field(default=128, ge=1, le=256)
+
+
+class CausalReplayRequest(BaseModel):
+    content: dict[str, Any] | None = None
+    fixture: dict[str, Any]
 
 
 def _registry() -> DLCRegistry:
@@ -176,6 +181,23 @@ async def dry_run_dlc_causal_events(dlc_id: str, request: CausalDryRunRequest):
             horizon_days=request.horizon_days,
             max_events=request.max_events,
         )
+
+    return _call(operation)
+
+
+@router.post("/{dlc_id}/causal-events/replay")
+async def replay_dlc_causal_events(dlc_id: str, request: CausalReplayRequest):
+    registry = _registry()
+
+    def operation():
+        # Replay imported evidence against the current unsaved Studio draft only.
+        registry.get(dlc_id)
+        content = (
+            registry.normalize_content_document(request.content)
+            if request.content is not None
+            else registry.load_content(dlc_id)
+        )
+        return replay_causal_fixture(content, request.fixture)
 
     return _call(operation)
 

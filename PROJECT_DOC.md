@@ -1772,3 +1772,28 @@ Status: **implemented and locally verified**.
 - Verified with **446 Python tests** and **15 frontend tests** before the final compile, prompt-contract, trajectory, lint, build, and diff gates.
 
 The persistent product goal remains active. Reusable authoring now reduces duplicated DLC causal configuration; graph-edge inspection, replay fixture exchange, deeper Agent-driven scenarios, multi-turn memory evaluation, and production soak/calibration remain ongoing.
+
+## Release architecture note: causal graph replay workbench (v0.18.0)
+
+### Resolved graph inspection
+
+`multiagent_framework/causal_analysis.py::analyze_causal_rules()` remains the shared, side-effect-free analysis boundary. Its graph edges now expose stable `edge_id` values plus authoring provenance (`template_id`, ordered `condition_group_ids`, and `inline_condition_count`). Graph nodes expose `incoming_rules` and effective `outgoing_rules`; wildcard rules are included once in each applicable node. Execution semantics still come from the shared causal authoring expander, so the inspector cannot diverge from Registry validation, Dry Run, reload, rollback, or active runtime materialization.
+
+`frontend/src/DLCContentEditors.jsx` renders this payload as a filterable resolved-edge table and horizontally scrollable node summary. This is intentionally an inspection workbench, not a ReactFlow graph-layout claim. The UI shows resolved routing and provenance without changing authoring data.
+
+### Deterministic Replay Fixture
+
+A successful `dry_run_causal_rules()` response includes a secret-free `agentera-causal-replay-v1` fixture. Its input contains the normalized source event, horizon, and event budget. Its expected evidence contains the resolved analysis fingerprint, deterministic result digest, and Dry Run summary. The digest projection contains analysis fingerprint/summary, Dry Run summary, nodes, edges, and pending events, and excludes `replay_fixture` to prevent recursive evidence.
+
+`replay_causal_fixture(content, fixture)` reruns the production causal engine against current content and returns both a fresh report/new baseline and a comparison. `analysis_matches` identifies resolved rule-graph stability; `result_matches` also covers seed facts and simulated execution. `drift_fields` adds summary-level differences such as `summary.event_count`.
+
+`POST /api/dlcs/{dlc_id}/causal-events/replay` accepts optional normalized content, allowing DLC Studio to replay against the current unsaved draft. The endpoint reads the package identity but does not save content, publish/reload a generation, modify the active Runtime, or mutate world state. Frontend import normalization validates schema, SHA-256 evidence, source bounds, target Agent IDs, timestamps, horizon, and event budget; unknown top-level extensions are discarded before the request.
+
+### Release verification
+
+- Release identity: `0.18.0` in `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata through the shared version module, and README.
+- Python: **451 passed**.
+- Frontend Studio tools: **16 passed**; ESLint and Vite production build passed.
+- Prompt contract suite: **100%**.
+- Deterministic trajectory replay: **100%**.
+- Python compile and Git diff checks passed.

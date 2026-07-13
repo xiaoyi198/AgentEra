@@ -2,7 +2,7 @@
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
-> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with transactional world effects and anchored-value conservation, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 446 Python tests plus 15 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
+> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with transactional world effects and anchored-value conservation, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 451 Python tests plus 16 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
 > 原则：先补基础设施与可观测性，再扩展 DLC 和 Agent 数量；所有核心改造必须可迁移、可回滚、可测试。
 
 ## 1. 总目标
@@ -1264,3 +1264,29 @@ Next priorities:
 5. Improve template authoring with structured world-effect defaults, reusable starter libraries, and package migration guidance without adding recursive semantics.
 
 The persistent product goal remains active. This checkpoint removes repeated causal authoring work while retaining deterministic production behavior and package isolation.
+
+## Phase checkpoint: causal graph-edge inspection and deterministic Replay Fixtures (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added stable resolved graph-edge IDs, reusable template/group provenance, inline-condition counts, and effective wildcard-aware outgoing-rule summaries;
+- added a responsive, filterable DLC Studio graph-edge inspector without claiming a full graph-layout visualization;
+- added secret-free `agentera-causal-replay-v1` baselines to deterministic Dry Run reports;
+- added deterministic result digests over analysis summary, Dry Run summary, nodes, edges, and pending work while excluding the fixture itself;
+- added replay comparison that distinguishes resolved-rule drift from seed-fact/execution drift and reports summary field changes;
+- added `POST /api/dlcs/{dlc_id}/causal-events/replay` with support for current unsaved Studio drafts and no save, generation, Runtime, or world-state mutation;
+- added Studio fixture export/import, strict client-side normalization, unsafe-extension stripping, and match/drift feedback;
+- synchronized release identity to `0.18.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **451 Python tests**, **16 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, deterministic trajectory replay at **100%**, and Git diff checks.
+
+Next priorities:
+
+1. Extend deterministic scenario fixtures with real Agent actions, production/consumption policies, multiple causal branches, and longer restart/soak windows.
+2. Add author-facing replay fixture libraries, labels, scenario catalogs, and migration guidance while keeping fixtures package-local and secret-free.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect credentialed provider/model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+5. Improve causal authoring ergonomics with structured world-effect defaults and optional graph-layout visualization without changing resolved execution semantics.
+
+The persistent product goal remains active. This checkpoint makes causal authoring changes reproducible and reviewable while preserving deterministic production behavior, package isolation, and read-only Studio analysis.
