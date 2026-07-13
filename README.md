@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.15.0**
+> 当前版本：**v0.16.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -12,6 +12,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
+- **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **事务化因果世界效果**：因果规则可原子调整资源、状态、延迟事件和跨实体锚定价值转移；失败时整体回滚，重启重放保持幂等。
@@ -88,6 +89,17 @@ npm run dev -- --host
 - DLC Studio：`http://localhost:3000/dlc.html`
 - 天玑调试界面：`http://localhost:3000/tianji.html`
 - 后端 OpenAPI：`http://localhost:8000/docs`
+
+## 经济监控
+
+世界状态页会加载 `GET /api/world-state/economy`，显示：
+
+- 全局当前基础价值及按资源的数量、锚率、基础价值和持有者数；
+- 从不可变库存账本计算的累计发行、累计销毁与非转移净值；
+- 通过稳定 `transfer_id` 对账的锚值转移批次、借贷总额、净差额、不完整批次和不守恒批次；
+- 因果世界效果的批次、命令、拒绝、故障和拒绝率。
+
+旧版 `v0.15.0` 快照没有 `transfer_id` 时，运行时会按因果事件与效果序号兼容配对。公开 API、JSON 指标和 Prometheus 指标只提供聚合值，不返回实体、命令、链路、转移标识、Prompt、密钥或原始异常。
 
 ## DLC 开发
 

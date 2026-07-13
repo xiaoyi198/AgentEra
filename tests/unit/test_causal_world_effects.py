@@ -75,6 +75,9 @@ def test_materializes_and_executes_anchored_transfer_with_conserved_value(tmp_pa
     assert sum(item["base_value_delta"] for item in ledger) == pytest.approx(0)
     assert {item["metadata"]["transfer_side"] for item in ledger} == {"debit", "credit"}
     assert {item["metadata"]["anchored_base_value"] for item in ledger} == {20}
+    transfer_ids = {item["metadata"]["transfer_id"] for item in ledger}
+    assert len(transfer_ids) == 1
+    assert next(iter(transfer_ids)).startswith("transfer_")
 
 
 def test_causal_batch_replay_is_idempotent(tmp_path):
@@ -177,3 +180,55 @@ def test_transfer_quantities_remain_frozen_after_anchor_change(tmp_path):
 
     assert event.world_commands[0]["payload"]["quantity_delta"] == -10
     assert event.world_commands[1]["payload"]["quantity_delta"] == 40
+
+
+def test_legacy_transfer_snapshot_without_transfer_id_restores_and_reconciles(tmp_path):
+    world = make_world(tmp_path)
+    engine = engine_with_effects([{
+        "effect_type": "transfer_anchored_value",
+        "from_entity_id": "warehouse", "from_resource": "grain",
+        "to_entity_id": "treasury", "to_resource": "coin", "base_value": 20,
+    }])
+    assert engine.observe(source(), sim_time=0, world_state=world) == 1
+    snapshot = engine.snapshot()
+    commands = snapshot["pending"][0]["event"]["world_commands"]
+    for command in commands:
+        command["payload"].pop("transfer_id")
+
+    restored = CausalEventEngine()
+    restored.restore(snapshot, sim_time=0)
+    event = restored.poll(2 * GAME_SECONDS_PER_DAY).events[0]
+    result = execute_causal_world_commands(world, event, sim_time=event.generated_at)
+
+    assert result is not None and result.ok
+    invariants = world.get_economic_invariants()
+    assert invariants["transfers"] == {
+        "batch_count": 1,
+        "entry_count": 2,
+        "debit_base_value": 20.0,
+        "credit_base_value": 20.0,
+        "net_base_value": 0.0,
+        "mismatch_batch_count": 0,
+        "incomplete_batch_count": 0,
+        "max_abs_mismatch": 0.0,
+        "conserved": True,
+    }
+    ledger = world.get_inventory_ledger()
+    chain_id = event.initial_payload["causal_chain_id"]
+    ledger = [row for row in ledger if row["chain_id"] == chain_id]
+    assert all("transfer_id" not in item["metadata"] for item in ledger if item["metadata"].get("transfer_side"))
+
+
+def test_snapshot_rejects_overlong_transfer_id(tmp_path):
+    world = make_world(tmp_path)
+    engine = engine_with_effects([{
+        "effect_type": "transfer_anchored_value",
+        "from_entity_id": "warehouse", "from_resource": "grain",
+        "to_entity_id": "treasury", "to_resource": "coin", "base_value": 20,
+    }])
+    assert engine.observe(source(), sim_time=0, world_state=world) == 1
+    snapshot = engine.snapshot()
+    snapshot["pending"][0]["event"]["world_commands"][0]["payload"]["transfer_id"] = "x" * 65
+
+    with pytest.raises(CausalEventError, match="causal_snapshot_invalid"):
+        CausalEventEngine().restore(snapshot, sim_time=0)

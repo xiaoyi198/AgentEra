@@ -1212,3 +1212,29 @@ Next priorities:
 5. Add economic invariant dashboards for anchored-value issuance, destruction, transfer conservation, and rejected-batch trends.
 
 The persistent product goal remains active. This checkpoint closes the immediate gap between causal event authoring and authoritative transactional world mutation.
+
+
+## Phase checkpoint: anchored-value economic invariants and dashboard (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added authoritative current base-value aggregation by asset resource, anchor rate, quantity, and holder count;
+- derived cumulative issuance, destruction, and non-transfer net value from the immutable inventory ledger;
+- added stable causal-transfer IDs, debit/credit reconciliation, incomplete/mismatched batch detection, and backward-compatible pairing for `0.15.0` snapshots without transfer IDs;
+- added secret-free `GET /api/world-state/economy`, JSON operational metrics, and Prometheus economy/causal-effect signals;
+- added a responsive World State economic dashboard with automatic/manual refresh, conservation status, top-resource valuation, and causal rejection/failure health;
+- added a deterministic multi-hop economic integration scenario spanning cross-anchor transfer, downstream conditions, delayed causal work, ongoing-event maturity, SQLite restart, causal snapshot restore, and ledger replay idempotency;
+- synchronized release identity to `0.16.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **434 Python tests**, **14 frontend tests**, frontend lint/build, Python compile, Prompt contracts at **100%**, and deterministic trajectory replay at **100%**.
+
+Next priorities:
+
+1. Add reusable causal templates and condition groups plus graph-edge inspection and replay fixture import/export in DLC Studio.
+2. Extend long deterministic scenarios to include real Agent actions, production/consumption policies, multiple branches, and longer restart/soak windows.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect same-environment production economic baselines before defining alert thresholds for mismatch, rejection, issuance spikes, or drift.
+5. Run credentialed model matrices, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+
+The persistent product goal remains active. The unified-value economy is now observable and restart-auditable; production calibration and broader Agent-driven simulation remain ongoing.

@@ -1712,3 +1712,31 @@ Status: **implemented and locally verified**.
 - Release identity is `0.15.0`, synchronized across `VERSION`, backend package metadata, frontend package metadata/lockfile, FastAPI, and README.
 - Full backend suite: **428 passed**. Frontend: **14 tests passed**, lint passed, and production build passed. Python compile passed.
 - Focused coverage includes anchored-value conservation, atomic rollback, idempotent replay, frozen snapshot semantics, deterministic ongoing-event creation, malformed-plan rejection, isolated downstream fact propagation, Registry references, and unsaved Studio drafts.
+
+
+## Phase checkpoint: anchored-value economic invariants and dashboard (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+### Economic invariant model
+
+- `WorldState.get_economic_invariants()` derives the current asset economy from authoritative SQLite state. For each asset resource it aggregates quantity, catalog anchor rate, base value (`quantity * anchor_rate`), and holder count; the public result never includes entity IDs.
+- Gross positive and negative inventory-ledger flows are separated from transfer credits/debits to compute cumulative issuance, destruction, and non-transfer net base value. Atomic rejected causal batches write no ledger rows and therefore cannot distort these totals.
+- Every newly materialized `transfer_anchored_value` pair receives a stable SHA-256-derived `transfer_id` shared by debit and credit commands. Reconciliation reports batch/entry counts, debit and credit totals, net difference, incomplete batches, mismatched batches, maximum absolute mismatch, and a conservation flag.
+- Scheduler restore remains compatible with `0.15.0` snapshots that lack `transfer_id`. Legacy ledger entries are paired by causal event identity and adjacent effect index; new snapshots validate transfer IDs at 64 characters or fewer.
+
+### API, metrics, and frontend
+
+- `GET /api/world-state/economy` is a static route registered before `/{entity_id}`. It returns economic invariants, simulation time, and aggregate causal-effect batch/command/rejection/failure counts plus rejection rate.
+- `/api/metrics/json` now exposes `economy.inventory`, `economy.ledger`, `economy.transfers`, and `economy.causal_effects`. Prometheus exports current value, issuance/destruction totals, transfer reconciliation signals, and causal-effect rejection/failure counters without adding an uncalibrated production alert threshold.
+- `WorldStateView.jsx` adds a responsive economic dashboard with manual refresh, automatic refresh after asset changes, conservation status, top-eight resource valuation, and causal-effect health.
+- Public economy surfaces intentionally omit entity, command, chain, event, and transfer identifiers as well as credentials, Provider metadata, Prompt/message/memory bodies, filesystem paths, and raw exceptions.
+
+### Restart and acceptance evidence
+
+- `tests/integration/test_causal_economic_scenario.py` verifies a multi-hop harvest → distribution → tax → replenishment chain across SQLite and causal-engine restart, including a cross-anchor transfer, a downstream anchored condition, delayed replenishment, ongoing-event maturity, replay idempotency, issuance/destruction accounting, and zero ledger drift.
+- Legacy snapshot tests remove `transfer_id`, restore and execute the pending transfer, then verify conservation through compatibility pairing. Oversized IDs fail closed.
+- Release identity is `0.16.0`, synchronized across `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata, and README.
+- Complete local gate: **434 Python tests passed**, **14 frontend tests passed**, frontend lint/build passed, Python compile passed, Prompt contracts scored **100%**, and deterministic trajectory replay scored **100%**.
+
+The persistent product goal remains active. This checkpoint completes the immediate anchored-economy observability gap while longer production soak tests, credentialed model matrices, reusable causal templates, deeper multi-turn memory evaluation, and task/DLC/Agent model refinement remain ongoing.

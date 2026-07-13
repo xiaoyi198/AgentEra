@@ -255,11 +255,15 @@ def _materialize_world_commands(
             from_anchor = _resource_anchor(world_state, str(effect["from_resource"]))
             to_anchor = _resource_anchor(world_state, str(effect["to_resource"]))
             base_value = float(effect["base_value"])
+            transfer_id = "transfer_" + hashlib.sha256(
+                f"{child_id}\0{index}".encode("utf-8")
+            ).hexdigest()[:24]
             audit = {
                 "reason": effect.get("reason", ""),
                 "anchored_base_value": base_value,
                 "anchor_rate": from_anchor,
                 "transfer_side": "debit",
+                "transfer_id": transfer_id,
             }
             commands.append({
                 "command_type": "adjust_resource", "entity_id": effect["from_entity_id"],
@@ -278,6 +282,7 @@ def _materialize_world_commands(
                     "anchored_base_value": base_value,
                     "anchor_rate": to_anchor,
                     "transfer_side": "credit",
+                    "transfer_id": transfer_id,
                 },
             })
     if len(commands) > _MAX_WORLD_COMMANDS:
@@ -311,6 +316,11 @@ def _normalize_materialized_command(value: Any) -> dict[str, Any]:
                 normalized_payload[key] = _finite_effect_number(payload[key], "causal_snapshot_invalid")
         if payload.get("transfer_side") in {"debit", "credit"}:
             normalized_payload["transfer_side"] = payload["transfer_side"]
+            transfer_id = str(payload.get("transfer_id") or "")
+            if transfer_id:
+                if len(transfer_id) > 64:
+                    raise CausalEventError("causal_snapshot_invalid")
+                normalized_payload["transfer_id"] = transfer_id
         return {"command_type": command_type, "entity_id": entity_id, "payload": normalized_payload}
     if command_type == "update_status":
         return {

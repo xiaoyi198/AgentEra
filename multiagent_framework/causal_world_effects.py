@@ -51,7 +51,7 @@ def execute_causal_world_commands(
             "causal_rule_id": rule_id,
             "effect_index": index,
         }
-        for key in ("anchored_base_value", "anchor_rate", "transfer_side"):
+        for key in ("anchored_base_value", "anchor_rate", "transfer_side", "transfer_id"):
             if key in command_payload:
                 metadata[key] = command_payload[key]
         commands.append(WorldCommand(

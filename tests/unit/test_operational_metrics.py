@@ -86,6 +86,8 @@ def _orchestrator(world):
             "agent_turn_errors": 2, "agent_turn_rounds": 22,
             "agent_turn_tool_calls": 14, "agent_turn_input_tokens": 80,
             "agent_turn_output_tokens": 40,
+            "causal_effect_batches": 5, "causal_effect_commands": 8,
+            "causal_effect_rejections": 1, "causal_effect_failures": 1,
         },
     )
 
@@ -153,7 +155,15 @@ def test_collector_alerts_and_prometheus_are_secret_free(tmp_path):
     assert snapshot["metrics"]["memory"] == {
         "messages": 2, "structured_records": 4, "summarized_agents": 2,
     }
+    assert snapshot["metrics"]["economy"]["causal_effects"] == {
+        "batches": 5, "commands": 8, "rejections": 1,
+        "failures": 1, "rejection_rate": 0.4,
+    }
+    assert snapshot["metrics"]["rates"]["causal_effect_rejection_rate"] == 0.4
     prometheus = render_prometheus(snapshot)
+    assert "world_sim_economy_current_base_value 0.0" in prometheus
+    assert "world_sim_causal_effect_rejections_total 1" in prometheus
+    assert 'world_sim_operational_rate{rate="causal_effect_rejection_rate"} 0.4' in prometheus
     assert 'task_type="agent.turn\\\",escaped"' in prometheus
     assert 'world_sim_alert_active{alert="archive_issues"} 1' in prometheus
     serialized = (json.dumps(snapshot) + prometheus).lower()

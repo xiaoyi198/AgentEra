@@ -2060,3 +2060,40 @@ npm test
 npm run lint
 npm run build
 ```
+
+
+## Anchored economy invariant development (v0.16.0)
+
+The economy monitor is an audit surface over authoritative inventory and ledger state, not a second economy implementation. Keep mutation semantics in `WorldCommandBus` and computation in `WorldState.get_economic_invariants()`.
+
+Definitions:
+
+1. Current base value is the sum of each applicable asset inventory quantity multiplied by the resource catalog's current positive anchor rate.
+2. Transfer debit and credit entries are identified by `metadata.transfer_side`. Their absolute base-value deltas are removed from gross negative/positive ledger flows before cumulative destruction/issuance is calculated.
+3. New causal transfers must share one deterministic `transfer_id` across adjacent debit and credit plans. The ID is internal audit metadata and must never be exposed through public economy APIs or metrics.
+4. Snapshots created before `0.16.0` may omit `transfer_id`. Preserve restore compatibility and pair those entries by `causal_event_id` plus the debit effect index; the following credit index belongs to the same legacy pair.
+5. A transfer is conserved only when both sides exist and the absolute debit/credit mismatch is at most `1e-6`. Do not silently drop malformed/incomplete groups from mismatch reporting.
+6. Rejected atomic batches must leave inventory, ledger, ongoing events, and downstream causal propagation unchanged. Never synthesize economic corrections outside the transaction.
+
+Public surfaces:
+
+- `GET /api/world-state/economy` returns invariant aggregates plus causal-effect health and simulation time. Register named static routes before `GET /api/world-state/{entity_id}`.
+- `/api/metrics/json` and Prometheus may expose totals, rates, resource names, units, and anchor rates, but not entity/command/event/chain/transfer identifiers, Prompt or message bodies, model credentials, Provider connection metadata, filesystem paths, or raw exceptions.
+- New signals should not be added to deployment alert calibration until same-environment baselines and safety caps are approved. Dashboard status is observational unless a separately reviewed alert threshold exists.
+- `WorldStateView` must refresh economy data on initial load, manual request, and successful asset mutation; failures should remain bounded and must not break entity/inventory management.
+
+Required verification for economy changes:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_economic_invariants.py tests/unit/test_causal_world_effects.py tests/unit/test_operational_metrics.py tests/unit/test_metrics_api.py tests/integration/test_causal_economic_scenario.py
+python -m pytest -q -p no:cacheprovider
+python -m compileall -q main.py routers multiagent_framework tests
+python -m multiagent_framework.prompt_evaluation tests/evals/daming_prompt_contracts.json --project-root .
+python -m multiagent_framework.trajectory_evaluation tests/evals/daming_trajectory_scenarios.json --mode replay
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Verified on 2026-07-13 for `0.16.0`: **434 Python tests**, **14 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, and deterministic trajectory replay **100%**.
