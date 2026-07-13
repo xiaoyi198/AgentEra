@@ -1740,3 +1740,35 @@ Status: **implemented and locally verified**.
 - Complete local gate: **434 Python tests passed**, **14 frontend tests passed**, frontend lint/build passed, Python compile passed, Prompt contracts scored **100%**, and deterministic trajectory replay scored **100%**.
 
 The persistent product goal remains active. This checkpoint completes the immediate anchored-economy observability gap while longer production soak tests, credentialed model matrices, reusable causal templates, deeper multi-turn memory evaluation, and task/DLC/Agent model refinement remain ongoing.
+
+
+## Phase checkpoint: reusable causal templates and condition groups (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+### Authoring schema and deterministic expansion
+
+- Bundle content now normalizes package-local `causal_condition_groups` and `causal_rule_templates` collections. Condition groups use stable `group_id` keys and templates use stable `template_id` keys.
+- Authored causal rules may retain `template_id` plus ordered `condition_group_ids`. `multiagent_framework/causal_templates.py` is the single pure expansion boundary and never mutates the source document.
+- Field precedence is engine defaults, then `template.rule`, then authored rule fields. Conditions are additive in deterministic order: template conditions, referenced groups, then inline conditions. Recursive template/group references are rejected.
+- Missing, duplicate, malformed, or nested references produce bounded authoring errors with stable paths. Old DLC documents without the new collections retain their prior rule shape and behavior.
+
+### Runtime and tooling consistency
+
+- Registry validation, causal graph analysis, deterministic Dry Run, and active DLC runtime materialization all consume the same expanded rule documents. Studio preview therefore cannot silently diverge from production semantics.
+- Runtime snapshots and pending causal events remain fully materialized. Editing a template changes future generation fingerprints/configuration, while already committed delayed events keep their original immutable semantics across reload, rollback, and restart.
+- Template and group namespaces are package-local. Active packages still enforce globally unique final `rule_id` values after expansion, preserving existing runtime isolation rules.
+
+### DLC Studio
+
+- Added dedicated condition-group and causal-template tabs, keyed Diff/history/import/export support, structured condition-group rows, and template-default JSON authoring.
+- Causal rules can select a reusable template and multiple ordered condition groups, retain inherited defaults, switch to explicit overrides, inspect resolved delay/probability/condition/effect counts, and Dry Run the current unsaved draft.
+- Client-side expansion mirrors the backend only for immediate author feedback; the backend expansion function remains authoritative for validation and execution.
+
+### Verification and release
+
+- Added focused unit/API/runtime tests for precedence, stable condition order, input immutability, legacy compatibility, invalid references, unsaved template drafts, runtime materialization, import/export, keyed Diff, and catalog expansion.
+- Release identity is `0.17.0`, synchronized across `VERSION`, backend package metadata, frontend package/lockfile, FastAPI metadata, and README.
+- Verified with **446 Python tests** and **15 frontend tests** before the final compile, prompt-contract, trajectory, lint, build, and diff gates.
+
+The persistent product goal remains active. Reusable authoring now reduces duplicated DLC causal configuration; graph-edge inspection, replay fixture exchange, deeper Agent-driven scenarios, multi-turn memory evaluation, and production soak/calibration remain ongoing.

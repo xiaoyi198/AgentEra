@@ -21,6 +21,7 @@ from .causal_events import (
     CausalEventError,
     CausalEventRule,
 )
+from .causal_templates import expand_causal_rule_document
 from .event_generator import GAME_SECONDS_PER_DAY
 from .types import EventObject
 from .world_state import EntityValue, InventoryItem, ResourceDefinition
@@ -198,7 +199,7 @@ def _list_field(content: Mapping[str, Any], name: str) -> list[Any]:
 def _rules(content: Mapping[str, Any]) -> list[CausalEventRule]:
     if not isinstance(content, Mapping):
         raise CausalEventError("causal_analysis_content_invalid")
-    raw_rules = _list_field(content, "causal_event_rules")
+    raw_rules = expand_causal_rule_document(content)
     rules = [CausalEventRule.from_mapping(item) for item in raw_rules]
     ids = [item.rule_id for item in rules]
     if len(ids) != len(set(ids)):

@@ -8,6 +8,7 @@ import {
   commitContentHistory,
   createContentExport,
   createContentHistory,
+  expandCausalRuleDraft,
   createPromotionMapping,
   generationRollbackFingerprint,
   normalizeImportedContent,
@@ -31,6 +32,8 @@ const base = {
   initial_events: [],
   ongoing_events: [],
   random_events: [],
+  causal_condition_groups: [],
+  causal_rule_templates: [],
   causal_event_rules: [],
   time_rules: [],
   personas: {},
@@ -325,4 +328,26 @@ test('causal dry-run draft preserves unsaved world effects without mutating cont
   assert.deepEqual(content.causal_event_rules[0].world_effects, [])
   draft.content.causal_event_rules[0].world_effects[0].base_value = 99
   assert.equal(worldEffects[0].base_value, 25)
+})
+
+
+test('causal authoring templates normalize, diff, and expand deterministically', () => {
+  const authored = {
+    ...base,
+    causal_condition_groups: [{ group_id: 'funded', conditions: [{ kind: 'anchored_inventory', entity_id: 'city', name: 'silver', operator: 'gte', value: 10 }] }],
+    causal_rule_templates: [{ template_id: 'delayed', rule: { delay_days: 2, probability: 0.5, conditions: [{ kind: 'metric', entity_id: 'city', name: 'stability', operator: 'gte', value: 3 }] } }],
+    causal_event_rules: [{ rule_id: 'follow_up', template_id: 'delayed', condition_group_ids: ['funded'], source_event_types: ['seed'], child_event_type: 'result', probability: 1, conditions: [{ kind: 'parameter', entity_id: 'city', name: 'tax', operator: 'gt', value: 0 }] }],
+  }
+  const normalized = normalizeImportedContent(authored)
+  const expanded = expandCausalRuleDraft(normalized, normalized.causal_event_rules[0])
+  assert.equal(expanded.delay_days, 2)
+  assert.equal(expanded.probability, 1)
+  assert.deepEqual(expanded.conditions.map(item => item.kind), ['metric', 'anchored_inventory', 'parameter'])
+  assert.equal(Object.hasOwn(expanded, 'template_id'), false)
+  assert.equal(Object.hasOwn(expanded, 'condition_group_ids'), false)
+
+  const changed = { ...normalized, causal_rule_templates: [{ ...normalized.causal_rule_templates[0], name: 'Changed' }] }
+  const diff = summarizeContentDiff(normalized, changed)
+  assert.equal(diff.entries.some(item => item.section === 'causal_rule_templates' && item.key === 'delayed'), true)
+  assert.throws(() => expandCausalRuleDraft(normalized, { ...normalized.causal_event_rules[0], template_id: 'missing' }), /Unknown causal template/)
 })

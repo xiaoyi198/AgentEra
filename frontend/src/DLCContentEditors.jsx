@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { buildCausalDryRunDraft, buildCausalEventCatalog } from './DLCStudioTools.js'
+import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft } from './DLCStudioTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -8,6 +8,8 @@ const T = {
   cancel: '\u53d6\u6d88',
   category: '\u5206\u7c7b',
   causalEvents: '\u56e0\u679c\u4e8b\u4ef6\u89c4\u5219',
+  causalConditionGroups: '\u56e0\u679c\u6761\u4ef6\u7ec4',
+  causalRuleTemplates: '\u56e0\u679c\u89c4\u5219\u6a21\u677f',
   child: '\u5b50\u5b9e\u4f53',
   delete: '\u5220\u9664',
   description: '\u63cf\u8ff0',
@@ -76,6 +78,8 @@ const EMPTY = {
   initial_events: { event_id: '', event_type: 'world_event', severity: 5, target_agents: [], initial_payload: {}, generated_at: 0 },
   ongoing_events: { event_id: '', entity_id: '', event_type: 'state_change', description: '', start_time: 0, end_time: 0, expected_result: {}, source_action_id: '' },
   random_events: { template_id: '', event_type: 'world_event', target_agents: [], initial_payload: {}, severity_min: 3, severity_max: 7, min_interval_days: 30, max_interval_days: 90, probability: 1, max_occurrences: 0, enabled: true },
+  causal_condition_groups: { group_id: '', name: '', description: '', conditions: [] },
+  causal_rule_templates: { template_id: '', name: '', description: '', rule: { delay_days: 1, probability: 1, max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true } },
   causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], world_effects: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
 }
@@ -87,6 +91,8 @@ const TITLES = {
   initial_events: T.initialEvents,
   ongoing_events: T.ongoingEvents,
   random_events: T.randomEvents,
+  causal_condition_groups: T.causalConditionGroups,
+  causal_rule_templates: T.causalRuleTemplates,
   causal_event_rules: T.causalEvents,
   time_rules: T.timeRules,
 }
@@ -114,8 +120,12 @@ function parseObject(value, label) {
 function normalizedListForm(kind, value) {
   const source = value ? deepClone(value) : deepClone(EMPTY[kind])
   if (kind === 'initial_events' || kind === 'random_events' || kind === 'causal_event_rules') source._payload_text = jsonText(source.initial_payload)
+  if (kind === 'causal_condition_groups') source.conditions = Array.isArray(source.conditions) ? source.conditions : []
+  if (kind === 'causal_rule_templates') source._rule_text = JSON.stringify(source.rule && typeof source.rule === 'object' && !Array.isArray(source.rule) ? source.rule : {}, null, 2)
   if (kind === 'causal_event_rules') {
     source._source_types_text = (source.source_event_types || ['*']).join(', ')
+    source.condition_group_ids = Array.isArray(source.condition_group_ids) ? source.condition_group_ids : []
+    source._inherit_template_defaults = Boolean(source.template_id) && !['delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled', 'target_agents'].some(key => Object.hasOwn(source, key))
     source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
     source.conditions = Array.isArray(source.conditions) ? source.conditions : []
     source.world_effects = (Array.isArray(source.world_effects) ? source.world_effects : []).map(effect => ({
@@ -162,7 +172,26 @@ function serializeListForm(kind, form) {
     if (!Number.isFinite(data.probability) || data.probability < 0 || data.probability > 1) throw new Error('Probability must be from 0 to 1.')
     if (!Number.isInteger(data.max_occurrences) || data.max_occurrences < 0) throw new Error('Max occurrences must be a non-negative integer.')
   }
+  if (kind === 'causal_condition_groups') {
+    data.group_id = String(data.group_id || '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(data.group_id)) throw new Error('Condition group ID must be a safe identifier.')
+    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
+      kind: String(condition.kind || ''), entity_id: String(condition.entity_id || ''),
+      name: String(condition.name || ''), operator: String(condition.operator || ''), value: Number(condition.value),
+    }))
+    const kinds = new Set(['anchored_inventory', 'metric', 'parameter'])
+    const operators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
+    if (!data.conditions.length || data.conditions.some(condition => !kinds.has(condition.kind) || !condition.entity_id || !condition.name || !operators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Condition groups require at least one complete condition.')
+  }
+  if (kind === 'causal_rule_templates') {
+    data.template_id = String(data.template_id || '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(data.template_id)) throw new Error('Template ID must be a safe identifier.')
+    data.rule = parseObject(data._rule_text, 'Template rule defaults')
+    delete data._rule_text
+    if (Object.hasOwn(data.rule, 'template_id') || Object.hasOwn(data.rule, 'condition_group_ids')) throw new Error('Templates cannot reference another template or condition groups.')
+  }
   if (kind === 'causal_event_rules') {
+    const inheritTemplateDefaults = Boolean(data.template_id && data._inherit_template_defaults)
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
     data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
       kind: String(condition.kind || ''),
@@ -211,6 +240,10 @@ function serializeListForm(kind, form) {
     if (data.world_effects.some(effect => effect.effect_type === 'update_status' && !String(effect.new_status || '').trim())) throw new Error('Status effects require a new status.')
     if (data.world_effects.some(effect => effect.effect_type === 'create_ongoing_event' && (!safeId(effect.event_type) || !Number.isFinite(effect.duration_days) || effect.duration_days < 0 || effect.duration_days > 3650))) throw new Error('Ongoing effects require a safe event type and duration from 0 to 3650 days.')
     if (data.world_effects.some(effect => effect.effect_type === 'transfer_anchored_value' && (!effect.from_entity_id || !effect.to_entity_id || !effect.from_resource || !effect.to_resource || !Number.isFinite(effect.base_value) || effect.base_value <= 0))) throw new Error('Anchored transfers require both entities, both asset resources, and a positive base value.')
+    delete data._inherit_template_defaults
+    if (inheritTemplateDefaults) {
+      for (const field of ['target_agents', 'delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled']) delete data[field]
+    }
   }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -246,6 +279,8 @@ function listLabel(kind, item) {
   if (kind === 'relations') return [`${item.parent_id || '?'} \u2192 ${item.child_id || '?'}`, item.rel_type]
   if (kind === 'initial_events') return [item.event_id || T.eventId, `${item.event_type || ''} \u00b7 ${item.target_agents?.length || 0} agents`]
   if (kind === 'random_events') return [item.template_id || T.templateId, `${item.event_type || ''} \u00b7 ${item.target_agents?.length || 0} agents`]
+  if (kind === 'causal_condition_groups') return [item.group_id || 'Group ID', `${item.conditions?.length || 0} conditions`]
+  if (kind === 'causal_rule_templates') return [item.template_id || T.templateId, item.name || 'Reusable defaults']
   if (kind === 'causal_event_rules') return [item.rule_id || T.ruleId, `${(item.source_event_types || []).join(', ')} \u2192 ${item.child_event_type || ''}`]
   if (kind === 'time_rules') return [item.rule_id || T.ruleId, `${(item.action_types || []).join(', ')} \u00b7 p${item.priority || 0}`]
   return [item.event_id || T.eventId, `${item.entity_id || ''} \u00b7 ${item.event_type || ''}`]
@@ -258,6 +293,8 @@ function requiredKey(kind, form) {
   if (kind === 'initial_events') return form.event_id
   if (kind === 'ongoing_events') return form.event_id && form.entity_id
   if (kind === 'random_events') return form.template_id && form.event_type && (form.target_agents || []).length
+  if (kind === 'causal_condition_groups') return form.group_id && (form.conditions || []).length
+  if (kind === 'causal_rule_templates') return form.template_id
   if (kind === 'causal_event_rules') return form.rule_id && form.child_event_type && String(form._source_types_text || '').trim()
   if (kind === 'time_rules') return form.rule_id && String(form._action_types_text || '').trim()
   return false
@@ -440,6 +477,8 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const entities = content.entities || []
   const agents = content.agents || []
   const resources = content.resources || []
+  const causalTemplates = content.causal_rule_templates || []
+  const causalConditionGroups = content.causal_condition_groups || []
   const assetResources = resources.filter(item => item.kind === 'asset')
   const valueResources = resources.filter(item => item.kind === 'metric' || item.kind === 'parameter')
   const selectedIndex = selected === '' ? -1 : Number(selected)
@@ -452,10 +491,49 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewReport, setPreviewReport] = useState(null)
 
+  const resolvedCausalRule = useMemo(() => {
+    if (kind !== 'causal_event_rules') return null
+    try { return expandCausalRuleDraft(content, form) } catch { return null }
+  }, [content, form, kind])
+
   const set = (name, value) => setForm(current => ({ ...current, [name]: value }))
+  const formForSerialization = () => {
+    if (kind !== 'causal_event_rules' || !form._inherit_template_defaults) return form
+    const expanded = expandCausalRuleDraft(content, form)
+    const defined = Object.fromEntries(Object.entries(form).filter(([, value]) => value !== undefined))
+    return { ...expanded, ...defined, _payload_text: jsonText(expanded.initial_payload), _inherit_keys_text: (expanded.inherit_payload_keys || []).join(', ') }
+  }
+  const selectCausalTemplate = templateId => {
+    if (!templateId) {
+      setForm(current => {
+        if (!current._inherit_template_defaults) return { ...current, template_id: '', _inherit_template_defaults: false }
+        return normalizedListForm('causal_event_rules', {
+          ...EMPTY.causal_event_rules,
+          rule_id: current.rule_id || '',
+          source_event_types: current.source_event_types || ['*'],
+          child_event_type: current.child_event_type || '',
+          condition_group_ids: current.condition_group_ids || [],
+          conditions: current.conditions || [],
+        })
+      })
+      return
+    }
+    setForm(current => ({
+      rule_id: current.rule_id || '', source_event_types: current.source_event_types || ['*'],
+      _source_types_text: current._source_types_text || '*', child_event_type: current.child_event_type || '',
+      template_id: templateId, condition_group_ids: current.condition_group_ids || [],
+      conditions: current.conditions || [], _inherit_template_defaults: true,
+    }))
+  }
+  const overrideCausalTemplate = () => {
+    try {
+      const expanded = expandCausalRuleDraft(content, form)
+      setForm({ ...normalizedListForm('causal_event_rules', expanded), template_id: form.template_id, condition_group_ids: form.condition_group_ids || [], conditions: form.conditions || [], _inherit_template_defaults: false })
+    } catch (caught) { setError(caught.message) }
+  }
   const runCausalPreview = async () => {
     try {
-      const rule = serializeListForm('causal_event_rules', form)
+      const rule = serializeListForm('causal_event_rules', formForSerialization())
       const draft = buildCausalDryRunDraft(content, rule, selectedIndex, {
         event_id: 'studio_preview_source',
         event_type: previewSourceType.trim(),
@@ -480,7 +558,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   }
   const save = () => {
     try {
-      const data = serializeListForm(kind, form)
+      const data = serializeListForm(kind, kind === 'causal_event_rules' ? formForSerialization() : form)
       const nextItems = items.map(deepClone)
       if (selectedIndex >= 0) nextItems[selectedIndex] = data
       else nextItems.push(data)
@@ -544,19 +622,37 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <label>{T.initialPayload}<textarea className="dlc-json-field" rows="9" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
       </>}
 
-      {kind === 'causal_event_rules' && <>
-        <div className="dlc-row"><label>{T.ruleId}<input value={form.rule_id || ''} onChange={event => set('rule_id', event.target.value)} placeholder="drought_to_famine" /></label><label>Priority<input type="number" step="1" value={form.priority ?? 0} onChange={event => set('priority', event.target.value)} /></label></div>
-        <div className="dlc-row"><label>Source event types<input value={form._source_types_text || ''} onChange={event => set('_source_types_text', event.target.value)} placeholder="drought, crop_failure" /></label><label>{T.childEventType}<input value={form.child_event_type || ''} onChange={event => set('child_event_type', event.target.value)} placeholder="famine_risk" /></label></div>
-        <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
-        <div className="dlc-row"><label>Delay days<input type="number" min="0" step="any" value={form.delay_days ?? 0} onChange={event => set('delay_days', event.target.value)} /></label><label>{T.probability}<input type="number" min="0" max="1" step="0.01" value={form.probability ?? 1} onChange={event => set('probability', event.target.value)} /></label></div>
-        <div className="dlc-row"><label>Severity delta<input type="number" min="-9" max="9" step="1" value={form.severity_delta ?? 0} onChange={event => set('severity_delta', event.target.value)} /></label><label>Max chain depth<input type="number" min="1" max="16" step="1" value={form.max_depth ?? 4} onChange={event => set('max_depth', event.target.value)} /></label></div>
-        <label>Max fires per chain<input type="number" min="1" max="64" step="1" value={form.max_fires_per_chain ?? 1} onChange={event => set('max_fires_per_chain', event.target.value)} /></label>
-        <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
-        <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
-        <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
+      {kind === 'causal_condition_groups' && <>
+        <div className="dlc-row"><label>Group ID<input value={form.group_id || ''} onChange={event => set('group_id', event.target.value)} placeholder="treasury_ready" /></label><label>{T.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /></label></div>
+        <label>{T.description}<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
         <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
-        <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} onChange={value => set('world_effects', value)} />
-        <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
+      </>}
+
+      {kind === 'causal_rule_templates' && <>
+        <div className="dlc-row"><label>{T.templateId}<input value={form.template_id || ''} onChange={event => set('template_id', event.target.value)} placeholder="delayed_follow_up" /></label><label>{T.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /></label></div>
+        <label>{T.description}<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
+        <div className="dlc-editor-callout">Reusable defaults are overridden by authored rule fields. Templates cannot recursively reference templates or condition groups.</div>
+        <label>Rule defaults JSON<textarea className="dlc-json-field" rows="16" spellCheck="false" value={form._rule_text || ''} onChange={event => set('_rule_text', event.target.value)} /></label>
+      </>}
+
+      {kind === 'causal_event_rules' && <>
+        <div className="dlc-row"><label>Reusable template<select value={form.template_id || ''} onChange={event => selectCausalTemplate(event.target.value)}><option value="">-- no template --</option>{causalTemplates.map(item => <option key={item.template_id} value={item.template_id}>{item.name || item.template_id} ({item.template_id})</option>)}</select></label><div className="dlc-form-actions">{form.template_id && (form._inherit_template_defaults ? <button type="button" onClick={overrideCausalTemplate}>Override template defaults</button> : <button type="button" onClick={() => selectCausalTemplate(form.template_id)}>Use template defaults</button>)}</div></div>
+        {!!causalConditionGroups.length && <fieldset className="dlc-targets"><legend>Reusable condition groups</legend>{causalConditionGroups.map(group => { const checked = (form.condition_group_ids || []).includes(group.group_id); return <label key={group.group_id}><input type="checkbox" checked={checked} onChange={() => set('condition_group_ids', checked ? (form.condition_group_ids || []).filter(id => id !== group.group_id) : [...(form.condition_group_ids || []), group.group_id])} /><span>{group.name || group.group_id}</span><code>{group.group_id} / {group.conditions?.length || 0}</code></label> })}</fieldset>}
+        {form.template_id && <div className="dlc-editor-callout">{form._inherit_template_defaults ? 'Using inherited template defaults; condition groups and inline conditions are appended in order.' : 'This rule overrides template defaults while retaining the reusable reference.'}{resolvedCausalRule && <small> Resolved: delay {resolvedCausalRule.delay_days ?? 0}d / probability {resolvedCausalRule.probability ?? 1} / {resolvedCausalRule.conditions?.length || 0} conditions / {resolvedCausalRule.world_effects?.length || 0} effects.</small>}</div>}
+        <div className="dlc-row"><label>{T.ruleId}<input value={form.rule_id || ''} onChange={event => set('rule_id', event.target.value)} placeholder="drought_to_famine" /></label>{!form._inherit_template_defaults && <label>Priority<input type="number" step="1" value={form.priority ?? 0} onChange={event => set('priority', event.target.value)} /></label>}</div>
+        <div className="dlc-row"><label>Source event types<input value={form._source_types_text || ''} onChange={event => set('_source_types_text', event.target.value)} placeholder="drought, crop_failure" /></label><label>{T.childEventType}<input value={form.child_event_type || ''} onChange={event => set('child_event_type', event.target.value)} placeholder="famine_risk" /></label></div>
+        {!form._inherit_template_defaults && <>
+          <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
+          <div className="dlc-row"><label>Delay days<input type="number" min="0" step="any" value={form.delay_days ?? 0} onChange={event => set('delay_days', event.target.value)} /></label><label>{T.probability}<input type="number" min="0" max="1" step="0.01" value={form.probability ?? 1} onChange={event => set('probability', event.target.value)} /></label></div>
+          <div className="dlc-row"><label>Severity delta<input type="number" min="-9" max="9" step="1" value={form.severity_delta ?? 0} onChange={event => set('severity_delta', event.target.value)} /></label><label>Max chain depth<input type="number" min="1" max="16" step="1" value={form.max_depth ?? 4} onChange={event => set('max_depth', event.target.value)} /></label></div>
+          <label>Max fires per chain<input type="number" min="1" max="64" step="1" value={form.max_fires_per_chain ?? 1} onChange={event => set('max_fires_per_chain', event.target.value)} /></label>
+          <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
+          <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
+          <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
+          <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} onChange={value => set('world_effects', value)} />
+          <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
+        </>}
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
         <CausalDryRunPanel
           report={previewReport}
           busy={previewBusy}

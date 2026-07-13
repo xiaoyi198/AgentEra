@@ -2,7 +2,7 @@
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
-> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with transactional world effects and anchored-value conservation, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 428 Python tests plus 14 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
+> Status: Phases 0-7 core implementation, advanced Studio workflows, deterministic causal event chains with transactional world effects and anchored-value conservation, dependency/migration support, Prompt contracts, model-generation rollback, and replay/live trajectory infrastructure are complete; 446 Python tests plus 15 Studio tests pass. Credentialed live baselines, longer soak testing, deeper economic propagation, and Phase 8 hardening remain ongoing.
 > 原则：先补基础设施与可观测性，再扩展 DLC 和 Agent 数量；所有核心改造必须可迁移、可回滚、可测试。
 
 ## 1. 总目标
@@ -1238,3 +1238,29 @@ Next priorities:
 5. Run credentialed model matrices, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
 
 The persistent product goal remains active. The unified-value economy is now observable and restart-auditable; production calibration and broader Agent-driven simulation remain ongoing.
+
+
+## Phase checkpoint: reusable causal authoring library (2026-07-13)
+
+Status: **implemented and locally verified**.
+
+Completed in this checkpoint:
+
+- added package-local reusable condition groups and causal-rule templates with stable IDs and non-recursive references;
+- added one pure deterministic expansion layer with explicit precedence and stable condition ordering;
+- connected Registry validation, causal analysis, unsaved-draft Dry Run, active runtime materialization, reload, rollback, and generation fingerprints to expanded semantics;
+- preserved legacy DLC behavior and immutable pending-event semantics;
+- added DLC Studio tabs for condition groups/templates, keyed Diff/history/import/export, template inheritance/explicit override controls, ordered group selection, resolved summaries, and draft previews;
+- added focused backend/frontend coverage for precedence, immutability, invalid references, API drafts, runtime materialization, and Studio tooling;
+- synchronized release identity to `0.17.0` and maintained README, project documentation, developer guide, and this optimization plan;
+- completed **446 Python tests** and **15 frontend tests** before final quality gates.
+
+Next priorities:
+
+1. Add causal graph-edge inspection and deterministic replay fixture import/export for DLC authors.
+2. Extend long scenarios with real Agent actions, production/consumption policies, multiple branches, and longer restart/soak windows.
+3. Continue multi-turn memory retrieval/compression evaluation and refine model selection by task, DLC, Agent, latency, quality, and cost.
+4. Collect credentialed model and economic baselines, independent review quorum, controlled promotion, generation observation, and rollback rehearsal.
+5. Improve template authoring with structured world-effect defaults, reusable starter libraries, and package migration guidance without adding recursive semantics.
+
+The persistent product goal remains active. This checkpoint removes repeated causal authoring work while retaining deterministic production behavior and package isolation.

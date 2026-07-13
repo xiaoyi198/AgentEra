@@ -747,3 +747,37 @@ def test_cross_dlc_duplicate_causal_rule_rejects_reload_without_partial_activati
 
     assert loader.generation == old_generation
     assert orchestrator.causal_event_configurations[-1] == old_rules
+
+
+def test_runtime_materializes_templates_before_configuring_causal_engine(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["causal_condition_groups"] = [{
+        "group_id": "funded",
+        "conditions": [{
+            "kind": "anchored_inventory", "entity_id": "city", "name": "credits",
+            "operator": "gte", "value": 10,
+        }],
+    }]
+    content["causal_rule_templates"] = [{
+        "template_id": "delayed", "rule": {"delay_days": 3, "probability": 1, "max_depth": 5},
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "arrival_to_welcome", "template_id": "delayed",
+        "condition_group_ids": ["funded"], "source_event_types": ["arrival"],
+        "child_event_type": "welcome", "target_agents": ["mayor"],
+    }]
+    registry.save_content("sample", content)
+    world = WorldState(str(tmp_path / "templated-world.db"))
+    court = CourtGraph(str(tmp_path / "templated-world.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    loader.load_active(seed_world=False)
+
+    rule = orchestrator.causal_event_configurations[-1][0]
+    assert rule["delay_days"] == 3
+    assert rule["max_depth"] == 5
+    assert rule["conditions"][0]["name"] == "credits"
+    assert "template_id" not in rule
+    assert "condition_group_ids" not in rule

@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRegistryError
 from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEventRule
+from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 
@@ -386,7 +387,8 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "agents", "initial_events", "ongoing_events", "random_events", "causal_event_rules", "time_rules",
+            "agents", "initial_events", "ongoing_events", "random_events",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -758,11 +760,13 @@ class DLCRegistry:
 
         for duplicate in self._duplicates([item for item in content["causal_event_rules"] if isinstance(item, dict)], "rule_id"):
             add("causal_events.duplicate", f"Duplicate rule_id: {duplicate}", "causal_event_rules")
-        for index, raw_rule in enumerate(content["causal_event_rules"]):
+        try:
+            expanded_causal_rules = expand_causal_rule_document(content)
+        except CausalTemplateError as exc:
+            add("causal_authoring.invalid", str(exc), exc.path or "causal_event_rules")
+            expanded_causal_rules = []
+        for index, raw_rule in enumerate(expanded_causal_rules):
             path = f"causal_event_rules[{index}]"
-            if not isinstance(raw_rule, dict):
-                add("causal_event.invalid_rule", "Causal event rule must be an object", path)
-                continue
             try:
                 rule = CausalEventRule.from_mapping(raw_rule)
             except CausalEventError as exc:

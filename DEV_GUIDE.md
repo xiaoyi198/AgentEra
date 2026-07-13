@@ -2097,3 +2097,31 @@ npm run build
 ```
 
 Verified on 2026-07-13 for `0.16.0`: **434 Python tests**, **14 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, and deterministic trajectory replay **100%**.
+
+
+## Reusable causal authoring development (v0.17.0)
+
+The causal engine must remain unaware of Studio authoring conveniences. Keep reusable definitions in DLC content and materialize them through `multiagent_framework.causal_templates.expand_causal_rule_document()` before calling `CausalEventRule.from_mapping()`.
+
+Rules for contributors:
+
+1. Treat `causal_condition_groups` and `causal_rule_templates` as package-local authoring collections. Do not resolve references across DLC packages.
+2. Preserve precedence: engine defaults `<` `template.rule` `<` authored rule. Preserve condition order: template conditions, each `condition_group_ids` entry in authored order, then inline `conditions`.
+3. Do not add recursive references. Template `rule` objects cannot contain `template_id` or `condition_group_ids`; the first version intentionally stays single-level and cycle-free.
+4. The expansion helper must be pure, deterministic, deep-copy mutable values, and strip authoring-only reference keys from final runtime rules.
+5. Registry validation, `causal_analysis.py`, draft Dry Run, and `DLCBundleLoader` must use the same helper. Never implement a second backend merge path.
+6. Pending causal events are immutable materialized commitments. Template edits may affect future generation fingerprints and future source events, but must not rewrite queued events or restored scheduler snapshots.
+7. Frontend `expandCausalRuleDraft()` is for responsive author feedback only. Backend validation/execution remains authoritative. Include both new collections in normalization, export/import, keyed Diff, undo/redo history, counts, and raw content.
+8. Keep template/group IDs stable and safe (`1-64` letters, numbers, dot, underscore, or hyphen). Final active causal `rule_id` uniqueness remains global across materialized packages.
+
+Focused verification:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/unit/test_causal_templates.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_dlc_api.py
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Verified on 2026-07-13 for `0.17.0`: **446 Python tests** and **15 frontend tests** before final repository-wide gates.

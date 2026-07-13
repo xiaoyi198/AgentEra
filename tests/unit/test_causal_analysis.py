@@ -217,3 +217,33 @@ def test_dry_run_rejected_effect_stops_downstream_chain_atomically():
     assert report["nodes"][1]["world_effect_status"] == "rejected"
     assert report["nodes"][1]["world_effect_error_code"] == "insufficient_balance"
     assert "crisis" not in [node["event_type"] for node in report["nodes"]]
+
+
+def test_analysis_and_dry_run_expand_reusable_templates_and_condition_groups():
+    content = _content()
+    content["causal_condition_groups"] = [{
+        "group_id": "grain_low",
+        "conditions": [{
+            "kind": "anchored_inventory", "entity_id": "city", "name": "grain",
+            "operator": "lt", "value": 100,
+        }],
+    }]
+    content["causal_rule_templates"] = [{
+        "template_id": "delayed", "rule": {"delay_days": 2, "probability": 1, "max_depth": 4},
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "shortage_to_unrest", "template_id": "delayed",
+        "condition_group_ids": ["grain_low"], "source_event_types": ["shortage"],
+        "child_event_type": "unrest", "target_agents": ["governor"],
+    }]
+
+    analysis = analyze_causal_rules(content)
+    assert analysis["edges"][0]["delay_days"] == 2
+    assert analysis["edges"][0]["condition_count"] == 1
+    report = dry_run_causal_rules(
+        content,
+        {"event_id": "source", "event_type": "shortage", "severity": 4, "target_agents": ["governor"]},
+        horizon_days=10,
+    )
+    assert [item["event_type"] for item in report["nodes"]] == ["shortage", "unrest"]
+    assert report["nodes"][1]["day"] == 2

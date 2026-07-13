@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.16.0**
+> 当前版本：**v0.17.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,6 +15,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定和时间规则。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
+- **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **事务化因果世界效果**：因果规则可原子调整资源、状态、延迟事件和跨实体锚定价值转移；失败时整体回滚，重启重放保持幂等。
 - **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
@@ -172,3 +173,10 @@ npm run build
 - 前端 `frontend/package.json`
 
 发布时三处版本必须保持一致。
+
+
+## Reusable causal templates (v0.17.0)
+
+DLC bundle content can define package-local `causal_condition_groups` and `causal_rule_templates`. A causal rule may select one template and multiple condition groups. Runtime precedence is `engine defaults < template.rule < authored rule`; condition order is template conditions, referenced groups in author order, then inline conditions. References are expanded by one pure deterministic backend function before Registry validation, static analysis, draft Dry Run, and runtime materialization. Templates and groups are not recursive and never cross DLC package boundaries.
+
+DLC Studio provides dedicated condition-group and causal-template tabs, keyed import/export Diff and history, template inheritance versus explicit override controls, multi-group selection, resolved counts, and unsaved-draft preview. Release `0.17.0` is verified with 446 Python tests and 15 frontend tests.

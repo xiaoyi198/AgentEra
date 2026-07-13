@@ -577,3 +577,32 @@ def test_causal_world_effect_references_and_asset_kinds_are_validated(registry: 
     assert "causal_event.effect_missing_entity" in codes
     assert "causal_event.effect_missing_resource" in codes
     assert "causal_event.effect_invalid_resource_kind" in codes
+
+
+def test_causal_authoring_templates_validate_expanded_references(registry: DLCRegistry):
+    registry.create(manifest("templated"))
+    content = valid_content()
+    content["causal_condition_groups"] = [{
+        "group_id": "has_coin",
+        "conditions": [{
+            "kind": "anchored_inventory", "entity_id": "place", "name": "coin",
+            "operator": "gte", "value": 2,
+        }],
+    }]
+    content["causal_rule_templates"] = [{
+        "template_id": "delayed", "rule": {"delay_days": 2, "probability": 1},
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "templated_rule", "template_id": "delayed",
+        "condition_group_ids": ["has_coin"], "source_event_types": ["seed"],
+        "child_event_type": "follow_up", "target_agents": ["agent"],
+    }]
+    registry.save_content("templated", content)
+    assert registry.validate("templated") == []
+
+    content["causal_event_rules"][0]["template_id"] = "missing"
+    registry.save_content("templated", content)
+    issues = registry.validate("templated")
+    issue = next(item for item in issues if item.code == "causal_authoring.invalid")
+    assert issue.message == "causal_rule_template_missing"
+    assert issue.path == "causal_event_rules[0].template_id"
