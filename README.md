@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.23.0**
+> 当前版本：**v0.24.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,7 +15,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑与结局。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
@@ -229,6 +229,21 @@ DLC 可通过 `content.json` 的 `issue_types` 声明题材无关的待处理事
 
 `example_frontier` 展示了巡逻经费、Action 次数、警戒指标、15 天失败期限，以及胜利/失败结局的完整组合。
 
+## DLC UI Manifest（v0.24.0）
+
+主 DLC 可在 `content.json.ui_manifest` 中配置题材化界面，而无需修改 React 核心代码。依赖 DLC 不会覆盖主 DLC 的界面所有权。
+
+- `title`、`subtitle`、`brand.short_mark`：配置产品标题、副标题和短标识。
+- `terminology`：配置玩家、事项、案件、决策、消息、世界、实体、关系、目标、库存、指标等 30 项通用术语。
+- `navigation`：只允许选择框架内置的主视图 `dashboard/world/relations/debug` 与应用页面 `gameplay/editor/dlc_studio/assistant`；DLC 不能注入 URL。
+- `dashboard`：选择三栏、双栏或单栏布局，并将目标、事项列表、事项详情、玩家消息和在途消息安排到受控区域。
+- `issue_page`：选择事项列表/详情的可见字段，并控制是否展示已解决事项。
+- `entity_detail`：选择实体基础字段，以及摘要、持续事件、位置、库存、指标和参数 Section。
+
+`GET /api/ui-manifest` 返回当前 Generation 的归一化 Manifest。首次加载、热重载、Generation 归档、历史回滚和重启恢复使用同一份配置；老归档没有该字段时自动回退到安全默认值。主界面仅把 Manifest 映射到框架拥有的组件与固定路由，不执行 DLC 提供的代码、样式、HTML 或链接。
+
+DLC Studio 的“界面”编辑器提供完整中文说明、白名单下拉选择、排序/显隐编辑、本地即时校验、重复 ID 检查、高级 JSON、导入导出、Diff 和历史撤销/重做。保存仍经过 Registry 校验与 Content Diff 确认。`example_frontier` v1.3.0 提供“边境指挥中心”完整示例。
+
 ## 经济监控
 
 世界状态页会加载 `GET /api/world-state/economy`，显示：
@@ -326,6 +341,19 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.24.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P0.5：
+
+- 新增题材无关 `UIManifest` Schema、默认值、归一化和安全验证，严格限制导航、Widget、布局、区域和字段能力，拒绝 URL、组件名、HTML、CSS、脚本、不安全文本、未知能力与重复 ID。
+- UI Manifest 由主 DLC 独占，纳入首次加载、热重载、Generation 发布、加密归档、历史回滚、旧归档兼容和 Orchestrator 发布，并新增 `GET /api/ui-manifest`。
+- React 主界面改为能力驱动：标题、短标识、术语、主/应用导航、Dashboard 布局与 Widget、Issue 字段和实体详情均读取当前 Generation；API 失败时使用安全默认界面。
+- DLC Studio 新增详细中文 UI Manifest 编辑器，支持可视化白名单配置、高级 JSON、即时校验、Content Diff、导入导出以及撤销/重做。
+- `example_frontier` 升级到 v1.3.0，并提供完整边境题材 Manifest 示例。
+- 发布版本统一升级为 `0.24.0`；发布门禁通过 544 个 Python 测试（另有 2 个外部 Provider 环境门禁测试因当前进程未注入凭据而跳过）、31 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、凭据扫描与 Git 差异检查。
+
+长期 Goal 继续保持 active；下一阶段为 P0.6 DLC 行动/能力注册表，使玩家 UI、Router 与 Agent 工具由同一能力目录驱动。
 
 ## v0.23.0 发布说明
 

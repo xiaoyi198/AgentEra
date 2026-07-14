@@ -35,7 +35,12 @@ function typeIcon(type) {
   return TYPE_ICONS[type] || '❓'
 }
 
-export default function WorldStateView() {
+export default function WorldStateView({ manifest = {}, terms = {} }) {
+  const visibleFields = new Set(Array.isArray(manifest.visible_fields) ? manifest.visible_fields : ['id', 'type', 'name', 'description', 'current_status'])
+  const sections = new Set(Array.isArray(manifest.sections) ? manifest.sections : ['summary', 'ongoing_events', 'location', 'inventory', 'metrics', 'parameters'])
+  const entityTerm = terms.entity || '实体'
+  const entitiesTerm = terms.entities || entityTerm
+
   const [entities, setEntities] = useState([])         // 全量实体列表（轻量，只含 id/type/name）
   const [selected, setSelected] = useState(null)       // 当前选中的完整实体 {entity, inventory}
   const [entityForm, setEntityForm] = useState(null)   // 编辑表单（镜像 selected.entity）
@@ -315,7 +320,7 @@ export default function WorldStateView() {
         <input
           className="ws-search"
           type="text"
-          placeholder="搜索实体名称或 ID…"
+          placeholder={`${terms.search || '搜索'}${entityTerm}名称或 ID…`}
           value={searchKw}
           onChange={e => setSearchKw(e.target.value)}
         />
@@ -323,7 +328,7 @@ export default function WorldStateView() {
           <button
             className={`ws-type-tab ${filterType === 'all' ? 'active' : ''}`}
             onClick={() => setFilterType('all')}
-          >全部 ({entities.length})</button>
+          >{`全部${entitiesTerm}`} ({entities.length})</button>
           {ALL_TYPES.map(t => {
             const cnt = entities.filter(e => e.type === t).length
             if (!cnt) return null
@@ -339,12 +344,12 @@ export default function WorldStateView() {
           })}
         </div>
         <button className="btn primary ws-new-btn" onClick={() => setShowNewEntity(!showNewEntity)}>
-          + 新建实体
+          + 新建{entityTerm}
         </button>
         {msg && <span className="ws-msg">{msg}</span>}
       </div>
 
-      {economy && (
+      {sections.has('inventory') && economy && (
         <section className={`ws-economy-dashboard ${transferHealthy ? 'healthy' : 'warning'}`}>
           <div className="ws-economy-header">
             <div>
@@ -430,72 +435,70 @@ export default function WorldStateView() {
         {/* 右：详情面板 */}
         <main className="ws-detail-panel">
           {!selected ? (
-            <div className="ws-placeholder">← 选择左侧实体查看详情</div>
+            <div className="ws-placeholder">← 选择左侧{entityTerm}查看详情</div>
           ) : (
             <>
-              {/* 实体信息编辑 */}
-              <section className="ws-section">
-                <div className="ws-section-header">
-                  <h3>{typeIcon(entityForm.type)} {entityForm.name}</h3>
-                  <span className="ws-entity-id-badge">{entityForm.id}</span>
-                </div>
-                <div className="ws-form-grid">
-                  <label className="ws-label">
-                    类型
-                    <select
-                      value={entityForm.type}
-                      onChange={e => setEntityForm(p => ({ ...p, type: e.target.value }))}
-                    >
-                      {ALL_TYPES.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-                    </select>
-                  </label>
-                  <label className="ws-label">
-                    名称
-                    <input
-                      value={entityForm.name}
-                      onChange={e => setEntityForm(p => ({ ...p, name: e.target.value }))}
-                    />
-                  </label>
-                  <label className="ws-label ws-full">
-                    基本描述
-                    <textarea
-                      rows={3}
-                      value={entityForm.description}
-                      onChange={e => setEntityForm(p => ({ ...p, description: e.target.value }))}
-                      placeholder="实体的基本情况（相对静态）"
-                    />
-                  </label>
-                  <label className="ws-label ws-full">
-                    当前状况
-                    <textarea
-                      rows={3}
-                      value={entityForm.current_status}
-                      onChange={e => setEntityForm(p => ({ ...p, current_status: e.target.value }))}
-                      placeholder="实体目前的动态状况（ActionAgent 可更新）"
-                    />
-                  </label>
-                </div>
-                <div className="ws-form-actions">
-                  <button className="btn primary" onClick={handleSaveEntity} disabled={saving}>
-                    {saving ? '保存中…' : '保存实体'}
-                  </button>
-                  <button className="btn warning" onClick={handleDeleteEntity}>删除实体</button>
-                  {msg && <span className="ws-inline-msg">{msg}</span>}
-                </div>
-              </section>
-
-              {/* 正在发生的事情 */}
-              <OngoingEventsCard
-                events={selected.ongoing_events || []}
-                onChanged={() => loadEntity(entityForm.id)}
-                onMsg={setMsg}
-              />
-
-              {/* 地点坐标（仅 location 类型显示） */}
-              {locCoords && entityForm.type === 'location' && (
+              {/* entity summary */}
+              {sections.has('summary') && (
                 <section className="ws-section">
                   <div className="ws-section-header">
-                    <h3>坐标 (虚拟平面直角坐标系)</h3>
+                    <h3>{typeIcon(entityForm.type)} {visibleFields.has('name') ? entityForm.name : entityTerm}</h3>
+                    {visibleFields.has('id') && <span className="ws-entity-id-badge">{entityForm.id}</span>}
+                  </div>
+                  <div className="ws-form-grid">
+                    {visibleFields.has('type') && (
+                      <label className="ws-label">
+                        类型
+                        <select value={entityForm.type} onChange={event => setEntityForm(previous => ({ ...previous, type: event.target.value }))}>
+                          {ALL_TYPES.map(type => <option key={type} value={type}>{TYPE_LABELS[type]}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    {visibleFields.has('name') && (
+                      <label className="ws-label">
+                        名称
+                        <input value={entityForm.name} onChange={event => setEntityForm(previous => ({ ...previous, name: event.target.value }))} />
+                      </label>
+                    )}
+                    {visibleFields.has('description') && (
+                      <label className="ws-label ws-full">
+                        基本描述
+                        <textarea rows={3} value={entityForm.description} onChange={event => setEntityForm(previous => ({ ...previous, description: event.target.value }))} />
+                      </label>
+                    )}
+                    {visibleFields.has('current_status') && (
+                      <label className="ws-label ws-full">
+                        当前状况
+                        <textarea rows={3} value={entityForm.current_status} onChange={event => setEntityForm(previous => ({ ...previous, current_status: event.target.value }))} />
+                      </label>
+                    )}
+                    {visibleFields.has('updated_at') && <div className="ws-label">更新时间<span>{formatNumber(entityForm.updated_at || 0)}</span></div>}
+                    {visibleFields.has('version') && <div className="ws-label">版本<span>v{entityForm.version ?? 0}</span></div>}
+                  </div>
+                  <div className="ws-form-actions">
+                    <button className="btn primary" onClick={handleSaveEntity} disabled={saving}>
+                      {saving ? '保存中…' : `保存${entityTerm}`}
+                    </button>
+                    <button className="btn warning" onClick={handleDeleteEntity}>删除{entityTerm}</button>
+                    {msg && <span className="ws-inline-msg">{msg}</span>}
+                  </div>
+                </section>
+              )}
+
+              {/* ongoing events */}
+              {sections.has('ongoing_events') && (
+                <OngoingEventsCard
+                  events={selected.ongoing_events || []}
+                  onChanged={() => loadEntity(entityForm.id)}
+                  onMsg={setMsg}
+                />
+              )}
+
+              {/* 地点坐标（仅 location 类型显示） */}
+              {sections.has('location') && locCoords && entityForm.type === 'location' && (
+                <section className="ws-section">
+                  <div className="ws-section-header">
+                    <h3>{terms.inventory || '库存'}</h3>
                   </div>
                   <div className="ws-form-grid">
                     <label className="ws-label">
@@ -535,7 +538,8 @@ export default function WorldStateView() {
               )}
 
               {/* 锚定资产 */}
-              <section className="ws-section">
+              {sections.has('inventory') && (
+                <section className="ws-section">
                 <div className="ws-section-header ws-section-header-split">
                   <h3>锚定资产</h3>
                   <span className="ws-valuation-total">
@@ -612,12 +616,14 @@ export default function WorldStateView() {
                     </table>
                   )
                 })()}
-              </section>
+                </section>
+              )}
 
               {/* 世界指标：不可支出，仅由模拟与命令更新 */}
-              <section className="ws-section">
+              {sections.has('metrics') && (
+                <section className="ws-section">
                 <div className="ws-section-header">
-                  <h3>世界指标</h3>
+                  <h3>{terms.metrics || '指标'}</h3>
                   <span className="ws-section-note">非库存，不参与资产余额与价值合计</span>
                 </div>
                 {(selected.metrics || []).length === 0 ? (
@@ -644,12 +650,14 @@ export default function WorldStateView() {
                     </tbody>
                   </table>
                 )}
-              </section>
+                </section>
+              )}
 
               {/* 核心参数 */}
-              <section className="ws-section">
+              {sections.has('parameters') && (
+                <section className="ws-section">
                 <div className="ws-section-header">
-                  <h3>核心参数</h3>
+                  <h3>{terms.parameters || '参数'}</h3>
                   <span className="ws-section-note">独立参数存储，不计入库存</span>
                 </div>
 
@@ -715,7 +723,8 @@ export default function WorldStateView() {
                     </tbody>
                   </table>
                 )}
-              </section>
+                </section>
+              )}
             </>
           )}
         </main>

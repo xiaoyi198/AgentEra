@@ -1294,3 +1294,75 @@ body {
   .objective-overall { order: 3; min-width: 100%; }
   .objective-grid { grid-template-columns: 1fr; }
 }
+/* DLC UI Manifest capability-driven dashboard */
+.manifest-dashboard {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+.manifest-layout {
+  min-height: 0;
+  flex: 1;
+}
+.manifest-region {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
+}
+.manifest-region > .panel {
+  min-height: 0;
+  flex: 1 1 auto;
+  border-right: 1px solid var(--border);
+}
+.manifest-region-left { grid-area: left; }
+.manifest-region-main { grid-area: main; }
+.manifest-region-right { grid-area: right; }
+.manifest-layout-three_column {
+  grid-template-columns: minmax(240px, 280px) minmax(360px, 1fr) minmax(220px, 260px);
+  grid-template-areas: "left main right";
+}
+.manifest-layout-two_column {
+  grid-template-columns: minmax(260px, 32%) minmax(360px, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "left main"
+    "left right";
+}
+.manifest-layout-two_column .manifest-region-right {
+  max-height: 38vh;
+  border-top: 1px solid var(--border);
+}
+.manifest-layout-single_column {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "left" "main" "right";
+  overflow: auto;
+}
+.manifest-layout-single_column .manifest-region {
+  overflow: visible;
+}
+.manifest-layout-single_column .manifest-region > .panel {
+  min-height: 180px;
+  overflow: visible;
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+}
+.decree-widget {
+  flex: 0 0 auto !important;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 980px) {
+  .manifest-layout-three_column,
+  .manifest-layout-two_column {
+    grid-template-columns: minmax(220px, 34%) minmax(320px, 1fr);
+    grid-template-areas:
+      "left main"
+      "left right";
+    overflow: auto;
+  }
+}

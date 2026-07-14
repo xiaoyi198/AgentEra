@@ -152,6 +152,14 @@ async def get_gameplay():
         }
     return state.orchestrator.gameplay_public_state()
 
+@router.get("/ui-manifest")
+async def get_ui_manifest():
+    """Return the current generation's capability-safe DLC UI manifest."""
+    if not state.orchestrator:
+        from multiagent_framework.ui_manifest import UIManifest
+        return {**UIManifest.from_content({}).to_dict(), "generation": 0}
+    return state.orchestrator.ui_manifest_public_state()
+
 class DLCActionInvocationRequest(BaseModel):
     invocation_id: str = ""
     expected_generation: int | None = None

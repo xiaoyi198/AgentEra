@@ -32,6 +32,7 @@ class FakeOrchestrator:
         self.action_configurations = []
         self.issue_configurations = []
         self.objective_configurations = []
+        self.ui_manifest_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -66,6 +67,10 @@ class FakeOrchestrator:
     ) -> None:
         self.operations.append(("objectives", [item["objective_id"] for item in objectives]))
         self.objective_configurations.append((objectives, endings, generation, gameplay))
+
+    def configure_ui_manifest(self, manifest, *, generation=0) -> None:
+        self.operations.append(("ui_manifest", manifest.package_id))
+        self.ui_manifest_configurations.append((manifest, generation))
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -1030,3 +1035,54 @@ def test_only_explicit_primary_dlc_owns_campaign_objectives(tmp_path: Path):
     objectives, endings, _generation, _gameplay = orchestrator.objective_configurations[-1]
     assert [item["objective_id"] for item in objectives] == ["primary_goal"]
     assert [item["ending_id"] for item in endings] == ["primary_ending"]
+
+
+
+def test_primary_dlc_owns_ui_manifest_across_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    registry.save_manifest("sample", {"primary": True, "dependencies": ["support"]})
+    sample_content = registry.load_content("sample")
+    sample_content["ui_manifest"] = {
+        "title": "Primary Command v1",
+        "terminology": {"player": "Commander"},
+    }
+    registry.save_content("sample", sample_content)
+
+    registry.create({"id": "support", "name": "Support", "version": "1.0.0"})
+    registry.save_content("support", {
+        "resources": [], "entities": [], "inventory": [], "entity_values": [],
+        "relations": [], "agents": [], "initial_events": [], "ongoing_events": [],
+        "random_events": [], "time_rules": [], "personas": {}, "prompts": {},
+        "ui_manifest": {"title": "Dependency Must Not Win"},
+    })
+    registry.publish("support")
+    registry.set_enabled("support", True)
+
+    world = WorldState(str(tmp_path / "primary-ui.db"))
+    court = CourtGraph(str(tmp_path / "primary-ui.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active(seed_world=True)
+
+    manifest, generation = orchestrator.ui_manifest_configurations[-1]
+    assert manifest.package_id == "sample"
+    assert manifest.to_dict()["title"] == "Primary Command v1"
+    assert generation == 1
+    assert loader.public_runtime()["ui_manifest"]["title"] == "Primary Command v1"
+
+    sample_content = registry.load_content("sample")
+    sample_content["ui_manifest"]["title"] = "Primary Command v2"
+    registry.save_content("sample", sample_content)
+    reload_result = asyncio.run(loader.reload_active())
+
+    assert reload_result["ui_manifest_changed"] is True
+    manifest, generation = orchestrator.ui_manifest_configurations[-1]
+    assert manifest.to_dict()["title"] == "Primary Command v2"
+    assert generation == 2
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    assert rollback["source_generation"] == 1
+    manifest, generation = orchestrator.ui_manifest_configurations[-1]
+    assert manifest.to_dict()["title"] == "Primary Command v1"
+    assert generation == 3

@@ -1,9 +1,9 @@
 {
   "id": "example_frontier",
   "name": "边境哨站示例",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "schema_version": "1.0",
-  "description": "演示 bundle-v1、统一锚定资产、通用 Agent/行动/Issue，以及目标、里程碑、失败期限和结局的完整最小 DLC。",
+  "description": "?? bundle-v1?????????? Agent/??/Issue????????? DLC ???????????? DLC?",
   "enabled": false,
   "status": "published",
   "format": "bundle-v1",

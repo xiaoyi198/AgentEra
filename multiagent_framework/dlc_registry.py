@@ -28,6 +28,7 @@ from .objective_contract import (
     normalize_ending_document, normalize_objective_document,
     validate_objective_definitions,
 )
+from .ui_manifest import validate_ui_manifest_document
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -400,7 +401,7 @@ class DLCRegistry:
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
                 raise DLCRegistryError(f"DLC content field {key!r} must be a list")
-        for key in ("personas", "prompts"):
+        for key in ("personas", "prompts", "ui_manifest"):
             value = normalized.setdefault(key, {})
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
@@ -684,6 +685,8 @@ class DLCRegistry:
             issue_type_ids=issue_type_ids, gameplay=gameplay_contract,
         ):
             add(objective_issue.code, objective_issue.message, objective_issue.path, objective_issue.severity)
+        for ui_issue in validate_ui_manifest_document(content["ui_manifest"]):
+            add(ui_issue.code, ui_issue.message, ui_issue.path, ui_issue.severity)
 
         agent_bindings = bindings.get("agents", {}) if isinstance(bindings.get("agents", {}), dict) else {}
         for bound_agent in agent_bindings:

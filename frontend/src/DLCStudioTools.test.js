@@ -44,6 +44,7 @@ const base = {
   endings: [],
   personas: {},
   prompts: {},
+  ui_manifest: {},
 }
 
 test('content export is secret-free and can be imported from its envelope', () => {
@@ -507,4 +508,30 @@ test('objective and ending sections normalize, export and diff by stable IDs', (
   assert.deepEqual(diff.entries.filter(item => item.section === 'endings'), [
     { section: 'endings', key: 'frontier_safe', type: 'changed' },
   ])
+})
+
+
+test('UI manifest participates in import export diff and history', () => {
+  const uiManifest = {
+    title: 'Frontier Command',
+    brand: { short_mark: 'F' },
+    terminology: { player: 'Commander' },
+    navigation: [{ nav_id: 'dashboard', surface: 'main', view: 'dashboard', label: 'Command', icon: 'C', order: 0, visible: true }],
+    dashboard: { layout: 'single_column', widgets: [] },
+    issue_page: { list_fields: ['title'], detail_fields: ['summary'], show_resolved: false },
+    entity_detail: { visible_fields: ['name'], sections: ['inventory'] },
+  }
+  const exported = createContentExport({ id: 'frontier' }, { ...base, ui_manifest: uiManifest })
+  assert.deepEqual(normalizeImportedContent(exported).ui_manifest, uiManifest)
+  assert.throws(() => normalizeImportedContent({ ...base, ui_manifest: [] }), /ui_manifest must be an object/)
+
+  const changed = { ...base, ui_manifest: { ...uiManifest, title: 'Frontier Operations' } }
+  assert.deepEqual(summarizeContentDiff({ ...base, ui_manifest: uiManifest }, changed).entries, [
+    { section: 'ui_manifest', key: 'title', type: 'changed' },
+  ])
+
+  const initial = createContentHistory(base)
+  const committed = commitContentHistory(initial, changed)
+  assert.equal(committed.present.ui_manifest.title, 'Frontier Operations')
+  assert.deepEqual(undoContentHistory(committed).present.ui_manifest, {})
 })

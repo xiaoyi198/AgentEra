@@ -27,6 +27,7 @@ from .prompt_registry import (
 )
 from .types import EventObject
 from .gameplay_contract import GameplayContract
+from .ui_manifest import UIManifest
 from .world_state import (
     Entity,
     EntityValue,
@@ -91,6 +92,7 @@ class DLCReloadPlan:
     changed_runtime_tasks: list[str] = field(default_factory=list)
     runtime_model_profiles: dict[str, str] = field(default_factory=dict)
     gameplay_changed: bool = False
+    ui_manifest_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -131,6 +133,7 @@ class _DLCMaterializedSnapshot:
     ending_definitions: list[dict[str, Any]]
     primary_package_id: str
     gameplay_contract: GameplayContract
+    ui_manifest: UIManifest
     global_prompts: dict[str, str]
     global_prompt_hashes: dict[str, str]
     global_clients: dict[str, Any]
@@ -587,6 +590,10 @@ class DLCBundleLoader:
             package_id=primary_package_id,
             package_name=(primary.manifest.name if primary is not None else ""),
         )
+        ui_manifest = UIManifest.from_content(
+            {}, package_id=primary_package_id,
+            package_name=(primary.manifest.name if primary is not None else ""),
+        )
 
         for package in packages:
             issues = self.registry.validate(package.manifest.id)
@@ -608,6 +615,11 @@ class DLCBundleLoader:
                     package_name=package.manifest.name,
                 )
                 gameplay_contract = package_gameplay
+                ui_manifest = UIManifest.from_content(
+                    content.get("ui_manifest", {}),
+                    package_id=package.manifest.id,
+                    package_name=package.manifest.name,
+                )
             package_hashes[package.manifest.id] = _stable_hash({
                 "manifest": {
                     "id": package.manifest.id,
@@ -760,6 +772,7 @@ class DLCBundleLoader:
             ending_definitions=ending_definitions,
             primary_package_id=primary_package_id,
             gameplay_contract=gameplay_contract,
+            ui_manifest=ui_manifest,
             global_prompts=global_prompts,
             global_prompt_hashes=global_prompt_hashes,
             global_clients=global_clients,
@@ -827,6 +840,10 @@ class DLCBundleLoader:
                 or current.gameplay_contract.to_dict()
                 != candidate.gameplay_contract.to_dict()
             ),
+            ui_manifest_changed=(
+                current is None
+                or current.ui_manifest.to_dict() != candidate.ui_manifest.to_dict()
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -892,6 +909,7 @@ class DLCBundleLoader:
             "ending_definitions": copy.deepcopy(snapshot.ending_definitions),
             "primary_package_id": snapshot.primary_package_id,
             "gameplay_contract": snapshot.gameplay_contract.to_dict(),
+            "ui_manifest": snapshot.ui_manifest.to_dict(),
             "global_prompts": dict(snapshot.global_prompts),
             "global_prompt_hashes": dict(snapshot.global_prompt_hashes),
             "global_model_profiles": dict(snapshot.global_model_profiles),
@@ -1023,6 +1041,14 @@ class DLCBundleLoader:
                 package_name=primary_package_id,
             )
         )
+        archived_ui_manifest = blueprint.get("ui_manifest")
+        ui_manifest = (
+            UIManifest.from_dict(archived_ui_manifest)
+            if isinstance(archived_ui_manifest, dict)
+            else UIManifest.from_content(
+                {}, package_id=primary_package_id, package_name=primary_package_id
+            )
+        )
         return _DLCMaterializedSnapshot(
             package_ids=package_ids,
             package_hashes={
@@ -1078,6 +1104,7 @@ class DLCBundleLoader:
             ending_definitions=[dict(item) for item in blueprint.get("ending_definitions", [])],
             primary_package_id=str(blueprint.get("primary_package_id", "")),
             gameplay_contract=gameplay_contract,
+            ui_manifest=ui_manifest,
             global_prompts=global_prompts,
             global_prompt_hashes={
                 runtime_id: str(
@@ -1160,6 +1187,7 @@ class DLCBundleLoader:
             ending_definitions=copy.deepcopy(snapshot.ending_definitions),
             primary_package_id=snapshot.primary_package_id,
             gameplay_contract=copy.deepcopy(snapshot.gameplay_contract),
+            ui_manifest=copy.deepcopy(snapshot.ui_manifest),
             global_prompts=dict(snapshot.global_prompts),
             global_prompt_hashes=dict(snapshot.global_prompt_hashes),
             global_clients=dict(snapshot.global_clients),
@@ -1474,6 +1502,10 @@ class DLCBundleLoader:
                     self.orchestrator.configure_gameplay_contract(
                         candidate.gameplay_contract, generation=target_generation
                     )
+                if hasattr(self.orchestrator, "configure_ui_manifest"):
+                    self.orchestrator.configure_ui_manifest(
+                        candidate.ui_manifest, generation=target_generation
+                    )
                 if hasattr(self.orchestrator, "configure_action_catalog"):
                     self.orchestrator.configure_action_catalog(
                         candidate.action_definitions, generation=target_generation,
@@ -1630,6 +1662,14 @@ class DLCBundleLoader:
                     "generation": self.generation,
                 }
             ),
+            "ui_manifest": (
+                self.orchestrator.ui_manifest_public_state()
+                if hasattr(self.orchestrator, "ui_manifest_public_state")
+                else {
+                    **(snapshot.ui_manifest.to_dict() if snapshot else UIManifest.from_content({}).to_dict()),
+                    "generation": self.generation,
+                }
+            ),
             "actions": (
                 self.orchestrator.actions_public_state()
                 if hasattr(self.orchestrator, "actions_public_state")
@@ -1705,6 +1745,10 @@ class DLCBundleLoader:
         if hasattr(self.orchestrator, "configure_gameplay_contract"):
             self.orchestrator.configure_gameplay_contract(
                 candidate.gameplay_contract, generation=self.generation
+            )
+        if hasattr(self.orchestrator, "configure_ui_manifest"):
+            self.orchestrator.configure_ui_manifest(
+                candidate.ui_manifest, generation=self.generation
             )
         if hasattr(self.orchestrator, "configure_action_catalog"):
             self.orchestrator.configure_action_catalog(

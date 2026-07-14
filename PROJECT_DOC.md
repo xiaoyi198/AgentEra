@@ -1982,3 +1982,32 @@ Status: **implemented and locally verified**.
 
 
 Release verification for v0.23.0 completed with **535 Python tests passed and 2 environment-gated external-provider tests skipped**, **27 frontend tests passed**, Python compile, frontend ESLint/build, zero-error/zero-warning `example_frontier` Registry validation, credential-pattern scanning, and Git diff checks.
+
+
+## Release architecture note: DLC-authored UI Manifest (v0.24.0)
+
+Status: **implemented and locally verified**.
+
+### Safe manifest contract
+
+- `multiagent_framework/ui_manifest.py` owns the theme-neutral default, normalization, immutable `UIManifest` value, and validation contract. It deliberately accepts only framework-defined capabilities rather than executable frontend extensions.
+- Main views are limited to `dashboard`, `world`, `relations`, and `debug`; shell pages are limited to `gameplay`, `editor`, `dlc_studio`, and `assistant`. Dashboard layouts, regions, widgets, Issue fields, entity fields, and entity sections each have explicit allowlists.
+- DLC content cannot provide URLs, hrefs, React component names, HTML, CSS, JavaScript, or unsafe text. Unknown capabilities, duplicate IDs, invalid regions/fields, and the absence of any visible main or shell navigation fail validation. Missing manifests normalize to a theme-neutral safe default.
+
+### Ownership and Generation lifecycle
+
+- `content.json.ui_manifest` is a single-owner content section: only the primary DLC supplies it. Dependencies can contribute their normal additive content but cannot replace the campaign shell or terminology.
+- `DLCBundleLoader` publishes the normalized manifest in `DLCGeneration`; load, hot reload, archive, rollback, and restart recovery therefore switch UI and gameplay contracts together. Archives created before v0.24.0 safely reconstruct the default manifest.
+- `Orchestrator.get_ui_manifest()` returns the current generation envelope. `GET /api/ui-manifest` exposes generation, package identity, configured/source metadata, and the normalized manifest without permitting client-authored executable behavior.
+
+### Capability-driven React renderer
+
+- `frontend/src/UIManifestTools.js` provides a second defensive normalization layer and safe defaults for a failed or malformed API response. Route destinations remain fixed in application code.
+- `App.jsx` and `AppNav.jsx` consume current-generation branding, terminology, main navigation, and shell navigation. Generation changes and manual save loads trigger a fresh manifest request.
+- `WorldStateView.jsx` maps allowlisted widget kinds into framework-owned components, supports three-column/two-column/single-column layouts, and applies authored Issue/entity field visibility without dynamic component imports.
+
+### DLC Studio authoring
+
+- `frontend/src/UIManifestEditor.jsx` provides Chinese descriptions for brand/title, 30 terminology entries, both navigation surfaces, dashboard layout/widgets, Issue list/detail fields, and entity detail sections.
+- The editor includes immediate allowlist/duplicate/visibility checks, advanced JSON parsing feedback, and security guidance. `DLCStudioTools` preserves `ui_manifest` through normalization, import/export, keyed Content Diff, undo, and redo before Registry publication.
+- `example_frontier` v1.3.0 demonstrates a complete frontier-themed manifest while hiding resolved Issues and the entity `parameters` section, proving that content controls presentation without changing framework code.

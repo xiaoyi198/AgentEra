@@ -3,6 +3,7 @@ import './DLCStudio.css'
 import { PersonaEditor, PromptEditor, StructuredContentEditor } from './DLCContentEditors.jsx'
 import ModelPromotionWorkbench from './ModelPromotionWorkbench.jsx'
 import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
+import UIManifestEditor from './UIManifestEditor.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -429,6 +430,7 @@ export default function DLCStudio() {
     endings: content.endings?.length || 0,
     personas: Object.keys(content.personas || {}).length,
     prompts: Object.keys(content.prompts || {}).length,
+    ui_manifest: Object.keys(content.ui_manifest || {}).length,
   }), [content])
   const modelProfiles = useMemo(() => Object.keys(modelConfig?.models || {}).sort(), [modelConfig])
 
@@ -613,6 +615,7 @@ export default function DLCStudio() {
     { key: 'endings', label: `\u7ed3\u5c40 ${counts.endings}` },
     { key: 'personas', label: `Persona ${counts.personas}` },
     { key: 'prompts', label: `Prompt ${counts.prompts}` },
+    { key: 'ui_manifest', label: `界面配置 ${counts.ui_manifest}` },
     { key: 'models', label: UI.modelPolicies },
     { key: 'promotion', label: '\u664b\u7ea7\u5de5\u4f5c\u53f0' },
     { key: 'raw', label: UI.fullData },
@@ -652,6 +655,7 @@ export default function DLCStudio() {
                     : tab === 'endings' ? <EndingEditor key={`endings:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'prompts' ? <PromptEditor key={`prompts:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                    : tab === 'ui_manifest' ? <UIManifestEditor content={content} onSaveContent={saveStructuredContent} busy={busy} />
                       : <StructuredContentEditor key={`${tab}:${selectedItem}`} kind={tab} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} onAnalyzeCausal={analyzeCausalDraft} onReplayCausal={replayCausalDraft} busy={busy} />}
         </>}
       </section>

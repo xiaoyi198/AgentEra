@@ -454,5 +454,194 @@
       "priority": 100,
       "enabled": true
     }
-  ]
+  ],
+  "ui_manifest": {
+    "title": "??????",
+    "subtitle": "??????????????",
+    "brand": {
+      "short_mark": "?"
+    },
+    "terminology": {
+      "player": "???",
+      "issue": "????",
+      "issue_plural": "???????",
+      "case": "????",
+      "decision": "????",
+      "evidence": "????",
+      "source": "????",
+      "deadline": "????",
+      "message": "??",
+      "in_transit": "????",
+      "world": "????",
+      "entity": "??",
+      "entities": "??",
+      "relations": "????",
+      "objective": "????",
+      "objectives": "????",
+      "dashboard": "???",
+      "debug": "????",
+      "status": "??",
+      "content": "??",
+      "urgency": "?????",
+      "created_at": "????",
+      "issue_type": "????",
+      "inventory": "????",
+      "metrics": "????",
+      "parameters": "????",
+      "ongoing_events": "????",
+      "location": "????",
+      "search": "????",
+      "publish_message": "????"
+    },
+    "navigation": [
+      {
+        "nav_id": "frontier_dashboard",
+        "surface": "main",
+        "view": "dashboard",
+        "label": "???",
+        "icon": "?",
+        "order": 0,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_world",
+        "surface": "main",
+        "view": "world",
+        "label": "????",
+        "icon": "?",
+        "order": 10,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_relations",
+        "surface": "main",
+        "view": "relations",
+        "label": "????",
+        "icon": "?",
+        "order": 20,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_debug",
+        "surface": "main",
+        "view": "debug",
+        "label": "????",
+        "icon": "?",
+        "order": 30,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_gameplay",
+        "surface": "shell",
+        "view": "gameplay",
+        "label": "????",
+        "icon": "?",
+        "order": 0,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_editor",
+        "surface": "shell",
+        "view": "editor",
+        "label": "????",
+        "icon": "?",
+        "order": 10,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_dlc",
+        "surface": "shell",
+        "view": "dlc_studio",
+        "label": "DLC ??",
+        "icon": "?",
+        "order": 20,
+        "visible": true
+      },
+      {
+        "nav_id": "frontier_assistant",
+        "surface": "shell",
+        "view": "assistant",
+        "label": "????",
+        "icon": "?",
+        "order": 30,
+        "visible": true
+      }
+    ],
+    "dashboard": {
+      "layout": "three_column",
+      "widgets": [
+        {
+          "widget_id": "frontier_objectives",
+          "kind": "objectives",
+          "region": "top",
+          "order": 0,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_issues",
+          "kind": "issue_list",
+          "region": "left",
+          "order": 10,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_issue_detail",
+          "kind": "issue_detail",
+          "region": "main",
+          "order": 20,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_command",
+          "kind": "player_message",
+          "region": "main",
+          "order": 30,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_transit",
+          "kind": "in_transit",
+          "region": "right",
+          "order": 40,
+          "visible": true
+        }
+      ]
+    },
+    "issue_page": {
+      "list_fields": [
+        "title",
+        "source",
+        "urgency",
+        "created_at",
+        "status",
+        "issue_type"
+      ],
+      "detail_fields": [
+        "source",
+        "summary",
+        "status",
+        "deadline",
+        "evidence",
+        "decisions",
+        "urgency"
+      ],
+      "show_resolved": false
+    },
+    "entity_detail": {
+      "visible_fields": [
+        "name",
+        "type",
+        "description",
+        "current_status",
+        "updated_at"
+      ],
+      "sections": [
+        "summary",
+        "ongoing_events",
+        "location",
+        "inventory",
+        "metrics"
+      ]
+    }
+  }
 }

@@ -20,7 +20,7 @@ const ARRAY_SECTIONS = [
   'objectives',
   'endings',
 ]
-const OBJECT_SECTIONS = ['personas', 'prompts']
+const OBJECT_SECTIONS = ['personas', 'prompts', 'ui_manifest']
 const KNOWN_SECTIONS = new Set(['schema_version', ...ARRAY_SECTIONS, ...OBJECT_SECTIONS])
 
 const KEYERS = {

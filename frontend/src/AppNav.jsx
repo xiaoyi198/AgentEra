@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './AppNav.css'
 
-const PAGES = [
-  { href: '/', label: '朝堂', icon: '殿', match: (p) => p === '/' || p === '' || p.endsWith('/index.html') },
-  { href: '/editor.html', label: '编修', icon: '录', match: (p) => p.includes('editor') },
-  { href: '/dlc.html', label: 'DLC', icon: '扩', match: (p) => p.includes('dlc') },
-  { href: '/tianji.html', label: '天玑', icon: '玑', match: (p) => p.includes('tianji') },
-]
+import { normalizeUIManifestResponse, shellPages } from './UIManifestTools.js'
 
 const STORAGE_KEY = 'appNav.position.v2'
 const MARGIN = 8
@@ -37,7 +32,17 @@ export default function AppNav() {
   const dragStateRef = useRef(null)
   const [position, setPosition] = useState(() => loadPosition())
   const [dragging, setDragging] = useState(false)
+  const [uiManifest, setUIManifest] = useState(() => normalizeUIManifestResponse(null))
   const suppressClickRef = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/ui-manifest')
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(data => { if (active) setUIManifest(normalizeUIManifestResponse(data)) })
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
 
   // 初始化默认位置（底部居中），并在窗口尺寸改变后保持在视口内
   useEffect(() => {
@@ -135,14 +140,13 @@ export default function AppNav() {
       onPointerDown={onPointerDown}
     >
       <span className="app-nav-handle" title="拖动以移动" aria-hidden="true">⋮⋮</span>
-      {PAGES.map((page) => {
-        const active = page.match(pathname)
+      {shellPages(uiManifest, pathname).map((page) => {
         return (
           <a
-            key={page.href}
+            key={page.nav_id}
             href={page.href}
-            className={active ? 'app-nav-active' : ''}
-            aria-current={active ? 'page' : undefined}
+            className={page.active ? 'app-nav-active' : ''}
+            aria-current={page.active ? 'page' : undefined}
             onClick={onLinkClick}
             draggable={false}
           >

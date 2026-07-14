@@ -21,6 +21,7 @@ from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .gameplay_contract import GameplayContract
+from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
 from .objective_contract import ObjectiveManager
 from .fc_handlers import (
@@ -91,6 +92,7 @@ class Orchestrator:
         self.agents: dict[str, BaseAgent] = {}
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
+        self._ui_manifest = UIManifest.from_content({})
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
         self.objective_manager = ObjectiveManager()
@@ -99,6 +101,7 @@ class Orchestrator:
         self._pending_objective_transitions: deque[dict[str, Any]] = deque(maxlen=2000)
         self._gameplay_generation: int = 0
         self._gameplay_contract_published: bool = False
+        self._ui_manifest_generation: int = 0
         self._memory_compressor = memory_compressor
         initial_bindings: dict[str, RuntimeTaskBinding] = {
             ROUTER_TASK: RuntimeTaskBinding(
@@ -204,6 +207,21 @@ class Orchestrator:
         return {
             **self._gameplay_contract.to_dict(),
             "generation": self._gameplay_generation,
+        }
+
+    def configure_ui_manifest(
+        self, manifest: UIManifest, *, generation: int = 0
+    ) -> None:
+        """Atomically publish the primary DLC's capability-safe UI manifest."""
+        if not isinstance(manifest, UIManifest):
+            raise TypeError("manifest must be a UIManifest")
+        self._ui_manifest = manifest
+        self._ui_manifest_generation = max(0, int(generation))
+
+    def ui_manifest_public_state(self) -> dict[str, Any]:
+        return {
+            **self._ui_manifest.to_dict(),
+            "generation": self._ui_manifest_generation,
         }
 
     def configure_action_catalog(

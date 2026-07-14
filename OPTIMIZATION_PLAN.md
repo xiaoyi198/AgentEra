@@ -1409,3 +1409,24 @@ Next gameplay priorities:
 The persistent gameplay-framework goal remains active. This checkpoint completes P0.4, but P0.5/P0.6 and the broader long-term optimization plan remain open.
 
 The v0.23.0 local release gate passed 535 Python tests (with 2 environment-gated external-provider tests skipped), 27 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, and Git diff checks.
+
+
+## Phase checkpoint: DLC-authored UI Manifest and capability-driven renderer (v0.24.0, 2026-07-14)
+
+P0.5 of the DLC-driven gameplay framework is complete and locally verified:
+
+- added a generic, allowlisted UI Manifest for branding, 30 terminology entries, built-in navigation, dashboard layouts/widgets, Issue fields, and entity-detail sections;
+- rejected arbitrary URLs, component names, HTML/CSS/script payloads, unsafe text, unknown capabilities, duplicate IDs, and unusable navigation while retaining a safe theme-neutral fallback;
+- established primary-DLC UI ownership and bound the manifest to initial load, hot reload, Generation publication, encrypted archive, rollback, old-archive recovery, Orchestrator state, and `GET /api/ui-manifest`;
+- changed the React shell and world dashboard to consume fixed framework capabilities, including generation refresh, fixed route mapping, configurable widget regions/layouts, and visible-field selection;
+- added a detailed Chinese DLC Studio editor with visual controls, local validation, advanced JSON, import/export, Content Diff, and undo/redo history;
+- upgraded `example_frontier` to v1.3.0 with a complete frontier-themed manifest and synchronized product version `0.24.0`.
+
+Next gameplay priorities:
+
+1. P0.6 DLC action/capability registries that drive player UI, Router dispatch, and Agent tools from one generation-bound catalog.
+2. Continue multi-turn Agent memory retrieval/compression evaluation and improve cross-round commitment/summary quality.
+3. Continue task-aware model selection, Provider/API configuration UX, real-trajectory evaluation, anchored-economy stress/retry tests, and credential-gated promotion rehearsal.
+4. Extend UI capabilities only through reviewed framework-owned renderers; do not weaken the executable-code boundary to make DLC authoring more convenient.
+
+The persistent gameplay-framework goal remains active. This checkpoint completes P0.5, but P0.6 and the broader long-term optimization plan remain open. The v0.24.0 local release gate passed 544 Python tests (with 2 external-provider environment-gated tests skipped because credentials were not injected into the test process), 31 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, and Git diff checks.

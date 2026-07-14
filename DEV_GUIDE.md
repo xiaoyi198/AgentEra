@@ -2540,3 +2540,34 @@ Objective categories are `primary`, `optional`, and `failure`. Milestone modes a
 5. Verify `GET /api/objectives`, `GET /api/endings`, the main Objective panel, and WebSocket `objective_transitions` without hard-coded theme terminology.
 
 The optional external Provider smoke test is `tests/integration/test_external_api_connection.py`. Supply `AGENTERA_TEST_BASE_URL` and `AGENTERA_TEST_API_KEY` only through a temporary process environment; `AGENTERA_TEST_MODEL`, `AGENTERA_TEST_TIMEOUT_S`, and `AGENTERA_TEST_MODEL_ATTEMPTS` are optional. The test must skip when URL/key are absent and must never print or persist credentials or raw provider responses.
+
+
+## DLC UI Manifest authoring workflow (v0.24.0)
+
+### Ownership and file location
+
+Add an optional `ui_manifest` object to the primary DLC's `content.json`. Do not place campaign UI overrides in dependency DLCs: the loader intentionally ignores dependency ownership for this single-valued section. An omitted manifest means the framework's theme-neutral default.
+
+### Use capabilities, not frontend implementation details
+
+- Choose only documented `navigation[].view`, `dashboard.layout`, `dashboard.widgets[].kind/region`, `issue_page` fields, and `entity_detail` fields/sections.
+- Never add URLs, `href`, React component names, HTML, CSS, or scripts. New executable UI behavior must first be implemented and reviewed as a framework capability, then added to both backend and frontend allowlists.
+- Keep `nav_id` and `widget_id` stable and unique. At least one visible main navigation item and one visible shell navigation item are required.
+- Treat authored labels and icons as short plain text. Backend validation is authoritative; frontend normalization is defense in depth, not a replacement for Registry validation.
+
+### Studio workflow
+
+1. Open DLC Studio and select the ???? section.
+2. Configure title/brand and the Chinese-described terminology fields.
+3. Select fixed main/shell destinations, layout, widgets, Issue fields, and entity sections; use order and visibility rather than custom routes or components.
+4. Resolve local validation errors. Use advanced JSON only for bulk editing and inspect its parse errors/security notice.
+5. Review Content Diff, publish the DLC, then verify `GET /api/ui-manifest` and the gameplay shell after the new Generation activates.
+6. Test hot reload and rollback when changing navigation or field visibility. Historical generations must restore their archived manifest.
+
+### Adding a new framework UI capability
+
+Update `multiagent_framework/ui_manifest.py` and `frontend/src/UIManifestTools.js` in the same change, then implement a fixed renderer/route mapping and expose it in `UIManifestEditor.jsx`. Add backend rejection/default/Generation tests plus frontend normalization/rendering/editor tests. Do not accept arbitrary component names as an extension mechanism.
+
+### Required release gate
+
+Run the complete Python suite and compile gate, all frontend tests, ESLint, production build, example DLC Registry validation, `git diff --check`, and a credential-pattern scan. The external OpenAI-compatible Smoke Test remains environment-gated and receives credentials only through `AGENTERA_TEST_*` process environment variables.
