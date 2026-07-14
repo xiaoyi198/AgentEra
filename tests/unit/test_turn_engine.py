@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from multiagent_framework.action_agent import ActionAgent
 from multiagent_framework.agent_runtime import AgentConfig, OfficialAgent
+from multiagent_framework.capability_contract import CapabilityCatalog, CapabilityContractError
 from multiagent_framework.llm_client import LLMResponse
 from multiagent_framework.turn_engine import TurnBudget, TurnEngine
 
@@ -34,10 +35,12 @@ class ScriptedLLM:
         self.responses = list(responses)
         self.contexts: list[dict] = []
         self.message_snapshots: list[list[dict]] = []
+        self.tools_snapshots: list[list[dict]] = []
 
     async def chat(self, *, messages, tools=None, temperature=0.7, trace_context=None):
         self.contexts.append(dict(trace_context or {}))
         self.message_snapshots.append([dict(message) for message in messages])
+        self.tools_snapshots.append(list(tools or []))
         if not self.responses:
             raise AssertionError("unexpected extra LLM call")
         return self.responses.pop(0)
@@ -409,3 +412,197 @@ async def test_action_agent_replaces_non_finite_llm_duration_with_safe_estimate(
     assert result.duration_days == 1
     assert result.duration_source == "fallback"
     assert result.duration_components["invalid_hint_replaced"] is True
+
+
+
+def _noop_capability(capability_id: str, audiences: list[str]) -> dict:
+    return {
+        "capability_id": capability_id,
+        "display_name": capability_id,
+        "description": "No-op capability for schema tests.",
+        "handler": "noop",
+        "audiences": audiences,
+        "aliases": [],
+        "target": {"kind": "none", "mode": "none", "allowed_ids": []},
+        "parameters": [],
+        "input": {"content_required": False, "content_label": "Content"},
+    }
+
+
+def _tool_names(tools: list[dict]) -> list[str]:
+    return [str(item.get("function", {}).get("name", "")) for item in tools]
+
+
+@async_test
+async def test_agent_capability_tool_schema_tracks_generation_and_hides_legacy_mutations() -> None:
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[
+            _tool_call("cap-a", "invoke_capability", {"capability_id": "wait_alpha"}),
+            _tool_call("finish-a", "finish_turn", {"summary": "alpha"}),
+        ]),
+        LLMResponse(tool_calls=[
+            _tool_call("cap-b", "invoke_capability", {"capability_id": "wait_beta"}),
+            _tool_call("finish-b", "finish_turn", {"summary": "beta"}),
+        ]),
+    ])
+    agent = OfficialAgent(
+        AgentConfig(agent_id="schema_agent", display_name="Schema Agent", system_prompt="test"),
+        llm,
+    )
+    catalog = CapabilityCatalog()
+    catalog.configure([_noop_capability("wait_alpha", ["agent"])], generation=11)
+    agent.set_capability_catalog(catalog)
+
+    first = await agent.process({"message": "first", "chain_id": "schema-11"})
+    catalog.configure([_noop_capability("wait_beta", ["agent"])], generation=12)
+    second = await agent.process({"message": "second", "chain_id": "schema-12"})
+
+    first_tool = next(item for item in llm.tools_snapshots[0] if item["function"]["name"] == "invoke_capability")
+    second_tool = next(item for item in llm.tools_snapshots[1] if item["function"]["name"] == "invoke_capability")
+    assert first_tool["function"]["parameters"]["properties"]["capability_id"]["enum"] == ["wait_alpha"]
+    assert second_tool["function"]["parameters"]["properties"]["capability_id"]["enum"] == ["wait_beta"]
+    assert first[0].metadata["capability_generation"] == 11
+    assert second[0].metadata["capability_generation"] == 12
+    assert "submit_action" not in _tool_names(llm.tools_snapshots[0])
+    assert "request_action" not in _tool_names(llm.tools_snapshots[0])
+
+
+def test_agent_catalog_with_only_player_capabilities_does_not_restore_legacy_tools() -> None:
+    agent = OfficialAgent(
+        AgentConfig(agent_id="player_only", display_name="Player Only", system_prompt="test"),
+        ScriptedLLM([]),
+    )
+    catalog = CapabilityCatalog()
+    catalog.configure([_noop_capability("player_wait", ["player"])], generation=5)
+    agent.set_capability_catalog(catalog)
+
+    names = _tool_names(agent._tools_for_turn())
+
+    assert "invoke_capability" not in names
+    assert "submit_action" not in names
+    assert "request_action" not in names
+    assert names[-1] == "finish_turn"
+
+
+
+@async_test
+async def test_player_message_capability_validates_runtime_targets_before_queueing() -> None:
+    from multiagent_framework.orchestrator import Orchestrator
+
+    class CapabilityCourt:
+        def __init__(self) -> None:
+            self.officials = {}
+
+        def get_official(self, agent_id):
+            return self.officials.get(agent_id)
+
+        def get_distance(self, source, target, speed):
+            return 0.0
+
+    class CapabilityChainLog:
+        def append(self, entry):
+            return None
+
+    court = CapabilityCourt()
+    orch = Orchestrator(
+        court_graph=court,
+        timer_system=SimpleNamespace(),
+        chain_log=CapabilityChainLog(),
+        router=SimpleNamespace(),
+    )
+    receiver = OfficialAgent(
+        AgentConfig(agent_id="receiver", display_name="Receiver", system_prompt="test"),
+        ScriptedLLM([]),
+    )
+    orch.register_agent(receiver)
+    court.officials["receiver"] = SimpleNamespace(enabled=True)
+    orch.configure_capability_catalog([{
+        "capability_id": "player_message",
+        "display_name": "Player Message",
+        "description": "Send one validated message.",
+        "handler": "message",
+        "audiences": ["player"],
+        "aliases": [],
+        "target": {
+            "kind": "agent",
+            "mode": "required",
+            "allowed_ids": ["receiver", "missing"],
+        },
+        "parameters": [],
+        "input": {"content_required": True, "content_label": "Message"},
+    }], generation=8)
+
+    delivered = await orch.invoke_capability(
+        "player_message",
+        {"expected_generation": 8, "target_id": "receiver", "content": "hello"},
+        audience="player",
+    )
+    assert delivered["ok"] is True
+    assert [item["target"] for item in orch._pending_wakeups] == ["receiver"]
+
+    try:
+        await orch.invoke_capability(
+            "player_message",
+            {"expected_generation": 8, "target_id": "missing", "content": "hello"},
+            audience="player",
+        )
+    except CapabilityContractError as exc:
+        assert exc.code == "capability.target.unavailable"
+        assert exc.details == {"target_ids": ["missing"]}
+    else:
+        raise AssertionError("missing Agent target should be rejected")
+    assert [item["target"] for item in orch._pending_wakeups] == ["receiver"]
+
+
+@async_test
+async def test_contract_capability_delegates_to_action_catalog_with_agent_identity() -> None:
+    from multiagent_framework.orchestrator import Orchestrator
+
+    class ContractCourt:
+        def get_official(self, agent_id):
+            return SimpleNamespace(enabled=True)
+
+    captured = []
+    orch = Orchestrator(
+        court_graph=ContractCourt(),
+        timer_system=SimpleNamespace(),
+        chain_log=SimpleNamespace(),
+        router=SimpleNamespace(),
+    )
+    orch.configure_capability_catalog([{
+        "capability_id": "launch_patrol",
+        "display_name": "Launch Patrol",
+        "description": "Delegate to the authoritative ActionCatalog.",
+        "handler": "contract_action",
+        "audiences": ["agent"],
+        "aliases": [],
+        "target": {"kind": "entity", "mode": "required", "allowed_ids": ["station"]},
+        "parameters": [],
+        "action_id": "frontier_patrol",
+        "input": {"content_required": False, "content_label": "Order"},
+    }], generation=6)
+    orch.execute_dlc_action = lambda action_id, request: (
+        captured.append((action_id, request)) or {"ok": True, "status": "executed"}
+    )
+
+    result = await orch.invoke_capability(
+        "launch_patrol",
+        {
+            "expected_generation": 6,
+            "target_id": "station",
+            "parameters": {"days": 2},
+            "invocation_id": "patrol-1",
+        },
+        audience="agent",
+        source_id="mayor",
+    )
+
+    assert result["ok"] is True
+    assert captured == [("frontier_patrol", {
+        "invocation_id": "patrol-1",
+        "expected_generation": 6,
+        "actor_id": "mayor",
+        "control_object_id": "mayor",
+        "target_id": "station",
+        "parameters": {"days": 2},
+    })]

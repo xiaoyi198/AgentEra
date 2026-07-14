@@ -16,7 +16,8 @@ from .fc_handlers import (
     parse_request_action,
     parse_submit_action,
 )
-from .fc_tools import AGENT_TOOLS
+from .fc_tools import AGENT_READ_TOOLS, AGENT_TOOLS, FINISH_TURN_TOOL
+from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .llm_client import LLMClient
 from .memory_compressor import MemoryCompressor, find_safe_split_point
 from .memory_store import StructuredMemoryStore
@@ -28,12 +29,12 @@ logger = logging.getLogger(__name__)
 _READ_ONLY_TOOLS = {"list_entities", "query_entity", "list_agents"}
 _AGENT_PROTOCOL = """
 
-## 多轮决策协议（必须遵守）
-1. 信息不足时先调用 list_entities、query_entity 或 list_agents 查询真实世界上下文。
-2. 使用 submit_action 表达通信/本地意图；需要世界法则模拟具体行动时使用 request_action。
-3. 工具返回 accepted_pending_execution 只表示意图已被系统接收，不代表世界已经执行成功。
-4. 提交完所有意图后调用 finish_turn。真实调度或行动结果会在后续“系统执行反馈/真实行动结果”消息中返回。
-5. 不要重复提交内容完全相同的意图；收到失败反馈后应修正计划。
+## \u591a\u8f6e\u51b3\u7b56\u4e0e\u5de5\u5177\u534f\u8bae
+1. \u5148\u8bfb\u53d6\u4e16\u754c\u72b6\u6001\u4e0e\u8bb0\u5fc6\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u6267\u884c\u80fd\u529b\u3002
+2. \u5df2\u914d\u7f6e DLC \u80fd\u529b\u65f6\uff0c\u53ea\u4f7f\u7528 invoke_capability\uff1bcapability_id \u5fc5\u987b\u6765\u81ea\u5f53\u524d\u5de5\u5177\u679a\u4e3e\uff0c\u4e0d\u5f97\u865a\u6784 ID \u6216\u8de8 Generation \u590d\u7528\u8fc7\u671f\u5b9a\u4e49\u3002
+3. \u5de5\u5177\u8fd4\u56de accepted_pending_execution \u53ea\u4ee3\u8868\u5df2\u63a5\u53d7\u6392\u961f\uff0c\u4e0d\u4ee3\u8868\u4e16\u754c\u7ed3\u679c\u5df2\u6210\u529f\u3002
+4. \u5b8c\u6210\u6240\u6709\u5fc5\u8981\u8bfb\u53d6\u4e0e\u8c03\u7528\u540e\u4f7f\u7528 finish_turn\uff0c\u6458\u8981\u4e2d\u533a\u5206\u4e8b\u5b9e\u3001\u8ba1\u5212\u4e0e\u672a\u51b3\u98ce\u9669\u3002
+5. \u4e0d\u8981\u91cd\u590d\u63d0\u4ea4\u540c\u4e00\u610f\u56fe\uff1b\u82e5\u65e0\u9700\u64cd\u4f5c\uff0c\u9009\u62e9\u53ef\u7528 noop \u80fd\u529b\u6216\u76f4\u63a5\u7ed3\u675f\u56de\u5408\u3002
 """
 
 
@@ -89,6 +90,7 @@ class BaseAgent:
         self._court: Any = None
         self._sim_time_provider: Callable[[], float] = lambda: 0.0
         self._seconds_per_day_provider: Callable[[], float] = lambda: 86400.0
+        self._capability_catalog: CapabilityCatalog | None = None
 
         self.last_turn_outcome: TurnOutcome | None = None
         self.last_turn_trace: list[dict[str, Any]] = []
@@ -111,6 +113,25 @@ class BaseAgent:
 
     def set_compressor(self, compressor: MemoryCompressor) -> None:
         self._compressor = compressor
+
+    def set_capability_catalog(self, catalog: CapabilityCatalog | None) -> None:
+        """Bind the generation-aware catalog without freezing tool schemas."""
+        self._capability_catalog = catalog
+
+    def _tools_for_turn(self) -> list[dict[str, Any]]:
+        catalog = self._capability_catalog
+        if catalog is not None and catalog.configured:
+            tool = catalog.build_tool(
+                audience="agent",
+                name="invoke_capability",
+                description="\u8c03\u7528\u5f53\u524d DLC \u6ce8\u518c\u7684\u80fd\u529b\uff0c\u53ea\u80fd\u4f7f\u7528\u5de5\u5177\u679a\u4e3e\u4e2d\u7684 capability_id\u3002",
+            )
+            return [
+                *AGENT_READ_TOOLS,
+                *([tool] if tool is not None else []),
+                FINISH_TURN_TOOL,
+            ]
+        return self.config.tools or AGENT_TOOLS
 
     def bind_runtime(
         self,
@@ -342,7 +363,40 @@ class BaseAgent:
                     return {"ok": False, "error": "court graph is not available"}
                 return await dispatch_fc(name, ctx, args)
 
-            if name == "submit_action":
+            if name == "invoke_capability":
+                if self._capability_catalog is None:
+                    return {"ok": False, "accepted": False, "error": "capability catalog is not available"}
+                capability_id = str(args.get("capability_id", "") or "")
+                try:
+                    prepared = self._capability_catalog.prepare_invocation(
+                        capability_id, args, audience="agent", source_id=self.agent_id
+                    )
+                except CapabilityContractError as exc:
+                    return {
+                        "ok": False,
+                        "accepted": False,
+                        "error": exc.code,
+                        "path": exc.path,
+                        "details": exc.details,
+                    }
+                action = AgentAction(
+                    agent_id=self.agent_id,
+                    action=prepared["capability_id"],
+                    content=prepared["content"],
+                    original_intent=prepared["original_intent"],
+                    is_distorting=prepared["is_distorting"],
+                    urgency=prepared["urgency"],
+                    metadata={
+                        "capability_id": prepared["capability_id"],
+                        "capability_generation": prepared["generation"],
+                        "target_id": prepared["target_id"],
+                        "target_ids": prepared["target_ids"],
+                        "target_kind": prepared["target_kind"],
+                        "parameters": prepared["parameters"],
+                        "action_id": prepared["action_id"],
+                    },
+                )
+            elif name == "submit_action":
                 action = parse_submit_action(self.agent_id, args)
             elif name == "request_action":
                 action = parse_request_action(self.agent_id, args)
@@ -422,7 +476,7 @@ class BaseAgent:
         outcome = await self._turn_engine.run(
             llm=self.llm,
             messages=messages,
-            tools=self.config.tools or AGENT_TOOLS,
+            tools=self._tools_for_turn(),
             execute_tool=execute_tool,
             terminal_predicate=lambda name, result: (
                 name == "finish_turn" and bool(result.get("ok"))
@@ -458,9 +512,14 @@ class BaseAgent:
                 "[系统] 你没有调用工具。请先查询（如有需要），再提交意图并调用 finish_turn。",
             )
 
+        fallback_capability = "do_nothing"
+        if self._capability_catalog is not None:
+            noops = [item for item in self._capability_catalog.definitions_for("agent") if item.handler == "noop"]
+            if noops:
+                fallback_capability = noops[0].capability_id
         return [AgentAction(
             agent_id=self.agent_id,
-            action="do_nothing",
+            action=fallback_capability,
             content="",
             original_intent=(
                 f"本轮未提交意图；停止原因={outcome.stop_reason}"

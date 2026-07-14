@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
 
 from multiagent_framework.agent_runtime import AgentConfig, OfficialAgent
+from multiagent_framework.capability_contract import CapabilityCatalog
 from multiagent_framework.court_graph import CourtGraph, Official
 from multiagent_framework.llm_client import LLMResponse
 from multiagent_framework.router import MAX_AMBIGUOUS_BATCH, MAX_CANDIDATES_PER_ACTION, RouterAgent
@@ -172,3 +173,78 @@ def test_agent_to_router_chain_continuity(tmp_path) -> None:
     assert actions[0].metadata["parent_chain_ids"] == ["chain_e2e"]
     assert commands[0].chain_id == "chain_e2e"
     assert commands[0].intent_id == actions[0].metadata["intent_id"]
+
+
+
+def _message_capability(capability_id: str, *, aliases: list[str] | None = None) -> dict:
+    return {
+        "capability_id": capability_id,
+        "display_name": capability_id,
+        "description": "Route a bounded message target.",
+        "handler": "message",
+        "audiences": ["agent", "router"],
+        "aliases": list(aliases or []),
+        "target": {"kind": "agent", "mode": "required", "allowed_ids": []},
+        "parameters": [],
+        "input": {"content_required": True, "content_label": "Message"},
+    }
+
+
+def test_configured_catalog_rejects_unknown_capability_without_llm(tmp_path) -> None:
+    llm = FakeLLM()
+    router = RouterAgent(llm, _court(tmp_path))
+    catalog = CapabilityCatalog()
+    catalog.configure([_message_capability("known_report")], generation=3)
+    router.configure_capability_catalog(catalog)
+
+    commands = asyncio.run(router.process_batch([
+        _action(action="invented_capability", metadata={
+            "intent_id": "unknown-capability",
+            "chain_id": "unknown-chain",
+            "capability_generation": 3,
+        })
+    ]))
+
+    assert commands == []
+    assert llm.calls == 0
+    assert router.dead_letters[-1]["status"] == "unknown_capability"
+
+
+def test_router_llm_cannot_replace_source_capability_id(tmp_path) -> None:
+    court = _court(tmp_path, many=2)
+    response = LLMResponse(tool_calls=[_tool_call("route", "route_capability", {
+        "capability_id": "other_message",
+        "target_id": "extra_00",
+        "intent_id": "stable-capability",
+    })])
+    llm = FakeLLM([response])
+    router = RouterAgent(llm, court)
+    catalog = CapabilityCatalog()
+    catalog.configure([
+        _message_capability("stable_message"),
+        _message_capability("other_message"),
+    ], generation=4)
+    router.configure_capability_catalog(catalog)
+    action = _action(
+        action="stable_message",
+        metadata={
+            "intent_id": "stable-capability",
+            "chain_id": "stable-chain",
+            "capability_id": "stable_message",
+            "capability_generation": 4,
+            "target_ids": ["Extra"],
+        },
+    )
+
+    commands = asyncio.run(router.process_batch([action]))
+
+    assert commands == []
+    assert llm.calls == 1
+    assert router.dead_letters[-1]["status"] == "capability_changed"
+
+
+def test_capability_target_text_splits_full_width_comma_but_preserves_question_mark() -> None:
+    targets = RouterAgent._raw_capability_targets({
+        "target_ids": "guard?station\uFF0Cprefect,minister",
+    })
+    assert targets == ["guard?station", "prefect", "minister"]

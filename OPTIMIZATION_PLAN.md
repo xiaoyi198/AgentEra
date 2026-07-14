@@ -1430,3 +1430,21 @@ Next gameplay priorities:
 4. Extend UI capabilities only through reviewed framework-owned renderers; do not weaken the executable-code boundary to make DLC authoring more convenient.
 
 The persistent gameplay-framework goal remains active. This checkpoint completes P0.5, but P0.6 and the broader long-term optimization plan remain open. The v0.24.0 local release gate passed 544 Python tests (with 2 external-provider environment-gated tests skipped because credentials were not injected into the test process), 31 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, and Git diff checks.
+
+
+## Phase checkpoint: Generation-bound DLC capability registry (v0.25.0, 2026-07-14)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P0.6 and the full P0 gameplay loop foundation:
+
+- added a Generation-bound `CapabilityCatalog` sourced from `content.json.capabilities`, with package-local and cross-package ID/alias validation;
+- unified player, ordinary Agent, and Router behavior around stable capability IDs and the dynamic `invoke_capability` / `route_capability` tools;
+- implemented five framework-owned handlers (`noop`, `message`, `world_action`, `contract_action`, and `broadcast`) without allowing DLC-authored code or arbitrary function names;
+- added player capability APIs, a dynamic React capability panel, and a detailed Chinese DLC Studio capability editor;
+- bound capabilities to reload, encrypted archive, rollback, restart recovery, and in-flight Generation semantics;
+- upgraded `example_frontier` to v1.4.0 with examples for all five handlers and synchronized product version `0.25.0`.
+
+The persistent gameplay-framework goal remains **active**. P0 is complete, but P1/P2 remain open. The next work should move into generic Actor components, DLC-defined relationships, richer causal conditions/effects, and world/Actor/player knowledge layers rather than adding theme-specific branches.
+
+The v0.25.0 release gate passed 567 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 32 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, encoding checks, and Git diff checks.

@@ -5,6 +5,8 @@ import WorldStateView from './WorldStateView'
 import RelationsView from './RelationsView'
 import SettingsCenter from './SettingsCenter'
 import ObjectivePanel from './ObjectivePanel'
+import CapabilityPanel from './CapabilityPanel'
+import { normalizeCapabilityResponse } from './CapabilityTools.js'
 import { normalizeUIManifestResponse, visibleNavigation, visibleWidgets } from './UIManifestTools.js'
 import './App.css'
 
@@ -178,7 +180,7 @@ function App() {
   const [paused, setPaused] = useState(false)
   const [currentView, setCurrentView] = useState('dashboard')
   const [tokenUsage, setTokenUsage] = useState({})
-  const [decreeText, setDecreeText] = useState('')
+  const [capabilityState, setCapabilityState] = useState(() => normalizeCapabilityResponse(null))
   const [noteText, setNoteText] = useState('')
   const [secondsPerDay, setSecondsPerDay] = useState(600)
   const [showSaveManager, setShowSaveManager] = useState(false)
@@ -198,7 +200,7 @@ function App() {
         setObjectiveState(data)
         objectiveRefreshAt.current = Date.now()
       }
-    } catch { /* ??? tick ?????????? */ }
+    } catch { /* \u4fdd\u7559 tick \u63a8\u9001\u7684\u4e0a\u4e00\u4efd\u76ee\u6807\u5feb\u7167 */ }
   }, [])
 
   const refreshUIManifest = useCallback(async () => {
@@ -206,8 +208,16 @@ function App() {
       const response = await fetch(`${API_BASE}/ui-manifest`)
       if (!response.ok) return
       setUIManifest(normalizeUIManifestResponse(await response.json()))
-    } catch { /* ????????? */ }
+    } catch { /* \u4fdd\u7559\u4e0a\u4e00\u4efd\u754c\u9762\u914d\u7f6e */ }
   }, [])
+  const refreshCapabilities = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/capabilities?audience=player`)
+      if (!response.ok) return
+      setCapabilityState(normalizeCapabilityResponse(await response.json()))
+    } catch { /* capability registry remains empty while backend is unavailable */ }
+  }, [])
+
 
   // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
   useEffect(() => {
@@ -254,6 +264,11 @@ function App() {
       })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetches an external generation-bound registry snapshot.
+    refreshCapabilities()
+  }, [objectiveState.generation, refreshCapabilities])
 
   useEffect(() => {
     let active = true
@@ -319,6 +334,7 @@ function App() {
     window.setTimeout(() => {
       refreshObjectives()
       refreshUIManifest()
+      refreshCapabilities()
       Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
         .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
         .catch(() => {})
@@ -347,10 +363,10 @@ function App() {
     refreshObjectives()
   }
 
-  const handleDecree = async () => {
-    if (!decreeText.trim()) return
-    await apiPost('/player-action', { action_type: 'issue_decree', content: decreeText })
-    setDecreeText('')
+  const handleCapabilityInvoke = async (capabilityId, payload) => {
+    const response = await apiPost(`/capabilities/${encodeURIComponent(capabilityId)}/invoke`, payload)
+    if (response?.ok) refreshObjectives()
+    return response
   }
 
   const handleTimeScale = async (value) => {
@@ -363,10 +379,10 @@ function App() {
   const controlledObjects = gameplay.player?.controlled_objects || []
   const terms = uiManifest.terminology
   const playerDisplayName = gameplay.player?.display_name || terms.player
-  const worldTitle = uiManifest.title || gameplay.package_name || '?????'
+  const worldTitle = uiManifest.title || gameplay.package_name || '\u4e16\u754c\u6a21\u62df\u5668'
   const worldSubtitle = uiManifest.subtitle || (gameplay.configured
-    ? `${playerDisplayName} / ${controlledObjects.length} ?????`
-    : 'DLC ???????')
+    ? `${playerDisplayName} / ${controlledObjects.length} \u4e2a\u53ef\u63a7\u5bf9\u8c61`
+    : 'DLC \u6e38\u620f\u5951\u7ea6\u672a\u914d\u7f6e')
   const mainNavigation = visibleNavigation(uiManifest, 'main')
   const activeView = mainNavigation.some(item => item.view === currentView)
     ? currentView
@@ -378,14 +394,14 @@ function App() {
     : issues.filter(item => !['resolved', 'closed', 'dismissed'].includes(item.status))
   const pendingIssueCount = issues.filter(item => !['resolved', 'closed', 'dismissed'].includes(item.status)).length
 
-  const issueSource = (item) => item.source?.display_name || item.source?.id || item.source?.kind || `??${terms.source}`
+  const issueSource = (item) => item.source?.display_name || item.source?.id || item.source?.kind || `\u672a\u77e5${terms.source}`
   const listMeta = (item) => [
     listFields.has('source') ? issueSource(item) : '',
     listFields.has('urgency') ? (item.urgency || 'normal') : '',
     listFields.has('created_at') ? timeStr(item.created_at || 0) : '',
     listFields.has('issue_type') ? item.issue_type_id : '',
     listFields.has('case_id') ? item.case_id : '',
-  ].filter(Boolean).join(' ? ')
+  ].filter(Boolean).join(' \u00b7 ')
 
   const renderDashboardWidget = (widget) => {
     if (widget.kind === 'objectives') {
@@ -395,14 +411,14 @@ function App() {
       return (
         <aside key={widget.widget_id} className="panel memorial-list">
           <h2>{terms.issue_plural} ({pendingIssueCount})</h2>
-          {visibleIssues.length === 0 && <div className="empty">???????????{terms.issue}...</div>}
+          {visibleIssues.length === 0 && <div className="empty">\u5f53\u524d\u6ca1\u6709\u5f85\u5904\u7406\u7684{terms.issue}...</div>}
           {visibleIssues.map(item => (
             <div
               key={item.issue_id}
               className={`item ${selectedIssue?.issue_id === item.issue_id ? 'selected' : ''} ${['resolved', 'closed', 'dismissed'].includes(item.status) ? 'handled' : ''}`}
               onClick={() => setSelectedIssue(item)}
             >
-              {listFields.has('title') && <div className="item-title">{item.title || item.summary?.slice(0, 30) || `(???${terms.issue})`}</div>}
+              {listFields.has('title') && <div className="item-title">{item.title || item.summary?.slice(0, 30) || `(\u672a\u547d\u540d${terms.issue})`}</div>}
               {listMeta(item) && <div className="item-meta">{listMeta(item)}</div>}
               {listFields.has('status') && <span className={`badge ${item.status}`}>{item.status}</span>}
             </div>
@@ -418,41 +434,42 @@ function App() {
         <section key={widget.widget_id} className="panel detail">
           {selectedIssue ? (
             <>
-              <h2>{detailFields.has('title') ? (selectedIssue.title || `${terms.issue}??`) : `${terms.issue}??`}</h2>
+              <h2>{detailFields.has('title') ? (selectedIssue.title || `${terms.issue}\u8be6\u60c5`) : `${terms.issue}\u8be6\u60c5`}</h2>
               {detailFields.has('source') && <div className="field"><label>{terms.source}</label><span>{issueSource(selectedIssue)}</span></div>}
               {detailFields.has('summary') && <div className="field"><label>{terms.content}</label><p>{selectedIssue.summary}</p></div>}
-              {detailFields.has('status') && <div className="field"><label>{terms.status}</label><span>{selectedIssue.status}{detailFields.has('urgency') ? ` ? ${selectedIssue.urgency}` : ''}</span></div>}
+              {detailFields.has('status') && <div className="field"><label>{terms.status}</label><span>{selectedIssue.status}{detailFields.has('urgency') ? ` \u00b7 ${selectedIssue.urgency}` : ''}</span></div>}
               {detailFields.has('case_id') && <div className="field"><label>{terms.case}</label><span>{selectedIssue.case_id}</span></div>}
               {detailFields.has('issue_type') && <div className="field"><label>{terms.issue_type}</label><span>{selectedIssue.issue_type_id}</span></div>}
               {detailFields.has('created_at') && <div className="field"><label>{terms.created_at}</label><span>{timeStrFull(selectedIssue.created_at || 0)}</span></div>}
               {detailFields.has('external_id') && <div className="field"><label>External ID</label><span>{selectedIssue.external_id || '-'}</span></div>}
               {detailFields.has('deadline') && selectedIssue.deadline_at != null && <div className="field"><label>{terms.deadline}</label><span>{timeStrFull(selectedIssue.deadline_at)}</span></div>}
-              {detailFields.has('evidence') && <div className="field"><label>{terms.evidence}</label><div>{(selectedIssue.evidence || []).length === 0 ? `??${terms.evidence}` : (selectedIssue.evidence || []).map(evidence => <p key={evidence.evidence_id}><strong>{evidence.kind}</strong>?{evidence.summary || evidence.content || evidence.description || evidence.evidence_id}</p>)}</div></div>}
+              {detailFields.has('evidence') && <div className="field"><label>{terms.evidence}</label><div>{(selectedIssue.evidence || []).length === 0 ? `\u6682\u65e0${terms.evidence}` : (selectedIssue.evidence || []).map(evidence => <p key={evidence.evidence_id}><strong>{evidence.kind}</strong>\uff1a{evidence.summary || evidence.content || evidence.description || evidence.evidence_id}</p>)}</div></div>}
               {detailFields.has('decisions') && pendingRequests.map(request => (
                 <section key={request.decision_request_id} className="decision-request">
                   <h3>{request.title}</h3>
                   <p>{request.prompt}</p>
-                  {request.deadline_at != null && <small>{terms.decision}{terms.deadline}?{timeStrFull(request.deadline_at)}</small>}
+                  {request.deadline_at != null && <small>{terms.decision}{terms.deadline}\uff1a{timeStrFull(request.deadline_at)}</small>}
                   <div className="actions">
-                    <input placeholder={`${terms.decision}??...`} value={noteText} onChange={event => setNoteText(event.target.value)} />
+                    <input placeholder={`${terms.decision}\u5907\u6ce8...`} value={noteText} onChange={event => setNoteText(event.target.value)} />
                     {(request.options || []).map(option => <button key={option.option_id} className="btn approve" onClick={() => handleDecision(request, option)} title={option.description || ''}>{option.display_name || option.option_id}</button>)}
                   </div>
                 </section>
               ))}
-              {detailFields.has('decisions') && pendingRequests.length === 0 && <div className="empty">?{terms.issue}???????{terms.decision}?</div>}
+              {detailFields.has('decisions') && pendingRequests.length === 0 && <div className="empty">\u8be5{terms.issue}\u5f53\u524d\u6ca1\u6709\u5f85\u5904\u7406{terms.decision}\u3002</div>}
             </>
-          ) : <div className="empty">????{terms.issue}????</div>}
+          ) : <div className="empty">\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a{terms.issue}\u67e5\u770b\u8be6\u60c5</div>}
         </section>
       )
     }
     if (widget.kind === 'player_message') {
       return (
         <section key={widget.widget_id} className="panel decree-widget">
-          <div className="decree-section">
-            <h3>{terms.publish_message}</h3>
-            <textarea placeholder={`??${terms.player}${terms.message}...`} value={decreeText} onChange={e => setDecreeText(e.target.value)} />
-            <button className="btn decree" onClick={handleDecree} disabled={!decreeText.trim()}>??</button>
-          </div>
+          <CapabilityPanel
+            state={capabilityState}
+            gameplay={gameplay}
+            title={terms.publish_message || '\u53d1\u5e03\u6d88\u606f'}
+            onInvoke={handleCapabilityInvoke}
+          />
         </section>
       )
     }
@@ -460,10 +477,10 @@ function App() {
       return (
         <aside key={widget.widget_id} className="panel transit-panel">
           <h2>{terms.in_transit} ({inTransit.length})</h2>
-          {inTransit.length === 0 && <div className="empty">??{terms.in_transit}</div>}
+          {inTransit.length === 0 && <div className="empty">\u6682\u65e0{terms.in_transit}</div>}
           {inTransit.map(item => (
             <div key={item.timer_id} className="transit-item">
-              <div className="transit-route">{item.from || '?'} ? {item.target}</div>
+              <div className="transit-route">{item.from || '?'} \u2192 {item.target}</div>
               <div className="transit-eta">{remainingStr(item.remaining_seconds || 0)}</div>
               {item.message_preview && <div className="transit-preview">{item.message_preview}</div>}
             </div>

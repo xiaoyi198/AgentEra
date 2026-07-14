@@ -1366,3 +1366,36 @@ body {
     overflow: auto;
   }
 }
+
+
+/* DLC capability registry player controls */
+.capability-panel { display: grid; gap: 12px; }
+.capability-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.capability-heading h3 { margin: 0 0 3px; }
+.capability-heading select { min-width: 180px; max-width: 50%; }
+.capability-summary { padding: 12px; border: 1px solid var(--border, #d7c8a8); border-radius: 8px; background: rgba(255,255,255,.42); }
+.capability-summary strong { margin-right: 8px; }
+.capability-summary p { margin: 8px 0 0; line-height: 1.55; }
+.capability-summary code, .capability-result code { display: inline-block; margin-left: 8px; font-size: 11px; opacity: .72; }
+.capability-handler { display: inline-flex; padding: 2px 7px; margin-right: 6px; border-radius: 999px; font-size: 11px; color: #fff; background: #6b7280; }
+.handler-message { background: #2563eb; }
+.handler-broadcast { background: #7c3aed; }
+.handler-world_action { background: #b45309; }
+.handler-contract_action { background: #047857; }
+.capability-field { display: grid; gap: 5px; font-size: 13px; }
+.capability-field > span { font-weight: 600; }
+.capability-field textarea { min-height: 92px; resize: vertical; }
+.capability-field input, .capability-field select, .capability-heading select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border, #cdbf9f); border-radius: 6px; background: var(--panel, #fffdf7); color: inherit; }
+.capability-field small { opacity: .72; line-height: 1.4; }
+.capability-check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.capability-check input { width: auto; }
+.capability-urgency select { max-width: 220px; }
+.capability-submit { justify-self: start; min-width: 220px; }
+.capability-result { padding: 9px 11px; border-radius: 6px; font-size: 13px; }
+.capability-result.success { color: #065f46; background: #d1fae5; }
+.capability-result.error { color: #991b1b; background: #fee2e2; }
+@media (max-width: 720px) {
+  .capability-heading { flex-direction: column; }
+  .capability-heading select { max-width: none; }
+  .capability-submit { width: 100%; }
+}

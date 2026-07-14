@@ -127,16 +127,34 @@ def test_keyed_entity_agent_and_resource_crud(registry: DLCRegistry):
     assert not registry.delete_entity("sample", "city")
 
 
+def _noop_capability_definition(capability_id: str, *, aliases: list[str] | None = None) -> dict:
+    return {
+        "capability_id": capability_id,
+        "display_name": capability_id,
+        "description": "Registry conflict fixture.",
+        "handler": "noop",
+        "audiences": ["player", "agent", "router"],
+        "aliases": list(aliases or []),
+        "target": {"kind": "none", "mode": "none", "allowed_ids": []},
+        "parameters": [],
+        "input": {"content_required": False, "content_label": "Content"},
+    }
+
 def test_cross_published_package_conflicts_are_reported(registry: DLCRegistry):
     registry.create(manifest("first"))
-    registry.save_content("first", valid_content())
+    first = valid_content()
+    first["capabilities"] = [_noop_capability_definition("first_wait", aliases=["shared_wait"])]
+    registry.save_content("first", first)
     registry.publish("first")
     registry.create(manifest("second"))
-    registry.save_content("second", valid_content())
+    second = valid_content()
+    second["capabilities"] = [_noop_capability_definition("second_wait", aliases=["shared_wait"])]
+    registry.save_content("second", second)
     codes = {issue.code for issue in registry.validate("second")}
     assert "cross_package.entity_conflict" in codes
     assert "cross_package.agent_conflict" in codes
     assert "cross_package.resource_conflict" in codes
+    assert "cross_package.capability_conflict" in codes
 
 
 def test_active_packages_are_dependency_ordered(registry: DLCRegistry):

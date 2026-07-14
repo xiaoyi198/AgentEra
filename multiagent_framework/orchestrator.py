@@ -12,6 +12,7 @@ from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
 from .action_contract import ActionCatalog
+from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
@@ -93,6 +94,10 @@ class Orchestrator:
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
         self._ui_manifest = UIManifest.from_content({})
+        self.capability_catalog = CapabilityCatalog()
+        configure_router_capabilities = getattr(self.router, "configure_capability_catalog", None)
+        if callable(configure_router_capabilities):
+            configure_router_capabilities(self.capability_catalog)
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
         self.objective_manager = ObjectiveManager()
@@ -222,6 +227,133 @@ class Orchestrator:
         return {
             **self._ui_manifest.to_dict(),
             "generation": self._ui_manifest_generation,
+        }
+
+    def configure_capability_catalog(
+        self, definitions: list[dict[str, Any]], *, generation: int = 0,
+    ) -> None:
+        """Publish the current DLC capability registry to Router and all Agents."""
+        self.capability_catalog.configure(definitions, generation=generation)
+        configure_router = getattr(self.router, "configure_capability_catalog", None)
+        if callable(configure_router):
+            configure_router(self.capability_catalog)
+        for agent in self.agents.values():
+            configure_agent = getattr(agent, "set_capability_catalog", None)
+            if callable(configure_agent):
+                configure_agent(self.capability_catalog)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def capabilities_public_state(self, audience: str | None = None) -> dict[str, Any]:
+        return self.capability_catalog.public_state(audience=audience)
+
+    def _player_capability_defaults(self) -> tuple[str, str]:
+        player = self._gameplay_contract.player
+        if player is None:
+            return "player", ""
+        actor_id = player.actor_id or player.identity_id or "player"
+        control_object_id = player.controlled_objects[0].id if player.controlled_objects else ""
+        return actor_id, control_object_id
+
+    def _unavailable_capability_agent_targets(self, target_ids: list[str]) -> list[str]:
+        """Return targets that cannot receive a capability message right now."""
+        unavailable: list[str] = []
+        for target_id in target_ids:
+            if target_id not in self.agents:
+                unavailable.append(target_id)
+                continue
+            official = self.court.get_official(target_id)
+            if official is not None and not official.enabled:
+                unavailable.append(target_id)
+        return unavailable
+
+    async def invoke_capability(
+        self,
+        capability_id: str,
+        invocation: dict[str, Any] | None,
+        *,
+        audience: str,
+        source_id: str = "",
+        chain_id: str = "",
+    ) -> dict[str, Any]:
+        """Validate and execute one framework-owned capability handler."""
+        raw = dict(invocation or {})
+        if audience == "player":
+            default_actor, default_control = self._player_capability_defaults()
+            raw.setdefault("actor_id", default_actor)
+            raw.setdefault("control_object_id", default_control)
+            source_id = source_id or str(raw.get("source_id") or default_actor)
+        prepared = self.capability_catalog.prepare_invocation(
+            capability_id, raw, audience=audience, source_id=source_id,
+        )
+        if not prepared["invocation_id"]:
+            prepared["invocation_id"] = f"cap_{uuid.uuid4().hex}"
+        handler = prepared["handler"]
+        active_chain = chain_id or f"capability:{prepared['invocation_id']}"
+        if handler == "noop":
+            result = {"ok": True, "status": "no_op"}
+        elif handler in {"message", "broadcast"}:
+            unavailable = self._unavailable_capability_agent_targets(prepared["target_ids"])
+            if unavailable:
+                raise CapabilityContractError(
+                    "capability.target.unavailable",
+                    details={"target_ids": unavailable},
+                )
+            ctx = self._build_fc_context()
+            ctx.chain_id = active_chain
+            target_results: list[dict[str, Any]] = []
+            for target_id in prepared["target_ids"]:
+                target_results.append(await dispatch_fc("wake_agent", ctx, {
+                    "target": target_id,
+                    "message": prepared["content"],
+                    "from_agent": prepared["source_id"],
+                    "urgency": prepared["urgency"],
+                    "intent_id": prepared["invocation_id"],
+                }))
+            result = {
+                "ok": bool(target_results) and all(item.get("ok") for item in target_results),
+                "status": "dispatched",
+                "targets": target_results,
+            }
+        elif handler == "world_action":
+            ctx = self._build_fc_context()
+            ctx.chain_id = active_chain
+            parameters = prepared.get("parameters", {})
+            executor_id = str(raw.get("executor_id") or prepared["source_id"] or "")
+            location = str(
+                raw.get("location") or raw.get("target_location")
+                or parameters.get("location") or parameters.get("target_location")
+                or prepared.get("target_id", "")
+            )
+            result = await dispatch_fc("execute_policy", ctx, {
+                "policy": prepared["content"],
+                "description": prepared["content"],
+                "location": location,
+                "executor": executor_id,
+                "from_agent": prepared["source_id"],
+                "intent_id": prepared["invocation_id"],
+                "parameters": parameters,
+            })
+        elif handler == "contract_action":
+            actor_id = str(raw.get("actor_id") or prepared["source_id"] or "")
+            control_object_id = str(raw.get("control_object_id") or prepared["source_id"] or "")
+            action_invocation = {
+                "invocation_id": prepared["invocation_id"],
+                "expected_generation": prepared["generation"],
+                "actor_id": actor_id,
+                "control_object_id": control_object_id,
+                "target_id": prepared["target_id"],
+                "parameters": prepared["parameters"],
+            }
+            result = self.execute_dlc_action(prepared["action_id"], action_invocation)
+        else:  # pragma: no cover - CapabilityDefinition enforces the whitelist.
+            raise CapabilityContractError("capability.invalid_handler")
+        return {
+            **result,
+            "capability_id": prepared["capability_id"],
+            "handler": handler,
+            "generation": prepared["generation"],
+            "invocation_id": prepared["invocation_id"],
         }
 
     def configure_action_catalog(
@@ -523,6 +655,9 @@ class Orchestrator:
     def register_agent(self, agent: BaseAgent) -> None:
         if self._memory_compressor is not None:
             agent.set_compressor(self._memory_compressor)
+        configure_capabilities = getattr(agent, "set_capability_catalog", None)
+        if callable(configure_capabilities):
+            configure_capabilities(self.capability_catalog)
         agent.bind_runtime(
             world_state=self.world_state,
             court=self.court,
@@ -553,6 +688,9 @@ class Orchestrator:
                 raise ValueError(f"agent snapshot key mismatch: {agent_id}")
             if self._memory_compressor is not None:
                 agent.set_compressor(self._memory_compressor)
+            configure_capabilities = getattr(agent, "set_capability_catalog", None)
+            if callable(configure_capabilities):
+                configure_capabilities(self.capability_catalog)
             agent.bind_runtime(
                 world_state=self.world_state,
                 court=self.court,
@@ -1508,7 +1646,11 @@ class Orchestrator:
         results: list[tuple[RouterCommand, dict[str, Any]]] = []
         for cmd in commands:
             source_id = cmd.source_agent_id or (cmd.source_action.agent_id if cmd.source_action else "router")
-            route_targets = list(cmd.targets) if cmd.targets else ([cmd.target] if cmd.target else [])
+            route_targets = (
+                list(cmd.metadata.get("route_target_ids") or [])
+                if cmd.command_type == RouterCommandType.INVOKE_CAPABILITY
+                else (list(cmd.targets) if cmd.targets else ([cmd.target] if cmd.target else []))
+            )
             has_route_edge = getattr(self.chain_log, "has_route_edge", None)
             repeated_target = None
             if callable(has_route_edge):
@@ -1554,9 +1696,21 @@ class Orchestrator:
             fc_name = command_type_to_fc_name(cmd.command_type)
             args = command_to_fc_args(cmd)
             try:
-                execution_result = await dispatch_fc(fc_name, ctx, args)
+                if cmd.command_type == RouterCommandType.INVOKE_CAPABILITY:
+                    fc_name = "invoke_capability"
+                    invocation = dict(cmd.payload or {})
+                    invocation["expected_generation"] = invocation.get("generation")
+                    execution_result = await self.invoke_capability(
+                        str(invocation.get("capability_id", "")),
+                        invocation,
+                        audience="agent",
+                        source_id=source_id,
+                        chain_id=cmd.chain_id,
+                    )
+                else:
+                    execution_result = await dispatch_fc(fc_name, ctx, args)
             except Exception as e:
-                logger.exception("dispatch_fc(%s) failed: %s", fc_name, e)
+                logger.exception("%s failed: %s", fc_name, e)
                 execution_result = {"ok": False, "error": str(e)}
             source_action = cmd.source_action
             log_targets = route_targets or [None]

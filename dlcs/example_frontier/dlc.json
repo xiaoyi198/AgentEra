@@ -1,9 +1,9 @@
 {
   "id": "example_frontier",
   "name": "边境哨站示例",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "schema_version": "1.0",
-  "description": "?? bundle-v1?????????? Agent/??/Issue????????? DLC ???????????? DLC?",
+  "description": "标准 bundle-v1 示例 DLC，演示统一价值锚、Generation 能力注册表、Agent、Action、Issue、目标、结局与可配置界面。",
   "enabled": false,
   "status": "published",
   "format": "bundle-v1",

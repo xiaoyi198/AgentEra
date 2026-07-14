@@ -2557,7 +2557,7 @@ Add an optional `ui_manifest` object to the primary DLC's `content.json`. Do not
 
 ### Studio workflow
 
-1. Open DLC Studio and select the ???? section.
+1. Open DLC Studio and select the “UI Manifest（界面清单）” section.
 2. Configure title/brand and the Chinese-described terminology fields.
 3. Select fixed main/shell destinations, layout, widgets, Issue fields, and entity sections; use order and visibility rather than custom routes or components.
 4. Resolve local validation errors. Use advanced JSON only for bulk editing and inspect its parse errors/security notice.
@@ -2571,3 +2571,90 @@ Update `multiagent_framework/ui_manifest.py` and `frontend/src/UIManifestTools.j
 ### Required release gate
 
 Run the complete Python suite and compile gate, all frontend tests, ESLint, production build, example DLC Registry validation, `git diff --check`, and a credential-pattern scan. The external OpenAI-compatible Smoke Test remains environment-gated and receives credentials only through `AGENTERA_TEST_*` process environment variables.
+
+
+## DLC capability registry authoring workflow (v0.25.0)
+
+### Authoritative location and example
+
+能力写在 DLC 的 `content.json` 顶层 `capabilities` 数组中。玩家、普通 Agent 和 Router 必须引用同一个稳定 `capability_id`：
+
+```json
+{
+  "capabilities": [
+    {
+      "capability_id": "launch_frontier_patrol",
+      "display_name": "发起边境巡逻",
+      "description": "选择边境哨站，通过通用行动契约执行巡逻。",
+      "aliases": ["patrol_frontier"],
+      "handler": "contract_action",
+      "audiences": ["player"],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": ["边境哨站"]
+      },
+      "parameters": [
+        {
+          "name": "alert_gain",
+          "type": "number",
+          "display_name": "警戒提升",
+          "description": "巡逻完成后计划提升的警戒度，范围 1 到 20。",
+          "required": false,
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20
+        }
+      ],
+      "action_id": "frontier_patrol",
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": false,
+        "content_label": "巡逻备注",
+        "content_placeholder": "可选：补充本次巡逻重点。"
+      },
+      "enabled": true
+    }
+  ]
+}
+```
+
+### Handler constraints
+
+- `noop`：不需要目标或 Action 引用，适合等待、确认和纯记录能力。
+- `message`：向单个 Agent 发消息；目标必须可用，参数用于模板化结构化内容。
+- `broadcast`：向多个 Agent 广播；所有目标先校验，再整体入队。
+- `world_action`：把经过能力契约校验的内容、目标和参数交给框架 `execute_policy` 世界行动链，不能在 DLC 中填写 Python 函数名。
+- `contract_action`：顶层 `action_id` 必须引用同一当前 Generation 中可执行的 DLC Action。
+
+任何未知 handler、代码实现名、URL、HTML/脚本或不安全字段都会被 Registry 拒绝。新增框架 handler 时必须先扩展后端白名单、执行器、Schema、API 脱敏、前端编辑器和完整测试，不能只改 DLC。
+
+### Audiences, targets and parameters
+
+- `audiences` 可包含 `player`、`agent`、`router`。玩家面板只显示 `player`，Agent 工具只包含 `agent`，Router 只路由 `router`。
+- 当 Agent 需要 Router LLM 对自然语言目标做消歧时，应同时声明 `agent` 和 `router`；只声明 `agent` 表示调用者必须提供确定目标。
+- `target.kind` 可选 `none`、`agent`、`entity`；`target.mode` 可选 `none`、`optional`、`required`、`multiple`，`allowed_ids` 用于限制合法目标。
+- `parameters` 必须有稳定 ID、中文名称、中文说明、类型和 required 约束。不要把秘密、Provider Key 或实现细节放入默认值和说明。
+- `aliases` 仅用于兼容输入，包内和所有已发布包之间必须唯一，也不能与另一能力 ID 冲突。
+
+### Studio workflow
+
+1. 打开 DLC Studio，选择“能力”页签。
+2. 使用“新增能力”创建条目，逐项阅读中文说明并选择受众、handler、目标和参数。
+3. `contract_action` 从当前草稿 Action 中选择引用；保存前处理所有即时校验错误。
+4. 使用 Content Diff 检查能力 ID、目标、参数和 Action 引用变化；需要批量编辑时再使用高级 JSON。
+5. Dry Run/保存后执行 Registry 校验，再进行 reload；确认玩家面板、Agent 工具 Schema 和 Router 路由均切换到同一 Generation。
+
+### Required validation and release gate
+
+```powershell
+python -m pytest -q tests/unit/test_capability_contract.py tests/unit/test_capability_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py tests/unit/test_router.py tests/unit/test_turn_engine.py
+python -m pytest -q
+python -m compileall multiagent_framework routers
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; print(DLCRegistry(Path('.')).validate('example_frontier'))"
+```
+
+可选外部 API 连通测试只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入凭据时测试必须 skip；严禁把 URL 或 Key 写入命令、源码、日志、配置和提交。
