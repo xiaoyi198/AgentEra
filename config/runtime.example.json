@@ -1,0 +1,29 @@
+﻿{
+  "simulation": {
+    "seconds_per_day": 120.0,
+    "tick_interval": 0.25
+  },
+  "agent_defaults": {
+    "max_memory": 20,
+    "compress_threshold": 40,
+    "keep_recent": 20,
+    "max_rounds": 4,
+    "max_tool_calls": 12,
+    "max_turn_tokens": 12000,
+    "max_turn_seconds": 60.0,
+    "no_progress_rounds": 2,
+    "structured_memory_max_records": 500,
+    "structured_memory_retrieval_limit": 8,
+    "structured_memory_char_budget": 2400
+  },
+  "action_agent": {
+    "max_rounds": 10,
+    "max_tool_calls": 40,
+    "max_turn_tokens": 50000,
+    "max_turn_seconds": 120.0,
+    "no_progress_rounds": 2
+  },
+  "memory": {
+    "compression_temperature": 0.3
+  }
+}

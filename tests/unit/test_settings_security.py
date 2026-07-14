@@ -1,71 +1,102 @@
-"""Security regression tests for the unauthenticated legacy settings endpoint."""
+﻿"""Security regression tests for the detailed settings center."""
 
-from multiagent_framework.llm_client import LLMConfig
-from routers.simulation import SettingsRequest, _prepare_llm_settings_update
+import json
 
-
-def old_config():
-    return LLMConfig(
-        base_url="https://trusted.example/v1",
-        api_key="environment-secret",
-        api_key_env="WORLD_SIM_API_KEY",
-        model="old-model",
-        timeout_s=30,
-        max_concurrent=2,
-    )
+from routers import _state as state
+from tests.unit.test_settings_center import _client, _payload
 
 
-def test_base_url_cannot_reuse_existing_environment_secret():
-    config, error = _prepare_llm_settings_update(
-        SettingsRequest(base_url="https://attacker.example/v1"),
-        old_config(),
-    )
+def test_configured_provider_host_change_requires_explicit_confirmation(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_GATEWAY_KEY", "environment-secret")
+    client, orchestrator, _gateway = _client(tmp_path)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with client:
+            payload = _payload(client)
+            payload["model_gateway"]["providers"]["primary"]["base_url"] = (
+                "https://attacker.example/v1"
+            )
+            rejected = client.post("/api/settings/validate", json=payload)
+            payload["allow_secret_host_change"] = True
+            confirmed = client.post("/api/settings/validate", json=payload)
 
-    assert config is None
-    assert "will not be forwarded" in error
-
-
-def test_environment_variable_name_cannot_be_changed_remotely():
-    config, error = _prepare_llm_settings_update(
-        SettingsRequest(api_key_env="SOME_OTHER_SECRET"),
-        old_config(),
-    )
-
-    assert config is None
-    assert "local config file" in error
-
-
-def test_model_only_update_preserves_safe_provider_configuration():
-    config, error = _prepare_llm_settings_update(
-        SettingsRequest(
-            base_url="https://trusted.example/v1",
-            api_key_env="WORLD_SIM_API_KEY",
-            model="new-model",
-            timeout_s=45,
-            max_concurrent=3,
-        ),
-        old_config(),
-    )
-
-    assert error == ""
-    assert config is not None
-    assert config.base_url == "https://trusted.example/v1"
-    assert config.api_key == "environment-secret"
-    assert config.api_key_env == "WORLD_SIM_API_KEY"
-    assert config.model == "new-model"
+        assert rejected.status_code == 422
+        assert "安全确认" in rejected.json()["detail"]
+        assert confirmed.status_code == 200
+        assert confirmed.json()["valid"] is True
+    finally:
+        state.orchestrator = previous
 
 
-def test_base_url_change_requires_new_session_key_and_drops_env_reference():
-    config, error = _prepare_llm_settings_update(
-        SettingsRequest(
-            base_url="https://new-provider.example/v1",
-            api_key="session-key",
-            model="new-model",
-        ),
-        old_config(),
-    )
+def test_environment_variable_reference_is_editable_but_secret_is_never_returned(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SETTINGS_SECURITY_NEW_KEY", "never-return-this-secret")
+    client, orchestrator, _gateway = _client(tmp_path)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with client:
+            payload = _payload(client)
+            provider = payload["model_gateway"]["providers"]["primary"]
+            provider["api_key_env"] = "SETTINGS_SECURITY_NEW_KEY"
+            response = client.post("/api/settings", json=payload)
+            refreshed = client.get("/api/settings")
 
-    assert error == ""
-    assert config is not None
-    assert config.api_key == "session-key"
-    assert config.api_key_env == ""
+        assert response.status_code == 200, response.text
+        serialized = json.dumps(response.json(), ensure_ascii=False)
+        serialized += json.dumps(refreshed.json(), ensure_ascii=False)
+        assert "never-return-this-secret" not in serialized
+        saved = (tmp_path / "models.json").read_text(encoding="utf-8")
+        assert "SETTINGS_SECURITY_NEW_KEY" in saved
+        assert "never-return-this-secret" not in saved
+    finally:
+        state.orchestrator = previous
+
+
+def test_model_only_update_preserves_provider_configuration(tmp_path):
+    client, orchestrator, gateway = _client(tmp_path)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with client:
+            payload = _payload(client)
+            payload["model_gateway"]["models"]["fast"]["model"] = "new-model"
+            response = client.post("/api/settings", json=payload)
+
+        assert response.status_code == 200, response.text
+        provider = gateway.config.providers["primary"]
+        assert provider.base_url == "https://example.invalid/v1"
+        assert provider.api_key_env == "TEST_GATEWAY_KEY"
+        assert gateway.config.models["fast"].model == "new-model"
+    finally:
+        state.orchestrator = previous
+
+
+def test_new_session_key_requires_confirmation_and_never_persists(monkeypatch, tmp_path):
+    monkeypatch.delenv("TEST_GATEWAY_KEY", raising=False)
+    client, orchestrator, _gateway = _client(tmp_path)
+    previous = state.orchestrator
+    state.orchestrator = orchestrator
+    try:
+        with client:
+            payload = _payload(client)
+            payload["model_gateway"]["providers"]["primary"]["base_url"] = (
+                "https://new-provider.example/v1"
+            )
+            payload["runtime_keys"] = {"primary": "session-only-secret"}
+            rejected = client.post("/api/settings", json=payload)
+            payload["allow_secret_host_change"] = True
+            saved = client.post("/api/settings", json=payload)
+            refreshed = client.get("/api/settings")
+
+        assert rejected.status_code == 422
+        assert saved.status_code == 200, saved.text
+        assert "session-only-secret" not in (tmp_path / "models.json").read_text(
+            encoding="utf-8"
+        )
+        assert "session-only-secret" not in json.dumps(saved.json(), ensure_ascii=False)
+        assert "session-only-secret" not in json.dumps(refreshed.json(), ensure_ascii=False)
+    finally:
+        state.orchestrator = previous

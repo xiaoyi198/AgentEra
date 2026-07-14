@@ -1,4 +1,4 @@
-﻿# 开发指南 — 大明王朝·朝堂风云
+# 开发指南 — 大明王朝·朝堂风云
 
 > 项目目录结构、数据库 schema、API 接口、前端组件详见 [PROJECT_DOC.md](PROJECT_DOC.md)。
 
@@ -2379,3 +2379,195 @@ Pop-Location
 ```
 
 Also validate the real `example_frontier` package and execute its action against a temporary `WorldState` when changing effect materialization, anchored cost semantics, or persistence ordering.
+
+## Generic Issue and visual settings development workflow (v0.22.0)
+
+### Adding or changing a runtime setting
+
+A runtime setting is not complete until the typed config, Chinese schema, runtime activation, visual editor, compatibility behavior, and tests change together:
+
+1. Add the field to the appropriate dataclass in `multiagent_framework/runtime_settings.py` and define a conservative default.
+2. Parse and bound the field in `RuntimeSettings.from_dict`; keep absent-field behavior compatible with older files.
+3. Add Chinese `label`, `description`, input kind, range/options, unit, and operational warning to `settings_schema()`.
+4. Wire the value into initial construction in `main.py` and hot activation in `routers/settings._apply_runtime_settings`.
+5. Add the control to the matching `SettingsCenter` section. Do not duplicate bounds in ad-hoc frontend save logic when schema metadata can drive them.
+6. Update `config/runtime.example.json`, README, `PROJECT_DOC.md`, this guide, and the optimization checkpoint when the field changes an operator-facing contract.
+7. Add tests for minimum/maximum values, missing legacy values, validation, successful hot update, stale generation, and activation rollback.
+
+`config/runtime.json` currently has four sections: `simulation`, `agent_defaults`, `action_agent`, and `memory`. Do not move model Provider/Profile/router data into this file; it stays in `config/models.json`.
+
+### Settings API payload and two-stage save
+
+Validation and save accept the same logical request:
+
+```json
+{
+  "expected_generation": 12,
+  "models": {
+    "providers": {},
+    "models": {},
+    "task_policies": {},
+    "dlc_task_policies": {},
+    "agent_task_policies": {}
+  },
+  "runtime": {
+    "simulation": {"seconds_per_day": 120, "tick_interval": 0.25},
+    "agent_defaults": {},
+    "action_agent": {},
+    "memory": {}
+  },
+  "runtime_keys": {"primary": "temporary-key"},
+  "clear_runtime_keys": [],
+  "allow_secret_host_change": false
+}
+```
+
+Development clients must call `POST /api/settings/validate` first, present its normalized document, warnings, and diff to the operator, then call `POST /api/settings` with the same generation and confirmed content. Never bypass the second server validation or rely only on frontend validation.
+
+Security rules are mandatory:
+
+- Never add a raw API key, admin token, archive key, or alert secret to a response model, Diff, log, exception detail, test fixture committed to Git, `models.json`, `runtime.json`, localStorage, or sessionStorage.
+- `runtime_keys` are write-only request data held in backend process memory. A GET response may expose only whether a key is configured.
+- A long-lived credential must be referenced through `api_key_env`; environment status endpoints return booleans only.
+- If a configured Provider's Base URL changes host, validation must warn and save must require `allow_secret_host_change=true`.
+- The Advanced JSON editor may edit only `providers`, `models`, `task_policies`, `dlc_task_policies`, and `agent_task_policies`; strip read-only metadata such as `api_key_configured` before serialization.
+- Preserve unknown model fields when applying known-section edits. Visual configuration must not become a lossy migration tool.
+
+### Developing Issue types and options
+
+- Add Issue schemas to `content.json.issue_types`; IDs must be stable and package-local references must resolve during Registry validation.
+- Source restrictions, required evidence, urgency, deadlines, Case creation, and options belong in the Issue type, not in theme-specific router branches.
+- Options that execute gameplay use existing generic `action_id` definitions. Parameter mappings must be deterministic and previewable; do not allow a client or LLM to inject an authoritative completion time or bypass Action permissions/costs.
+- External producers must provide a stable `external_id` when retries are possible. Decision resolution must provide a stable `invocation_id`. Same-ID/same-payload is a replay; same-ID/different-payload is a conflict.
+- Deadline transitions use authoritative simulation time. Do not use wall-clock time for Issue expiration.
+- New lifecycle fields must be included in `IssueManager.snapshot/restore`, manual saves, runtime persistence, generation archives where applicable, and legacy migration tests.
+- Keep `/api/memorials` as compatibility-only. New UI and DLC code should use `/api/issues`, `/api/cases`, and `/api/decision-requests`.
+- DLC Studio edits must participate in validation, import/export, diff, history, and unsaved-draft behavior, with a frontend tool test for normalization.
+
+### Required release gate
+
+Run from the repository root:
+
+```powershell
+python -m pytest -q -p no:cacheprovider
+python -m compileall -q multiagent_framework routers main.py
+
+Push-Location frontend
+npm test
+npm run lint
+npm run build
+Pop-Location
+
+git -c safe.directory='F:/世界模拟器' diff --check
+```
+
+Settings-focused work must additionally cover secret non-disclosure, Provider host-change confirmation, unknown-field preservation, generation conflicts, successful hot activation, and full three-file rollback when activation fails. Issue-focused work must cover Registry validation, dynamic options, Action preview/resolve, idempotency conflicts, deadlines, snapshot/manual-save restore, and Generation reload/archive behavior.
+
+
+## DLC objective and ending authoring workflow (v0.23.0)
+
+### Authoring rules
+
+Add top-level `objectives` and `endings` arrays to the **primary** DLC's `content.json`. Keep IDs stable and ASCII-safe. Dependency DLC objective catalogs are validated but do not own the active Campaign. Omitting both arrays is valid sandbox mode and must not be replaced with a fake always-complete objective.
+
+A minimal Campaign shape is:
+
+```json
+{
+  "objectives": [
+    {
+      "objective_id": "secure_frontier",
+      "display_name": "稳固边境防线",
+      "description": "在期限前达到安全警戒线。",
+      "category": "primary",
+      "required": true,
+      "milestone_mode": "ordered",
+      "milestones": [
+        {
+          "milestone_id": "fund_patrols",
+          "display_name": "准备巡逻经费",
+          "description": "锚定价值至少为 50。",
+          "condition": {
+            "kind": "anchored_inventory",
+            "entity_id": "边境哨站",
+            "name": "边境银券",
+            "operator": "gte",
+            "value": 50
+          }
+        }
+      ],
+      "completion": {
+        "kind": "metric",
+        "entity_id": "边境哨站",
+        "name": "警戒度",
+        "operator": "gte",
+        "value": 85
+      },
+      "enabled": true,
+      "order": 0
+    }
+  ],
+  "endings": [
+    {
+      "ending_id": "frontier_safe",
+      "display_name": "边境安定",
+      "description": "防线已稳定。",
+      "outcome": "victory",
+      "trigger": {"objective_ids": ["secure_frontier"], "operator": "all"},
+      "priority": 50,
+      "enabled": true
+    }
+  ]
+}
+```
+
+Objective categories are `primary`, `optional`, and `failure`. Milestone modes are `ordered` and `independent`. Ending outcomes are `victory`, `defeat`, and `neutral`; ending trigger operators are `all` and `any`. Higher ending priority wins a same-Tick conflict, then lexical `ending_id` is the deterministic tie-breaker.
+
+### Condition DSL
+
+- Compose conditions with `{"op":"all|any|not","conditions":[...]}`; `not` requires exactly one child.
+- Numeric operators are `lt`, `lte`, `eq`, `ne`, `gte`, `gt`. `entity_status` supports `eq` and `ne`.
+- `anchored_inventory`, `metric`, and `parameter` require `entity_id` and resource/value `name`. Anchored inventory compares authoritative base value, not raw quantity.
+- `sim_day` reads simulation time. `issue_count`, `case_count`, and `decision_count` may filter by `issue_type_id` and `status`. `action_count` requires `action_id` and may filter by actor, control object, and target.
+- Do not add a client mutation endpoint for progress. New fact kinds must read durable framework state, provide exact validation paths, participate in snapshot/restore tests, and remain deterministic under reload and rollback.
+
+### Studio and release workflow
+
+1. Open DLC Studio and use the “目标” or “结局” tab. Prefer reference selectors and the visual condition tree; use condition-level or whole-document advanced JSON only for structures not yet exposed visually.
+2. Validate the draft before publish. Fix the exact returned path for unknown entities/resources/Actions/Issue types/objective IDs and resource-kind mismatches.
+3. Check Raw JSON, keyed Diff and history behavior. Publishing must include objectives/endings in the same atomic Content write and Generation archive as the rest of the DLC.
+4. Exercise sandbox, ordered and independent milestones, failure conditions, disabled definitions, simultaneous endings, hot reload, rollback, runtime snapshot, manual save and restart recovery.
+5. Verify `GET /api/objectives`, `GET /api/endings`, the main Objective panel, and WebSocket `objective_transitions` without hard-coded theme terminology.
+
+The optional external Provider smoke test is `tests/integration/test_external_api_connection.py`. Supply `AGENTERA_TEST_BASE_URL` and `AGENTERA_TEST_API_KEY` only through a temporary process environment; `AGENTERA_TEST_MODEL`, `AGENTERA_TEST_TIMEOUT_S`, and `AGENTERA_TEST_MODEL_ATTEMPTS` are optional. The test must skip when URL/key are absent and must never print or persist credentials or raw provider responses.
+
+
+## DLC UI Manifest authoring workflow (v0.24.0)
+
+### Ownership and file location
+
+Add an optional `ui_manifest` object to the primary DLC's `content.json`. Do not place campaign UI overrides in dependency DLCs: the loader intentionally ignores dependency ownership for this single-valued section. An omitted manifest means the framework's theme-neutral default.
+
+### Use capabilities, not frontend implementation details
+
+- Choose only documented `navigation[].view`, `dashboard.layout`, `dashboard.widgets[].kind/region`, `issue_page` fields, and `entity_detail` fields/sections.
+- Never add URLs, `href`, React component names, HTML, CSS, or scripts. New executable UI behavior must first be implemented and reviewed as a framework capability, then added to both backend and frontend allowlists.
+- Keep `nav_id` and `widget_id` stable and unique. At least one visible main navigation item and one visible shell navigation item are required.
+- Treat authored labels and icons as short plain text. Backend validation is authoritative; frontend normalization is defense in depth, not a replacement for Registry validation.
+
+### Studio workflow
+
+1. Open DLC Studio and select the ???? section.
+2. Configure title/brand and the Chinese-described terminology fields.
+3. Select fixed main/shell destinations, layout, widgets, Issue fields, and entity sections; use order and visibility rather than custom routes or components.
+4. Resolve local validation errors. Use advanced JSON only for bulk editing and inspect its parse errors/security notice.
+5. Review Content Diff, publish the DLC, then verify `GET /api/ui-manifest` and the gameplay shell after the new Generation activates.
+6. Test hot reload and rollback when changing navigation or field visibility. Historical generations must restore their archived manifest.
+
+### Adding a new framework UI capability
+
+Update `multiagent_framework/ui_manifest.py` and `frontend/src/UIManifestTools.js` in the same change, then implement a fixed renderer/route mapping and expose it in `UIManifestEditor.jsx`. Add backend rejection/default/Generation tests plus frontend normalization/rendering/editor tests. Do not accept arbitrary component names as an extension mechanism.
+
+### Required release gate
+
+Run the complete Python suite and compile gate, all frontend tests, ESLint, production build, example DLC Registry validation, `git diff --check`, and a credential-pattern scan. The external OpenAI-compatible Smoke Test remains environment-gated and receives credentials only through `AGENTERA_TEST_*` process environment variables.

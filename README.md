@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.21.0**
+> 当前版本：**v0.24.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,7 +15,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则和通用行动。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
@@ -26,6 +26,9 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
 - **任务模型路由**：可按全局任务、DLC、Agent 和显式 Profile 选择不同模型。
+- **详细中文设置中心**：在主界面可视化管理 Provider、模型 Profile、三级任务路由、Agent 多轮预算、记忆压缩、世界 Tick 与安全运维状态；支持后端校验、变更预览、Generation 乐观锁和热更新。
+- **通用 Issue / Case / DecisionRequest**：DLC 可声明题型、证据、期限、紧迫度和动态选项，运行时支持创建、决策、执行 Action、关闭、过期、幂等与存档恢复。
+- **权威目标与结局**：主 DLC 可声明主目标、可选目标、失败条件、有序/独立里程碑与胜利/失败/中立结局；框架只从权威世界事实和持久回执判定，客户端与 LLM 不能直接改写完成状态。
 - **模型评测与晋级**：支持真实轨迹矩阵、独立人工评审、cohort 分区、环境门禁、安全预览、原子应用和失败回滚。
 
 ## 模型路由优先级
@@ -95,6 +98,28 @@ npm run dev -- --host
 - DLC Studio：`http://localhost:3000/dlc.html`
 - 天玑调试界面：`http://localhost:3000/tianji.html`
 - 后端 OpenAPI：`http://localhost:8000/docs`
+
+## 详细中文设置中心 (v0.22.0)
+
+主界面右上角齿轮已升级为完整设置中心，用于替代旧版只覆盖少量字段的简陋弹窗。界面按中文说明组织为九类：配置总览、接口服务商、模型 Profile、任务模型路由、Agent 多轮调用、多轮记忆、世界模拟、安全与运维、高级 JSON。
+
+- Provider：新增、删除和改名 Provider，配置 Base URL、API Key 环境变量名、超时，并可临时输入仅驻留当前后端进程内存的 Session Key。
+- 模型 Profile：配置 Provider、模型 ID、能力标签、并发和重试；Profile 改名会同步更新三级任务路由引用。
+- 任务路由：可视化编辑全局 `task_policies`、DLC `dlc_task_policies` 和 Agent `agent_task_policies`，候选 Profile 顺序即失败回退顺序。
+- Agent 多轮调用：分别控制普通 Agent 与 ActionAgent 的轮数、工具调用数、Token、耗时和无进展终止预算。
+- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度。
+- 世界模拟：控制游戏日与现实秒换算及后台 Tick 间隔；保存后可热更新当前 Orchestrator。
+- 安全与运维：只读展示管理 API、管理令牌、归档加密密钥和告警相关环境变量是否配置，不展示其值。
+- 高级 JSON：只编辑模型文档中的 Provider、Profile 与三级路由五个段；保存前统一经过后端 Schema 校验，并展示 Warning 与变更 Diff。
+
+运行时数值保存在 `config/runtime.json`（示例见 `config/runtime.example.json`），模型与路由仍保存在 `config/models.json`。设置接口为：
+
+- `GET /api/settings/schema`：读取中文字段元数据、范围、选项和安全说明。
+- `GET /api/settings`：读取脱敏设置文档、当前 Generation 与环境状态。
+- `POST /api/settings/validate`：无副作用校验并生成 Warning、规范化文档和 Diff。
+- `POST /api/settings`：使用 `expected_generation` 乐观锁原子保存并激活配置。
+
+API Key 不会通过设置 API 明文回传，也不会写入 JSON 或浏览器存储。长期凭据应使用 `api_key_env` 指向环境变量；Session Key 只适合本机临时调试。若已配置密钥的 Provider 修改到不同主机，必须在预览警告后显式确认 `allow_secret_host_change`。模型、Agent 预算、记忆和时间参数可热更新；管理 API 开关、管理令牌、归档加密密钥等环境变量仍需在进程启动前配置并重启生效。
 
 ## DLC 玩法契约 (v0.20.0)
 
@@ -179,6 +204,46 @@ DLC 的 `content.json` 可新增 `actions` 数组。框架负责解释并执行�
 
 `example_frontier` 包含可执行的 `frontier_patrol` 示例，DLC Studio 的“行动”页签可编辑基础字段以及参数、目标、权限、条件、成本、耗时、冷却和结果 JSON。
 
+## 通用 Issue / Case / DecisionRequest (v0.22.0)
+
+DLC 可通过 `content.json` 的 `issue_types` 声明题材无关的待处理事项类型，包括来源限制、必需证据、默认紧迫度、期限、是否创建 Case，以及静态或动态 DecisionOption。运行时由 `IssueManager` 统一管理：
+
+- Issue 支持外部幂等键、证据追加、期限刷新、过期和关闭；Case 聚合关联 Issue 并可独立结案。
+- DecisionRequest 冻结创建时的选项语义，可预览或解析为同一 Generation 的通用 Action；解析使用 `invocation_id` 保证幂等。
+- 题型目录、Action 引用和动态选项在 DLC Registry 阶段校验，并随 Generation 发布、归档、恢复和回滚。
+- 运行时快照和手动存档保存 Issue、Case、DecisionRequest、执行回执及顺序；旧 memorial 存档可兼容迁移。
+- 主界面可查看待处理 Issue 与动态选项，DLC Studio 可编辑 `issue_types`；示例 DLC 提供可运行题型。
+
+通用 API 包括 `GET /api/issue-types`、`GET/POST /api/issues`、追加证据、`GET /api/cases`、关闭 Case、`GET /api/decision-requests`，以及 DecisionRequest 的 preview/resolve。旧 `/api/memorials` 继续作为兼容视图，但新玩法不应依赖“大明奏折”等框架硬编码。
+
+## DLC 目标、里程碑与结局 (v0.23.0)
+
+主 DLC 可在 `content.json` 顶层声明 `objectives` 与 `endings`。依赖 DLC 仍可贡献实体、Action 和 Issue，但不会与主 DLC 争夺 Campaign 结局：
+
+- 目标分类为 `primary`、`optional`、`failure`；里程碑可选 `ordered` 或 `independent`。
+- 条件树支持 `all`、`any`、`not`，事实来源包括锚定库存、指标、参数、实体状态、模拟天数、Issue/Case/Decision 数量和 Action 成功回执数量。
+- 结局结果支持 `victory`、`defeat`、`neutral`。同一 Tick 同时满足多个结局时先比较 `priority`，相同优先级再按 `ending_id` 确定；首个结局锁定后不可反转。
+- 不声明目标和结局即为显式沙盒，不会因为“零目标”自动胜利。目标、里程碑和结局回执只生成一次，并随运行时快照、手动存档、重启、Generation 归档、热重载和回滚恢复。
+- `GET /api/objectives` 返回 Campaign、目标、里程碑、条件诊断与进度；`GET /api/endings` 返回可达结局、已满足状态和锁定结果。
+- 主界面提供可折叠目标面板；DLC Studio 的“目标”和“结局”页签提供中文字段说明、引用下拉框、可视化嵌套条件树、高级 JSON、导入导出、Diff 与历史撤销/重做。
+
+`example_frontier` 展示了巡逻经费、Action 次数、警戒指标、15 天失败期限，以及胜利/失败结局的完整组合。
+
+## DLC UI Manifest（v0.24.0）
+
+主 DLC 可在 `content.json.ui_manifest` 中配置题材化界面，而无需修改 React 核心代码。依赖 DLC 不会覆盖主 DLC 的界面所有权。
+
+- `title`、`subtitle`、`brand.short_mark`：配置产品标题、副标题和短标识。
+- `terminology`：配置玩家、事项、案件、决策、消息、世界、实体、关系、目标、库存、指标等 30 项通用术语。
+- `navigation`：只允许选择框架内置的主视图 `dashboard/world/relations/debug` 与应用页面 `gameplay/editor/dlc_studio/assistant`；DLC 不能注入 URL。
+- `dashboard`：选择三栏、双栏或单栏布局，并将目标、事项列表、事项详情、玩家消息和在途消息安排到受控区域。
+- `issue_page`：选择事项列表/详情的可见字段，并控制是否展示已解决事项。
+- `entity_detail`：选择实体基础字段，以及摘要、持续事件、位置、库存、指标和参数 Section。
+
+`GET /api/ui-manifest` 返回当前 Generation 的归一化 Manifest。首次加载、热重载、Generation 归档、历史回滚和重启恢复使用同一份配置；老归档没有该字段时自动回退到安全默认值。主界面仅把 Manifest 映射到框架拥有的组件与固定路由，不执行 DLC 提供的代码、样式、HTML 或链接。
+
+DLC Studio 的“界面”编辑器提供完整中文说明、白名单下拉选择、排序/显隐编辑、本地即时校验、重复 ID 检查、高级 JSON、导入导出、Diff 和历史撤销/重做。保存仍经过 Registry 校验与 Content Diff 确认。`example_frontier` v1.3.0 提供“边境指挥中心”完整示例。
+
 ## 经济监控
 
 世界状态页会加载 `GET /api/world-state/economy`，显示：
@@ -200,6 +265,7 @@ DLC 可以声明：
 - 初始事件、随机事件和延迟事件
 - 资源定义与统一价值锚
 - 行动耗时规则
+- 通用行动、Issue / Case / DecisionRequest 题型、目标、里程碑、失败条件与结局
 - DLC/Agent 显式模型绑定
 - 因果规则的结构化条件与事务化世界效果（资源、状态、ongoing event、锚值守恒转移）
 
@@ -244,6 +310,18 @@ npm run lint
 npm run build
 ```
 
+外部 OpenAI-compatible 连接 Smoke Test 默认不会访问网络；只有显式提供临时环境变量时才运行，并会自动补齐 `/v1`、拉取模型列表、过滤明显的非聊天模型，再发送最小 Chat Completions 请求：
+
+```powershell
+$env:AGENTERA_TEST_BASE_URL='http://example.test:3000'
+$env:AGENTERA_TEST_API_KEY='<temporary-key>'
+# 可选；留空时测试从 /v1/models 自动选择候选模型
+$env:AGENTERA_TEST_MODEL=''
+python -m pytest -q tests/integration/test_external_api_connection.py
+```
+
+临时密钥只通过当前进程环境传入，不得写入 `.env`、配置文件、测试夹具、日志或 Git；未配置 URL/Key 时这组测试自动 skip，临时通道失效不阻断离线发布门禁。
+
 ## 文档
 
 - [PROJECT_DOC.md](PROJECT_DOC.md)：架构、数据流、运行时和 API 说明
@@ -259,9 +337,44 @@ npm run build
 - `VERSION`：项目权威版本号
 - 后端 `multiagent_framework.version.__version__`
 - 前端 `frontend/package.json`
+- 前端锁文件 `frontend/package-lock.json`
 
-发布时三处版本必须保持一致。
+发布时四处版本必须保持一致。
 
+
+## v0.24.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P0.5：
+
+- 新增题材无关 `UIManifest` Schema、默认值、归一化和安全验证，严格限制导航、Widget、布局、区域和字段能力，拒绝 URL、组件名、HTML、CSS、脚本、不安全文本、未知能力与重复 ID。
+- UI Manifest 由主 DLC 独占，纳入首次加载、热重载、Generation 发布、加密归档、历史回滚、旧归档兼容和 Orchestrator 发布，并新增 `GET /api/ui-manifest`。
+- React 主界面改为能力驱动：标题、短标识、术语、主/应用导航、Dashboard 布局与 Widget、Issue 字段和实体详情均读取当前 Generation；API 失败时使用安全默认界面。
+- DLC Studio 新增详细中文 UI Manifest 编辑器，支持可视化白名单配置、高级 JSON、即时校验、Content Diff、导入导出以及撤销/重做。
+- `example_frontier` 升级到 v1.3.0，并提供完整边境题材 Manifest 示例。
+- 发布版本统一升级为 `0.24.0`；发布门禁通过 544 个 Python 测试（另有 2 个外部 Provider 环境门禁测试因当前进程未注入凭据而跳过）、31 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、凭据扫描与 Git 差异检查。
+
+长期 Goal 继续保持 active；下一阶段为 P0.6 DLC 行动/能力注册表，使玩家 UI、Router 与 Agent 工具由同一能力目录驱动。
+
+## v0.23.0 发布说明
+
+本版本完成 DLC 驱动玩法框架的 P0.4：
+
+- 新增权威 `ObjectiveManager`、主/可选/失败目标、有序/独立里程碑、嵌套条件 DSL，以及胜利/失败/中立结局。
+- 目标与结局绑定主 DLC 和 Generation，支持 Registry 引用校验、热重载、归档、回滚、运行时快照、手动存档与重启恢复。
+- 新增 `GET /api/objectives`、`GET /api/endings`、主界面目标面板，以及 DLC Studio 目标/结局中文可视化编辑器。
+- `example_frontier` 升级为带巡逻里程碑、15 天失败条件和优先级结局的可玩 Campaign 示例。
+- 新增可选外部 OpenAI-compatible 连接 Smoke Test；模型可自动拉取，凭据只从临时环境变量读取且不落盘。
+- 版本身份同步为 `0.23.0`；本地发布门禁通过 **535 个 Python 测试（另有 2 个未配置外部凭据时按设计跳过）**、**27 个前端测试**、Python 编译、前端 Lint/Build、示例 DLC Registry 校验、凭据模式扫描和 Git Diff 检查。
+
+## v0.22.0 发布说明
+
+本版本完成 DLC 驱动玩法框架的 P0.3，并将持续增加的运行参数纳入可视化管理：
+
+- 新增 DLC `issue_types`、通用 Issue / Case / DecisionRequest 生命周期、动态选项、Action 决策执行、期限/过期、幂等和存档/Generation 生命周期。
+- 新增详细中文设置中心及安全设置 API，覆盖 Provider、模型 Profile、三级路由、Agent 多轮预算、记忆压缩、世界模拟和只读运维状态。
+- 新增原子配置保存与失败回滚、Generation 乐观锁、Provider 主机变更确认，以及 Session Key 不回传、不落盘的安全边界。
+- 版本身份同步为 `0.22.0`，并补充后端、前端 Schema 工具和事务失败回归测试。
+- 本地发布门禁通过 **520 个 Python 测试**、**26 个前端测试**、Python 编译、前端 Lint/Build、设置 API 密钥泄漏 Smoke 和 Git Diff 检查。
 
 ## Reusable causal templates (v0.17.0)
 

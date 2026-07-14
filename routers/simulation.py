@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from multiagent_framework.action_contract import ActionContractError
-from multiagent_framework.llm_client import LLMConfig
+from multiagent_framework.issue_contract import IssueContractError
 from multiagent_framework.types import PlayerAction, PlayerActionType
 
 from . import _state as state
@@ -152,6 +152,14 @@ async def get_gameplay():
         }
     return state.orchestrator.gameplay_public_state()
 
+@router.get("/ui-manifest")
+async def get_ui_manifest():
+    """Return the current generation's capability-safe DLC UI manifest."""
+    if not state.orchestrator:
+        from multiagent_framework.ui_manifest import UIManifest
+        return {**UIManifest.from_content({}).to_dict(), "generation": 0}
+    return state.orchestrator.ui_manifest_public_state()
+
 class DLCActionInvocationRequest(BaseModel):
     invocation_id: str = ""
     expected_generation: int | None = None
@@ -204,11 +212,135 @@ async def execute_action(action_id: str, req: DLCActionInvocationRequest):
         raise _action_http_error(exc) from exc
 
 
+def _issue_http_error(exc: IssueContractError) -> HTTPException:
+    status_code = 400
+    if exc.code in {"issue.not_found", "case.not_found", "decision.not_found", "issue.type_not_found"}:
+        status_code = 404
+    elif exc.code in {
+        "issue.generation_conflict", "issue.external_id_conflict", "issue.id_conflict",
+        "case.closed", "issue.closed", "issue.evidence.id_conflict",
+        "decision.id_conflict", "decision.not_pending", "decision.expired",
+    }:
+        status_code = 409
+    return HTTPException(status_code=status_code, detail={
+        "code": exc.code, "message": str(exc), "path": exc.path,
+        "details": exc.details,
+    })
+
+
+@router.get("/issue-types")
+async def get_issue_types():
+    if not state.orchestrator:
+        return {"configured": False, "generation": 0, "issue_types": [], "counts": {}}
+    return state.orchestrator.issues_public_state()
+
+
+@router.get("/objectives")
+async def get_objectives():
+    if not state.orchestrator:
+        return {
+            "configured": False, "sandbox": True, "generation": 0,
+            "status": "sandbox", "objectives": [], "endings": [],
+            "current_ending": None, "recent_transitions": [],
+        }
+    return state.orchestrator.objectives_public_state()
+
+
+@router.get("/endings")
+async def get_endings():
+    if not state.orchestrator:
+        return {"generation": 0, "status": "sandbox", "sandbox": True, "endings": [], "current_ending": None}
+    objective_state = state.orchestrator.objectives_public_state()
+    return {
+        "generation": objective_state["generation"],
+        "status": objective_state["status"],
+        "sandbox": objective_state["sandbox"],
+        "endings": objective_state["endings"],
+        "current_ending": objective_state["current_ending"],
+    }
+
+
+@router.get("/issues")
+async def get_issues(status: str = ""):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    return state.orchestrator.list_issues(status=status)
+
+
+@router.post("/issues")
+async def open_issue(payload: dict[str, Any]):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.open_issue(payload)
+    except IssueContractError as exc:
+        raise _issue_http_error(exc) from exc
+
+
+@router.post("/issues/{issue_id}/evidence")
+async def append_issue_evidence(issue_id: str, payload: dict[str, Any]):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.append_issue_evidence(issue_id, payload)
+    except IssueContractError as exc:
+        raise _issue_http_error(exc) from exc
+
+
+@router.get("/cases")
+async def get_cases(status: str = ""):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    return state.orchestrator.list_cases(status=status)
+
+
+@router.post("/cases/{case_id}/close")
+async def close_case(case_id: str, payload: dict[str, Any]):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.close_case(case_id, payload)
+    except IssueContractError as exc:
+        raise _issue_http_error(exc) from exc
+
+
+@router.get("/decision-requests")
+async def get_decision_requests(status: str = ""):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    return state.orchestrator.list_decision_requests(status=status)
+
+
+@router.post("/decision-requests/{request_id}/preview")
+async def preview_decision(request_id: str, payload: dict[str, Any]):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.preview_decision(request_id, payload)
+    except (IssueContractError, ActionContractError) as exc:
+        if isinstance(exc, ActionContractError):
+            raise _action_http_error(exc) from exc
+        raise _issue_http_error(exc) from exc
+
+
+@router.post("/decision-requests/{request_id}/resolve")
+async def resolve_decision(request_id: str, payload: dict[str, Any]):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "issue.orchestrator_unavailable"})
+    try:
+        return state.orchestrator.resolve_decision(request_id, payload)
+    except (IssueContractError, ActionContractError) as exc:
+        if isinstance(exc, ActionContractError):
+            raise _action_http_error(exc) from exc
+        raise _issue_http_error(exc) from exc
+
+
 @router.get("/memorials")
 async def get_memorials():
     """返回当前所有待处理奏折（后端持久化，刷新不丢）."""
     if not state.orchestrator:
         return {"error": "not initialized"}
+    state.orchestrator._sync_legacy_memorials()
     return state.orchestrator.memorials
 
 
@@ -265,95 +397,7 @@ async def new_game():
     return {"status": "new_game_started"}
 
 
-# ── 设置 ──
-
-from pathlib import Path
-
-
-class SettingsRequest(BaseModel):
-    base_url: str = ""
-    api_key: str = ""
-    api_key_env: str = ""
-    model: str = ""
-    timeout_s: int = 30
-    max_concurrent: int = 4
-    seconds_per_day: float = 600.0
-
-
-def _prepare_llm_settings_update(
-    req: SettingsRequest,
-    old_config: LLMConfig,
-) -> tuple[LLMConfig | None, str]:
-    submitted_key = (
-        req.api_key
-        if req.api_key and not req.api_key.startswith("****")
-        else ""
-    )
-    requested_base_url = req.base_url or old_config.base_url
-    base_url_changed = requested_base_url.rstrip("/") != old_config.base_url.rstrip("/")
-
-    if req.api_key_env and req.api_key_env != old_config.api_key_env:
-        return None, (
-            "api_key_env can only be changed in the local config file; "
-            "remote environment-variable selection is disabled"
-        )
-    if base_url_changed and not submitted_key:
-        return None, (
-            "changing base_url requires a new session-only api_key; "
-            "the existing environment secret will not be forwarded to a new host"
-        )
-
-    return LLMConfig(
-        base_url=requested_base_url,
-        api_key=submitted_key or old_config.api_key,
-        api_key_env="" if base_url_changed else old_config.api_key_env,
-        model=req.model or old_config.model,
-        timeout_s=req.timeout_s,
-        max_concurrent=req.max_concurrent,
-    ), ""
-
-
-@router.get("/settings")
-async def get_settings():
-    if not state.orchestrator:
-        return {"error": "not initialized"}
-    llm_display = state.orchestrator.router.llm.config.to_display_dict()
-    gateway = getattr(state.orchestrator, "model_gateway", None)
-    if gateway:
-        llm_display["model_gateway"] = gateway.display_config()
-    llm_display["seconds_per_day"] = state.orchestrator._seconds_per_day
-    return llm_display
-
-
-@router.post("/settings")
-async def save_settings(req: SettingsRequest):
-    if not state.orchestrator:
-        return {"error": "not initialized"}
-
-    llm_client = state.orchestrator.router.llm
-    old_config = llm_client.config
-
-    new_config, config_error = _prepare_llm_settings_update(req, old_config)
-    if config_error:
-        return {"error": config_error}
-    assert new_config is not None
-
-    await llm_client.update_config(new_config)
-    if hasattr(llm_client, "save_configuration"):
-        llm_client.save_configuration()
-    else:
-        new_config.save_to_file("config/llm.json")
-
-    if req.seconds_per_day != state.orchestrator._seconds_per_day:
-        if not (state.orchestrator.is_running and not state.orchestrator.is_paused):
-            state.orchestrator.set_time_scale(req.seconds_per_day)
-
-    time_data = {"seconds_per_day": req.seconds_per_day, "tick_interval": 1.0}
-    Path("config").mkdir(parents=True, exist_ok=True)
-    with open("config/time.json", "w", encoding="utf-8") as f:
-        json.dump(time_data, f, indent=2)
-
-    return {"status": "ok"}
+# Settings center routes live in routers/settings.py.
 
 
 # ── 天玑 AI ──

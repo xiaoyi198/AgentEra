@@ -319,3 +319,102 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-causal-replay-result { grid-template-columns: 1fr; }
   .dlc-causal-replay-result span { white-space: normal; }
 }
+
+/* Objective and ending visual contract editors */
+.dlc-field-help { display: block; margin-top: 4px; color: #77828b; font-size: 11px; line-height: 1.45; font-weight: 400; }
+.dlc-objective-form-title, .objective-builder-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dlc-objective-form-title { padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.dlc-objective-form-title h3 { margin: 0; }
+.dlc-objective-form-title p { margin: 4px 0 0; color: #7f8991; font-size: 12px; }
+.objective-builder-title { margin-bottom: 9px; }
+.objective-builder-title > div { display: flex; flex-direction: column; }
+.objective-condition-builder, .objective-milestone-editor { margin-top: 14px; padding: 12px; border: 1px solid rgba(128,146,157,.2); border-radius: 9px; background: rgba(25,33,39,.38); }
+.objective-condition-editor { margin: 8px 0; padding: 10px; border-left: 3px solid rgba(194,153,79,.42); border-radius: 7px; background: rgba(8,14,18,.24); }
+.objective-condition-editor.depth-1 { border-left-color: rgba(83,145,178,.5); }
+.objective-condition-editor.depth-2 { border-left-color: rgba(111,172,136,.5); }
+.objective-condition-editor.depth-3, .objective-condition-editor.depth-4 { border-left-color: rgba(156,122,179,.5); }
+.objective-condition-editor-head { display: grid; grid-template-columns: minmax(130px,.45fr) minmax(220px,1fr) auto; align-items: end; gap: 9px; }
+.objective-condition-editor-head .wide { min-width: 0; }
+.objective-condition-children-editor { display: grid; gap: 7px; margin: 7px 0; }
+.objective-fact-row { align-items: start; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.objective-action-filters { grid-template-columns: repeat(3, 1fr); }
+.objective-milestone-form { margin-top: 10px; padding: 12px; border: 1px solid rgba(255,255,255,.075); border-radius: 8px; background: rgba(255,255,255,.018); }
+.objective-milestone-form > .dlc-row { align-items: end; }
+.dlc-advanced-json { margin-top: 12px; border: 1px dashed rgba(117,140,154,.35); border-radius: 8px; padding: 9px 11px; }
+.dlc-advanced-json summary { color: #9eb3bf; cursor: pointer; font-weight: 600; }
+.dlc-advanced-json > p { color: #73808a; font-size: 11px; }
+.dlc-advanced-json > div:last-child { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.objective-ending-targets { display: grid; gap: 7px; margin: 12px 0; padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; }
+.objective-ending-targets legend { padding: 0 6px; font-weight: 600; }
+.objective-ending-targets > label { display: flex; align-items: center; gap: 9px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,.025); cursor: pointer; }
+.objective-ending-targets > label span { display: flex; flex-direction: column; }
+.objective-ending-targets > label small { color: #77828b; }
+@media (max-width: 850px) {
+  .objective-condition-editor-head { grid-template-columns: 1fr; }
+  .objective-action-filters { grid-template-columns: 1fr; }
+}
+
+/* DLC-authored capability-safe UI manifest editor */
+.ui-manifest-editor { display: grid; gap: 16px; padding: 4px 0 28px; color: #d7e0e5; }
+.ui-manifest-intro, .ui-manifest-section, .ui-manifest-json, .ui-manifest-validation, .ui-manifest-save { border: 1px solid rgba(126,154,170,.2); border-radius: 10px; background: rgba(14,22,27,.64); }
+.ui-manifest-intro { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-color: rgba(194,153,79,.34); background: linear-gradient(125deg, rgba(194,153,79,.11), rgba(28,47,59,.42)); }
+.ui-manifest-intro span { color: #d9ad62; font-size: 10px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.ui-manifest-intro h2 { margin: 4px 0 6px; font-size: 22px; }
+.ui-manifest-intro p, .ui-manifest-section header p, .ui-manifest-json > p { max-width: 850px; margin: 0; color: #8797a1; font-size: 12px; line-height: 1.65; }
+.ui-manifest-section { padding: 16px; }
+.ui-manifest-section > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; padding-bottom: 11px; border-bottom: 1px solid rgba(255,255,255,.07); }
+.ui-manifest-section h3 { margin: 0 0 4px; color: #e7edf0; font-size: 15px; }
+.ui-manifest-fields { display: grid; gap: 12px; }
+.ui-manifest-fields.three { grid-template-columns: 1fr 1.4fr .45fr; }
+.ui-manifest-fields label, .ui-manifest-table label, .ui-manifest-layout { display: grid; align-content: start; gap: 6px; color: #a8b6be; font-size: 11px; font-weight: 600; }
+.ui-manifest-fields small, .ui-manifest-layout small { color: #697984; font-weight: 400; line-height: 1.45; }
+.ui-manifest-editor input, .ui-manifest-editor select, .ui-manifest-editor textarea { width: 100%; border: 1px solid #34454f; border-radius: 5px; color: #d9e4e9; background: #10191e; }
+.ui-manifest-editor input, .ui-manifest-editor select { min-height: 34px; padding: 7px 9px; }
+.ui-manifest-editor textarea { padding: 11px; font-family: Consolas, 'SFMono-Regular', monospace; line-height: 1.5; resize: vertical; }
+.ui-manifest-terms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.ui-manifest-terms > label { display: grid; grid-template-columns: minmax(210px, .85fr) minmax(160px, 1fr); align-items: center; gap: 12px; padding: 10px; border: 1px solid rgba(255,255,255,.055); border-radius: 7px; background: rgba(255,255,255,.018); }
+.ui-manifest-terms > label > span { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 3px 8px; }
+.ui-manifest-terms strong { color: #d5dfe4; font-size: 11px; }
+.ui-manifest-terms code { color: #8da6b5; font-size: 9px; }
+.ui-manifest-terms small { grid-column: 1 / -1; color: #6f7d86; font-size: 10px; line-height: 1.35; }
+.ui-manifest-table { display: grid; gap: 8px; }
+.ui-manifest-table article { display: grid; align-items: end; gap: 8px; padding: 11px; border: 1px solid rgba(118,146,163,.18); border-radius: 7px; background: rgba(255,255,255,.018); }
+.ui-manifest-table.navigation article { grid-template-columns: 1fr 1fr 1.2fr 1fr .45fr .55fr auto auto; }
+.ui-manifest-table.widgets article { grid-template-columns: 1fr 1.4fr 1fr .55fr auto auto; }
+.ui-manifest-toggle { display: flex !important; align-items: center; gap: 6px; min-height: 34px; padding: 7px 3px; }
+.ui-manifest-toggle input, .ui-manifest-switch input, .ui-manifest-choice-list input { width: auto; min-height: 0; accent-color: #c4994f; }
+.ui-manifest-layout { max-width: 360px; margin-bottom: 12px; }
+.ui-manifest-choices { display: grid; gap: 12px; }
+.ui-manifest-choices.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ui-manifest-choice-list { min-width: 0; margin: 0; padding: 12px; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; }
+.ui-manifest-choice-list legend { padding: 0 6px; color: #d5e0e5; font-size: 12px; font-weight: 700; }
+.ui-manifest-choice-list > p { margin: 0 0 9px; color: #72818a; font-size: 10px; }
+.ui-manifest-choice-list > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.ui-manifest-choice-list label { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 5px; background: rgba(255,255,255,.025); cursor: pointer; }
+.ui-manifest-choice-list label span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ui-manifest-choice-list strong { font-size: 10px; }
+.ui-manifest-choice-list code { overflow: hidden; color: #718491; text-overflow: ellipsis; font-size: 8px; }
+.ui-manifest-switch { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 11px 12px; border-radius: 7px; background: rgba(194,153,79,.06); cursor: pointer; }
+.ui-manifest-switch span { display: grid; gap: 2px; }
+.ui-manifest-switch strong { color: #d5e0e5; font-size: 11px; }
+.ui-manifest-switch small { color: #73818a; font-size: 10px; }
+.ui-manifest-json { padding: 13px 15px; }
+.ui-manifest-json summary { color: #b7c8d1; cursor: pointer; font-size: 13px; font-weight: 700; }
+.ui-manifest-json > p { margin: 9px 0; }
+.ui-manifest-json > div:last-child { display: flex; justify-content: flex-end; gap: 8px; margin-top: 9px; }
+.ui-manifest-error, .ui-manifest-validation { color: #f0a8a2; border-color: rgba(189,82,73,.5); background: rgba(92,24,23,.25); }
+.ui-manifest-error { margin-top: 8px; padding: 9px 11px; border: 1px solid rgba(189,82,73,.5); border-radius: 6px; font-size: 11px; }
+.ui-manifest-validation { padding: 13px 16px; font-size: 11px; line-height: 1.55; }
+.ui-manifest-validation ul { margin: 7px 0 0; padding-left: 18px; }
+.ui-manifest-save { position: sticky; bottom: 10px; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 15px; border-color: rgba(194,153,79,.4); background: rgba(17,26,31,.96); box-shadow: 0 8px 30px rgba(0,0,0,.36); }
+.ui-manifest-save span { color: #7e8f99; font-size: 10px; }
+@media (max-width: 1350px) {
+  .ui-manifest-table.navigation article { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ui-manifest-table.widgets article { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .ui-manifest-intro, .ui-manifest-section > header, .ui-manifest-save { align-items: stretch; flex-direction: column; }
+  .ui-manifest-fields.three, .ui-manifest-terms, .ui-manifest-choices.two { grid-template-columns: 1fr; }
+  .ui-manifest-terms > label { grid-template-columns: 1fr; }
+  .ui-manifest-table.navigation article, .ui-manifest-table.widgets article { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

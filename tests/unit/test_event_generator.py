@@ -156,6 +156,9 @@ def test_orchestrator_tick_injects_due_event_and_exposes_metadata_only():
 
     assert len(result.generated_events) == 1
     assert len(result.new_memorials) == 2
+    assert len(result.new_issues) == 2
+    assert len(result.new_cases) == 2
+    assert len(result.new_decision_requests) == 2
     metadata = result.generated_events[0]
     assert metadata["event_id"] == "rnd_locust_000001"
     assert metadata["target_count"] == 2
@@ -242,6 +245,9 @@ def test_orchestrator_random_event_triggers_zero_delay_causal_event_without_payl
     assert "target_agents" not in causal
     assert "private_note" not in str(causal)
     assert len(result.new_memorials) == 4
+    assert len(result.new_issues) == 4
+    assert len(result.new_cases) == 4
+    assert len(result.new_decision_requests) == 4
 
 
 def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():
@@ -267,3 +273,28 @@ def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():
     assert len(result.generated_events) == 128
     assert all(item["source"] == "causal" for item in result.generated_events)
     assert orch.causal_event_status()["pending_count"] > 0
+
+
+def test_player_wakeup_issue_contract_failure_is_reported_without_crashing_tick():
+    orch = make_orchestrator_for_events()
+    orch.configure_issue_catalog([{
+        "issue_type_id": "locust_report",
+        "display_name": "Locust report",
+        "source": {"allowed_kinds": ["system"]},
+        "match": {"payload_types": ["locust_plague"]},
+        "evidence": [{"kind": "field_report", "display_name": "Field report", "required": True}],
+    }], generation=3)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1)
+    ], preserve_state=False)
+    orch._sim_time = GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    assert len(result.generated_events) == 1
+    assert not result.new_issues
+    assert not result.new_cases
+    assert not result.new_decision_requests
+    assert len(result.agent_errors) == 2
+    assert {item["code"] for item in result.agent_errors} == {"issue.evidence.required"}
+    assert all(item["error"] == "issue_contract_rejected" for item in result.agent_errors)

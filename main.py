@@ -27,6 +27,7 @@ from multiagent_framework.runtime_paths import (
     ensure_runtime_dir, runtime_exists,
 )
 from multiagent_framework.runtime_persistor import RuntimePersistor
+from multiagent_framework.runtime_settings import RuntimeSettings
 from multiagent_framework.tianji_agent import TianJiAgent
 from multiagent_framework.timer_system import TimerSystem
 from multiagent_framework.types import TickResult
@@ -40,6 +41,7 @@ from routers.editor import router as editor_router
 from routers.worldstate import router as worldstate_router
 from routers.debug import router as debug_router
 from routers.metrics import router as metrics_router
+from routers.settings import router as settings_router
 from routers.dlc import router as dlc_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -105,6 +107,8 @@ def init_orchestrator(
     if primary_dlc is not None:
         primary_prompts = dlc_registry.load_content(primary_dlc.manifest.id).get("prompts", {})
 
+    runtime_settings = RuntimeSettings.from_file("config/runtime.json")
+
     model_gateway = ModelGateway.from_files(
         models_path="config/models.json",
         legacy_path="config/llm.json",
@@ -128,12 +132,8 @@ def init_orchestrator(
     # primary profile here would incorrectly leak it into secondary DLC agents.
     agent_llm = model_gateway.for_task("agent.turn")
 
-    time_config_path = "config/time.json"
-    seconds_per_day = 600.0
-    if Path(time_config_path).exists():
-        with open(time_config_path, encoding="utf-8") as f:
-            tc = json.load(f)
-            seconds_per_day = tc.get("seconds_per_day", 600.0)
+    seconds_per_day = runtime_settings.simulation.seconds_per_day
+    tick_interval = runtime_settings.simulation.tick_interval
 
     db_path = str(WORLD_DB)              # runtime/world.db
     is_fresh = force_fresh or (not runtime_exists() and not load_from_save)
@@ -152,10 +152,13 @@ def init_orchestrator(
         world_state,
         court=court,
         prompt_template=primary_prompts.get("action_agent"),
+        **runtime_settings.action_agent.__dict__,
     )
 
     from multiagent_framework.memory_compressor import LLMMemoryCompressor
-    memory_compressor = LLMMemoryCompressor(memory_llm)
+    memory_compressor = LLMMemoryCompressor(
+        memory_llm, temperature=runtime_settings.memory.compression_temperature
+    )
 
     orch = Orchestrator(
         court_graph=court,
@@ -163,11 +166,13 @@ def init_orchestrator(
         chain_log=chain_log,
         router=router,
         seconds_per_day=seconds_per_day,
+        tick_interval=tick_interval,
         on_tick=broadcast_tick,
         action_agent=action_agent,
         memory_compressor=memory_compressor,
     )
     orch.persistor = RuntimePersistor(orch)
+    orch.runtime_settings = runtime_settings
     orch.model_gateway = model_gateway
     orch.dlc_registry = dlc_registry
 
@@ -209,7 +214,11 @@ def _load_dlcs(
             logger.warning("No active published DLC found; using legacy fallback")
             _load_legacy_dlc(orch, court, llm, world_state, load_from_save)
             return
-        loader = DLCBundleLoader(registry, world_state, court, orch, llm)
+        defaults = getattr(getattr(orch, "runtime_settings", None), "agent_defaults", None)
+        loader = DLCBundleLoader(
+            registry, world_state, court, orch, llm,
+            agent_defaults=(defaults.__dict__ if defaults is not None else None),
+        )
         reports = loader.load_active(seed_world=not load_from_save)
         orch.dlc_loader = loader
         for report in reports:
@@ -254,6 +263,11 @@ def _load_legacy_dlc(
         officials = load_officials(officials_path)
         court.bulk_load_officials(officials)
         agents = create_agents(officials, prompts_dir, llm)
+        defaults = getattr(getattr(orch, "runtime_settings", None), "agent_defaults", None)
+        if defaults is not None:
+            for agent in agents:
+                for key, value in defaults.__dict__.items():
+                    setattr(agent.config, key, value)
         for agent in agents:
             orch.register_agent(agent)
         orch.configure_gameplay_contract(
@@ -292,7 +306,15 @@ def _load_runtime_state(orch: Orchestrator) -> None:
             s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             orch._sim_time = s.get("sim_time", 0.0)
             orch._seconds_per_day = s.get("seconds_per_day", 600.0)
-            orch.memorials = s.get("memorials", [])
+            legacy_memorials = s.get("memorials", [])
+            if hasattr(orch, "issue_manager"):
+                orch.issue_manager.restore(
+                    s.get("issue_runtime", {}), sim_time=orch._sim_time,
+                    legacy_memorials=legacy_memorials,
+                )
+                orch._sync_legacy_memorials()
+            else:
+                orch.memorials = legacy_memorials
             orch.router.update_time_scale(orch._seconds_per_day)
             if hasattr(orch, "random_event_generator"):
                 orch.random_event_generator.restore(
@@ -305,6 +327,10 @@ def _load_runtime_state(orch: Orchestrator) -> None:
             if hasattr(orch, "action_catalog"):
                 orch.action_catalog.restore(
                     s.get("action_runtime", {}), sim_time=orch._sim_time
+                )
+            if hasattr(orch, "objective_manager"):
+                orch.objective_manager.restore(
+                    s.get("objective_runtime", {}), sim_time=orch._sim_time
                 )
             logger.info("Restored state: sim_time=%.1f, %d memorials",
                         orch._sim_time, len(orch.memorials))
@@ -367,6 +393,7 @@ app.include_router(editor_router)
 app.include_router(worldstate_router)
 app.include_router(debug_router)
 app.include_router(metrics_router)
+app.include_router(settings_router)
 app.include_router(dlc_router)
 app.include_router(ws_router)
 

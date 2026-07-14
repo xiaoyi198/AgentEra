@@ -1,14 +1,14 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.21.0",
+  "version": "0.24.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test src/DLCStudioTools.test.js"
+    "test": "node --test src/DLCStudioTools.test.js src/SettingsSchemaTools.test.js src/UIManifestTools.test.js"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

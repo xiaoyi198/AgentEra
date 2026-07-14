@@ -1,3 +1,3 @@
 """AgentEra package version."""
 
-__version__ = "0.21.0"
+__version__ = "0.24.0"

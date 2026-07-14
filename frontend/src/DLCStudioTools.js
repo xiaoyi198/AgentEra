@@ -16,8 +16,11 @@ const ARRAY_SECTIONS = [
   'causal_event_rules',
   'time_rules',
   'actions',
+  'issue_types',
+  'objectives',
+  'endings',
 ]
-const OBJECT_SECTIONS = ['personas', 'prompts']
+const OBJECT_SECTIONS = ['personas', 'prompts', 'ui_manifest']
 const KNOWN_SECTIONS = new Set(['schema_version', ...ARRAY_SECTIONS, ...OBJECT_SECTIONS])
 
 const KEYERS = {
@@ -35,6 +38,9 @@ const KEYERS = {
   causal_event_rules: item => item?.rule_id,
   time_rules: item => item?.rule_id,
   actions: item => item?.action_id,
+  issue_types: item => item?.issue_type_id,
+  objectives: item => item?.objective_id,
+  endings: item => item?.ending_id,
 }
 
 function isObject(value) {

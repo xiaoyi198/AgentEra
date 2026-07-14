@@ -36,6 +36,8 @@ class FakeOrchestrator:
         self.agents = {}
         self.events = []
         self.time_rule_configurations = []
+        self.objective_configurations = []
+        self.ui_manifest_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -56,6 +58,14 @@ class FakeOrchestrator:
 
     def configure_time_rules(self, rules) -> None:
         self.time_rule_configurations.append(rules)
+
+    def configure_objective_catalog(
+        self, objectives, endings, *, generation=0, gameplay=None
+    ) -> None:
+        self.objective_configurations.append((objectives, endings, generation, gameplay))
+
+    def configure_ui_manifest(self, manifest, *, generation=0) -> None:
+        self.ui_manifest_configurations.append((manifest, generation))
 
 
 def _registry(tmp_path: Path) -> DLCRegistry:
@@ -83,10 +93,24 @@ def _registry(tmp_path: Path) -> DLCRegistry:
             "workload_factor": 1,
         }],
         "ongoing_events": [],
+        "objectives": [{
+            "objective_id": "archive_goal",
+            "display_name": "Archive goal v1",
+            "completion": {"kind": "sim_day", "operator": "gte", "value": 1},
+        }],
+        "endings": [{
+            "ending_id": "archive_ending",
+            "display_name": "Archive ending v1",
+            "trigger": {"objective_ids": ["archive_goal"]},
+        }],
         "personas": {},
         "prompts": {
             "official_template": "archive-generation-one::{name}",
             "router": "router-generation-one",
+        },
+        "ui_manifest": {
+            "title": "Archive Command v1",
+            "terminology": {"player": "Archivist"},
         },
     })
     registry.publish("sample")
@@ -185,10 +209,13 @@ def test_runtime_restart_restores_generations_and_rolls_back_disk_blueprint(tmp_
         "base_days": 9,
         "workload_factor": 0,
     }]
+    content["objectives"][0]["display_name"] = "Archive goal v2"
+    content["endings"][0]["display_name"] = "Archive ending v2"
     registry.save_content("sample", content)
     asyncio.run(first.reload_active())
     assert first.generation == 2
     assert first_orchestrator.time_rule_configurations[-1][0]["rule_id"] == "generation.two"
+    assert first_orchestrator.objective_configurations[-1][0][0]["display_name"] == "Archive goal v2"
 
     archive_records = first._generation_archive.load_all().records
     assert [item.generation for item in archive_records] == [1, 2]
@@ -210,6 +237,7 @@ def test_runtime_restart_restores_generations_and_rolls_back_disk_blueprint(tmp_
     assert second.generation == 3
     assert "archive-generation-two" in second_orchestrator.agents["mayor"].config.system_prompt
     assert second_orchestrator.time_rule_configurations[-1][0]["rule_id"] == "generation.two"
+    assert second_orchestrator.objective_configurations[-1][0][0]["display_name"] == "Archive goal v2"
 
     result = asyncio.run(second.rollback_active(1))
 
@@ -218,6 +246,8 @@ def test_runtime_restart_restores_generations_and_rolls_back_disk_blueprint(tmp_
     assert "archive-generation-one" in second_orchestrator.agents["mayor"].config.system_prompt
     assert second_orchestrator.agents["mayor"].llm.profile_override == "fast"
     assert second_orchestrator.time_rule_configurations[-1][0]["rule_id"] == "generation.one"
+    assert second_orchestrator.objective_configurations[-1][0][0]["display_name"] == "Archive goal v1"
+    assert second_orchestrator.objective_configurations[-1][1][0]["display_name"] == "Archive ending v1"
     assert second.public_runtime()["generation_archive"]["persisted_generations"] == 4
 
 
@@ -287,3 +317,71 @@ def test_generation_archive_restores_action_definitions(tmp_path: Path):
     result = asyncio.run(loader.rollback_active(1))
     assert result["source_generation"] == 1
     assert loader.public_runtime()["actions"]["actions"][0]["display_name"] == "Generation One Relief"
+
+
+def _archived_issue(display_name: str) -> dict:
+    return {
+        "issue_type_id": "city_report",
+        "display_name": display_name,
+        "source": {"allowed_kinds": ["agent"], "allowed_ids": ["mayor"]},
+        "match": {"payload_types": ["city_report"], "source_ids": ["mayor"]},
+    }
+
+
+def test_generation_archive_persists_issue_definitions_for_restart_rollback(tmp_path: Path):
+    registry = _registry(tmp_path)
+    content = registry.load_content("sample")
+    content["issue_types"] = [_archived_issue("Generation One Report")]
+    registry.save_content("sample", content)
+
+    first = _loader(tmp_path, registry, FakeOrchestrator())
+    first.load_active(seed_world=True)
+    content = registry.load_content("sample")
+    content["issue_types"] = [_archived_issue("Generation Two Report")]
+    registry.save_content("sample", content)
+    asyncio.run(first.reload_active())
+
+    records = first._generation_archive.load_all().records
+    assert records[0].blueprint["issue_definitions"][0]["display_name"] == "Generation One Report"
+    assert records[1].blueprint["issue_definitions"][0]["display_name"] == "Generation Two Report"
+
+    restarted = _loader(tmp_path, registry, FakeOrchestrator())
+    restarted.load_active(seed_world=False)
+    assert restarted.public_runtime()["issues"]["issue_types"][0]["display_name"] == "Generation Two Report"
+    result = asyncio.run(restarted.rollback_active(1))
+
+    assert result["source_generation"] == 1
+    assert restarted.public_runtime()["issues"]["issue_types"][0]["display_name"] == "Generation One Report"
+
+
+
+def test_generation_archive_persists_ui_manifest_and_old_blueprint_falls_back(tmp_path: Path):
+    registry = _registry(tmp_path)
+    first_orchestrator = FakeOrchestrator()
+    first = _loader(tmp_path, registry, first_orchestrator)
+    first.load_active(seed_world=True)
+
+    content = registry.load_content("sample")
+    content["ui_manifest"]["title"] = "Archive Command v2"
+    registry.save_content("sample", content)
+    asyncio.run(first.reload_active())
+
+    records = first._generation_archive.load_all().records
+    assert records[0].blueprint["ui_manifest"]["title"] == "Archive Command v1"
+    assert records[1].blueprint["ui_manifest"]["title"] == "Archive Command v2"
+
+    restarted_orchestrator = FakeOrchestrator()
+    restarted = _loader(tmp_path, registry, restarted_orchestrator)
+    restarted.load_active(seed_world=False)
+    asyncio.run(restarted.rollback_active(1))
+    restored, generation = restarted_orchestrator.ui_manifest_configurations[-1]
+    assert restored.to_dict()["title"] == "Archive Command v1"
+    assert generation == 4
+
+    legacy_blueprint = dict(records[0].blueprint)
+    legacy_blueprint.pop("ui_manifest")
+    legacy_snapshot = restarted._snapshot_from_archive_blueprint(legacy_blueprint)
+    legacy_public = legacy_snapshot.ui_manifest.to_dict()
+    assert legacy_public["configured"] is False
+    assert legacy_public["package_id"] == "sample"
+    assert legacy_public["title"] == "sample"

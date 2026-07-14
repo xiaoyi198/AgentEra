@@ -83,6 +83,7 @@ const EMPTY = {
   causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], world_effects: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
   actions: { action_id: '', display_name: '', description: '', parameters: [], target: { kind: 'none' }, permissions: {}, preconditions: [], costs: [], duration: {}, cooldown: {}, result: { mode: 'world_commands', effects: [] }, enabled: true },
+  issue_types: { issue_type_id: '', display_name: '', description: '', category: 'report', default_urgency: 'normal', default_deadline_days: 3, source: { allowed_kinds: ['agent', 'system', 'event', 'player'] }, match: { payload_types: [], source_ids: [], default_for_player_reports: false }, evidence: [], decision_requests: [], metadata: {}, enabled: true },
 }
 
 const TITLES = {
@@ -97,6 +98,7 @@ const TITLES = {
   causal_event_rules: T.causalEvents,
   time_rules: T.timeRules,
   actions: '行动',
+  issue_types: 'Issue 类型',
 }
 
 function deepClone(value) {
@@ -148,6 +150,10 @@ function normalizedListForm(kind, value) {
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
+  if (kind === 'issue_types') {
+    for (const field of ['source', 'match', 'metadata']) source[`_${field}_text`] = jsonText(source[field])
+    for (const field of ['evidence', 'decision_requests']) source[`_${field}_text`] = JSON.stringify(Array.isArray(source[field]) ? source[field] : [], null, 2)
+  }
   if (kind === 'actions') {
     for (const field of ['parameters', 'preconditions', 'costs']) source[`_${field}_text`] = JSON.stringify(Array.isArray(source[field]) ? source[field] : [], null, 2)
     for (const field of ['target', 'permissions', 'duration', 'cooldown', 'result']) source[`_${field}_text`] = jsonText(source[field])
@@ -262,6 +268,16 @@ function serializeListForm(kind, form) {
       for (const field of ['target_agents', 'delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled']) delete data[field]
     }
   }
+  if (kind === 'issue_types') {
+    data.issue_type_id = String(data.issue_type_id || '').trim()
+    data.display_name = String(data.display_name || '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(data.issue_type_id)) throw new Error('Issue type ID must be a safe identifier.')
+    if (!data.display_name) throw new Error('Issue display name is required.')
+    for (const field of ['source', 'match', 'metadata']) { data[field] = parseObject(data[`_${field}_text`], field); delete data[`_${field}_text`] }
+    for (const field of ['evidence', 'decision_requests']) { data[field] = parseArray(data[`_${field}_text`], field); delete data[`_${field}_text`] }
+    data.default_deadline_days = data.default_deadline_days === '' ? null : Number(data.default_deadline_days)
+    data.enabled = Boolean(data.enabled)
+  }
   if (kind === 'actions') {
     data.action_id = String(data.action_id || '').trim()
     data.display_name = String(data.display_name || '').trim()
@@ -316,6 +332,7 @@ function listLabel(kind, item) {
   if (kind === 'causal_event_rules') return [item.rule_id || T.ruleId, `${(item.source_event_types || []).join(', ')} \u2192 ${item.child_event_type || ''}`]
   if (kind === 'time_rules') return [item.rule_id || T.ruleId, `${(item.action_types || []).join(', ')} \u00b7 p${item.priority || 0}`]
   if (kind === 'actions') return [item.display_name || item.action_id || '行动', item.action_id || '']
+  if (kind === 'issue_types') return [item.display_name || item.issue_type_id || 'Issue 类型', `${item.issue_type_id || ''} · ${item.default_urgency || 'normal'}`]
   return [item.event_id || T.eventId, `${item.entity_id || ''} \u00b7 ${item.event_type || ''}`]
 }
 
@@ -331,6 +348,7 @@ function requiredKey(kind, form) {
   if (kind === 'causal_event_rules') return form.rule_id && form.child_event_type && String(form._source_types_text || '').trim()
   if (kind === 'time_rules') return form.rule_id && String(form._action_types_text || '').trim()
   if (kind === 'actions') return form.action_id && form.display_name
+  if (kind === 'issue_types') return form.issue_type_id && form.display_name
   return false
 }
 
@@ -764,6 +782,16 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
           onExportReplay={exportCausalReplay}
           onImportReplay={importCausalReplay}
         />
+      </>}
+
+      {kind === 'issue_types' && <>
+        <div className="dlc-row"><label>Issue Type ID<input value={form.issue_type_id || ''} onChange={event => set('issue_type_id', event.target.value)} placeholder="frontier_security_report" /></label><label>显示名称<input value={form.display_name || ''} onChange={event => set('display_name', event.target.value)} /></label></div>
+        <label>描述<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
+        <div className="dlc-row"><label>分类<input value={form.category || ''} onChange={event => set('category', event.target.value)} /></label><label>默认紧迫度<select value={form.default_urgency || 'normal'} onChange={event => set('default_urgency', event.target.value)}><option value="low">low</option><option value="normal">normal</option><option value="high">high</option><option value="critical">critical</option></select></label></div>
+        <label>默认期限（天）<input type="number" min="0" step="any" value={form.default_deadline_days ?? ''} onChange={event => set('default_deadline_days', event.target.value)} /></label>
+        <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
+        {[['source', 'Source 约束（JSON object）'], ['match', '匹配规则（JSON object）'], ['evidence', '证据定义（JSON array）'], ['decision_requests', '决策请求（JSON array）'], ['metadata', 'Metadata（JSON object）']].map(([field, label]) => <label key={field}>{label}<textarea className="dlc-json-field" rows={field === 'decision_requests' ? 16 : 7} spellCheck="false" value={form[`_${field}_text`] || ''} onChange={event => set(`_${field}_text`, event.target.value)} /></label>)}
+        <div className="dlc-editor-callout">一个 Case 可聚合多个 Issue；决策选项可引用行动 ID，并继承行动权限、成本、耗时与世界效果。</div>
       </>}
 
       {kind === 'actions' && <>

@@ -1,4 +1,4 @@
-﻿# 世界模拟器 — 大明王朝·朝堂风云 开发文档
+# 世界模拟器 — 大明王朝·朝堂风云 开发文档
 
 ## 一、项目概述
 
@@ -1908,3 +1908,106 @@ Release identity is `0.20.0` across `VERSION`, the backend version module, front
 
 - Runtime and manual saves include `action_runtime`; manual save/load also preserves random and causal runtime snapshots.
 - Focused verification covers schema/default/range validation, permissions, targets, preconditions, anchored conversion, atomic rollback, authoritative duration, cooldown, generation conflict, concurrent idempotency, side effects, snapshot/restore, API mapping, Registry references, and Generation archive rollback.
+
+## Release architecture note: generic Issue lifecycle and detailed settings center (v0.22.0)
+
+Status: **implemented and locally verified**.
+
+### Generic Issue / Case / DecisionRequest runtime
+
+- `multiagent_framework.issue_contract.IssueManager` owns the theme-neutral lifecycle for Issue, Case, DecisionRequest, evidence, deadlines, expiration, closure, decision receipts, external idempotency receipts, ordering, snapshot, restore, and legacy memorial migration.
+- DLC packages author `issue_types`. Registry validation checks stable IDs, source restrictions, required evidence, urgency/deadline defaults, Action references, static/dynamic options, and package-local reference integrity before publication.
+- Decision options freeze the authored semantics used to create a request. Preview and resolve bridge to `ActionContract`; `invocation_id` makes retries deterministic, while reused IDs with a different request are rejected.
+- `DLCGeneration` carries the issue-type catalog beside gameplay and action contracts. Hot reload, archive restore, rollback, and in-flight work therefore retain generation-scoped semantics instead of reading mutable draft content.
+- `Orchestrator` exposes IssueManager operations, refreshes deadlines against authoritative simulation time, includes issue runtime in snapshots, and restores both native v1 snapshots and legacy memorial records.
+- `routers/simulation.py` publishes issue-type, issue, evidence, case, and decision-request APIs. `/api/memorials` remains a compatibility projection over non-final Issues, not the authoritative new model.
+- The React main view renders generic pending work and dynamic decision options. DLC Studio includes an Issue Type editor and persists `issue_types` through the same validation, history, import/export, and publication path as other authored entities.
+
+### Runtime settings ownership and schema
+
+- `multiagent_framework.runtime_settings.RuntimeSettings` is the typed owner for simulation timing, normal Agent budgets, ActionAgent budgets, short/structured memory limits, and compression temperature. `config/runtime.json` is authoritative; when it is absent, legacy `config/time.json` values are still imported.
+- `settings_schema()` provides Chinese labels, descriptions, kinds, ranges, units, warnings, and grouping metadata. The frontend consumes this metadata rather than maintaining a second independent validation contract.
+- Model configuration remains owned by `config/models.json`. Settings mutations preserve unknown top-level and nested model fields through `merge_known_model_config`, so newer or plugin-defined fields are not erased by the visual editor.
+- `GET /api/settings/schema` and `GET /api/settings` return schema and a secret-free document. `POST /api/settings/validate` normalizes without side effects. `POST /api/settings` requires `expected_generation`, validates again, persists, activates, and returns the new generation document.
+
+### Atomic persistence, activation, and rollback
+
+- Save snapshots the previous bytes of `models.json`, `runtime.json`, and legacy `time.json`; JSON writes use same-directory temporary files plus atomic replace.
+- Activation updates Gateway configuration, normal Agent defaults, ActionAgent budgets, memory compression settings, `seconds_per_day`, and `tick_interval` only after all validation and security checks pass.
+- If any persistence or activation step fails, all three files are restored and the previous Gateway/Orchestrator runtime values remain active. Generation advances only after a successful transaction.
+- `expected_generation` provides optimistic concurrency control. A stale browser cannot silently overwrite a newer settings publication.
+
+### Credential boundary and operational state
+
+- Provider API keys are represented only by an environment-variable name or a process-memory Session Key. API responses expose only `api_key_configured`; raw key values are never returned, written to config, logged in the settings document, or stored in browser persistence.
+- Changing the host of a Provider that already has a configured key is rejected unless the request explicitly sets `allow_secret_host_change` after the operator reviews the validation warning.
+- Admin API enablement, admin token presence, generation archive encryption, and alert/calibration environment state are read-only process-start concerns. The settings UI reports configured/not-configured status without exposing values and explains when restart is required.
+
+### Frontend settings center
+
+- `frontend/src/SettingsCenter.jsx` replaces the legacy settings modal. Its nine Chinese sections cover overview, Providers, model Profiles, three-level task routing, Agent rounds, memory, simulation, operations/security, and advanced JSON.
+- Provider/Profile rename operations update dependent references; ordered route candidates retain fallback priority. Destructive operations and dirty close are confirmed.
+- Saving is deliberately two-stage: server-side validation produces normalized content, warnings, and a diff preview; the user then confirms the generation-bound save. Successful saves clear all Session Key inputs.
+- `SettingsSchemaTools.js` strips server-only metadata from editable JSON and fingerprints non-secret state. Secret fingerprints record presence only and include the host-change confirmation bit, never the secret itself.
+
+### Compatibility and release identity
+
+- Existing `models.json`, legacy `time.json`, memorial snapshots, and unknown model fields remain compatible.
+- Release identity is synchronized across `VERSION`, `multiagent_framework.version.__version__`, `frontend/package.json`, and `frontend/package-lock.json` at `0.22.0`.
+
+
+## Release architecture note: authoritative DLC objectives and endings (v0.23.0)
+
+Status: **implemented and locally verified**.
+
+### Authority and contract model
+
+- `multiagent_framework/objective_contract.py` defines normalized objective, milestone, ending and validation contracts plus `ObjectiveManager`. A client or LLM may inspect returned progress but cannot submit completion, failure or ending state.
+- The condition interpreter reads only framework-authoritative facts: `anchored_inventory`, `metric`, `parameter`, `entity_status`, `sim_day`, `issue_count`, `case_count`, `decision_count`, and successful `action_count` receipts. Conditions compose through bounded `all`, `any`, and `not` trees.
+- Objectives are classified as `primary`, `optional`, or `failure`; milestones use `ordered` or `independent` progression. Completion receipts are durable and emitted once. Disabled definitions remain inspectable but cannot become newly eligible.
+- Endings reference objective receipts, support `all`/`any` and `victory`/`defeat`/`neutral`. Same-Tick conflicts resolve by descending priority and then stable `ending_id`; the first selected ending is permanently locked. An empty objective/ending catalog is explicit sandbox mode and never auto-completes.
+
+### DLC ownership and Generation lifecycle
+
+- `DLCRegistry` normalizes `content.json.objectives` and `content.json.endings`, validates entity/resource/action/issue/objective references, resource kinds, duplicate IDs and precise nested paths before publication.
+- `DLCBundleLoader` gives Campaign ownership to the active primary package. Dependency DLCs continue contributing entities, resources, Actions and Issues without competing for final endings. Objective/ending definitions and generation metadata are archived with the same publication blueprint used for load, reload and rollback.
+- Reconfiguration preserves committed receipts even when definitions are disabled or removed, while the current catalog controls future evaluation. Runtime persistence and manual saves include `objective_runtime`; restoration re-evaluates against authoritative simulation time without replaying old transitions.
+
+### Tick integration, transition delivery and public API
+
+- `Orchestrator` evaluates objectives after authoritative world/Issue/Action changes. Its pending transition buffer carries API-originated changes between simulation ticks so WebSocket clients receive each transition once instead of losing it between broadcasts.
+- `GET /api/objectives` returns sandbox/Campaign state, objective and milestone status, nested condition diagnostics, actual/expected/operator/progress data, transition-safe receipts and the locked ending summary. `GET /api/endings` returns ending eligibility, reached state, outcome, priority and lock state.
+- The React shell loads a theme-neutral, collapsible `ObjectivePanel`, refreshes after load/decision/objective transitions and rate-limits ordinary Tick polling. DLC Studio adds structured objective/ending editors, reference selectors, nested condition authoring, advanced JSON, keyed Diff and history support.
+- `dlcs/example_frontier` provides the compatibility example: anchored patrol funding, two successful `frontier_patrol` receipts, a warning metric threshold, a day-15 failure condition, and deterministic victory/defeat endings.
+
+
+Release verification for v0.23.0 completed with **535 Python tests passed and 2 environment-gated external-provider tests skipped**, **27 frontend tests passed**, Python compile, frontend ESLint/build, zero-error/zero-warning `example_frontier` Registry validation, credential-pattern scanning, and Git diff checks.
+
+
+## Release architecture note: DLC-authored UI Manifest (v0.24.0)
+
+Status: **implemented and locally verified**.
+
+### Safe manifest contract
+
+- `multiagent_framework/ui_manifest.py` owns the theme-neutral default, normalization, immutable `UIManifest` value, and validation contract. It deliberately accepts only framework-defined capabilities rather than executable frontend extensions.
+- Main views are limited to `dashboard`, `world`, `relations`, and `debug`; shell pages are limited to `gameplay`, `editor`, `dlc_studio`, and `assistant`. Dashboard layouts, regions, widgets, Issue fields, entity fields, and entity sections each have explicit allowlists.
+- DLC content cannot provide URLs, hrefs, React component names, HTML, CSS, JavaScript, or unsafe text. Unknown capabilities, duplicate IDs, invalid regions/fields, and the absence of any visible main or shell navigation fail validation. Missing manifests normalize to a theme-neutral safe default.
+
+### Ownership and Generation lifecycle
+
+- `content.json.ui_manifest` is a single-owner content section: only the primary DLC supplies it. Dependencies can contribute their normal additive content but cannot replace the campaign shell or terminology.
+- `DLCBundleLoader` publishes the normalized manifest in `DLCGeneration`; load, hot reload, archive, rollback, and restart recovery therefore switch UI and gameplay contracts together. Archives created before v0.24.0 safely reconstruct the default manifest.
+- `Orchestrator.get_ui_manifest()` returns the current generation envelope. `GET /api/ui-manifest` exposes generation, package identity, configured/source metadata, and the normalized manifest without permitting client-authored executable behavior.
+
+### Capability-driven React renderer
+
+- `frontend/src/UIManifestTools.js` provides a second defensive normalization layer and safe defaults for a failed or malformed API response. Route destinations remain fixed in application code.
+- `App.jsx` and `AppNav.jsx` consume current-generation branding, terminology, main navigation, and shell navigation. Generation changes and manual save loads trigger a fresh manifest request.
+- `WorldStateView.jsx` maps allowlisted widget kinds into framework-owned components, supports three-column/two-column/single-column layouts, and applies authored Issue/entity field visibility without dynamic component imports.
+
+### DLC Studio authoring
+
+- `frontend/src/UIManifestEditor.jsx` provides Chinese descriptions for brand/title, 30 terminology entries, both navigation surfaces, dashboard layout/widgets, Issue list/detail fields, and entity detail sections.
+- The editor includes immediate allowlist/duplicate/visibility checks, advanced JSON parsing feedback, and security guidance. `DLCStudioTools` preserves `ui_manifest` through normalization, import/export, keyed Content Diff, undo, and redo before Registry publication.
+- `example_frontier` v1.3.0 demonstrates a complete frontier-themed manifest while hiding resolved Issues and the entity `parameters` section, proving that content controls presentation without changing framework code.
