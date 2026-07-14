@@ -2462,3 +2462,81 @@ git -c safe.directory='F:/世界模拟器' diff --check
 ```
 
 Settings-focused work must additionally cover secret non-disclosure, Provider host-change confirmation, unknown-field preservation, generation conflicts, successful hot activation, and full three-file rollback when activation fails. Issue-focused work must cover Registry validation, dynamic options, Action preview/resolve, idempotency conflicts, deadlines, snapshot/manual-save restore, and Generation reload/archive behavior.
+
+
+## DLC objective and ending authoring workflow (v0.23.0)
+
+### Authoring rules
+
+Add top-level `objectives` and `endings` arrays to the **primary** DLC's `content.json`. Keep IDs stable and ASCII-safe. Dependency DLC objective catalogs are validated but do not own the active Campaign. Omitting both arrays is valid sandbox mode and must not be replaced with a fake always-complete objective.
+
+A minimal Campaign shape is:
+
+```json
+{
+  "objectives": [
+    {
+      "objective_id": "secure_frontier",
+      "display_name": "稳固边境防线",
+      "description": "在期限前达到安全警戒线。",
+      "category": "primary",
+      "required": true,
+      "milestone_mode": "ordered",
+      "milestones": [
+        {
+          "milestone_id": "fund_patrols",
+          "display_name": "准备巡逻经费",
+          "description": "锚定价值至少为 50。",
+          "condition": {
+            "kind": "anchored_inventory",
+            "entity_id": "边境哨站",
+            "name": "边境银券",
+            "operator": "gte",
+            "value": 50
+          }
+        }
+      ],
+      "completion": {
+        "kind": "metric",
+        "entity_id": "边境哨站",
+        "name": "警戒度",
+        "operator": "gte",
+        "value": 85
+      },
+      "enabled": true,
+      "order": 0
+    }
+  ],
+  "endings": [
+    {
+      "ending_id": "frontier_safe",
+      "display_name": "边境安定",
+      "description": "防线已稳定。",
+      "outcome": "victory",
+      "trigger": {"objective_ids": ["secure_frontier"], "operator": "all"},
+      "priority": 50,
+      "enabled": true
+    }
+  ]
+}
+```
+
+Objective categories are `primary`, `optional`, and `failure`. Milestone modes are `ordered` and `independent`. Ending outcomes are `victory`, `defeat`, and `neutral`; ending trigger operators are `all` and `any`. Higher ending priority wins a same-Tick conflict, then lexical `ending_id` is the deterministic tie-breaker.
+
+### Condition DSL
+
+- Compose conditions with `{"op":"all|any|not","conditions":[...]}`; `not` requires exactly one child.
+- Numeric operators are `lt`, `lte`, `eq`, `ne`, `gte`, `gt`. `entity_status` supports `eq` and `ne`.
+- `anchored_inventory`, `metric`, and `parameter` require `entity_id` and resource/value `name`. Anchored inventory compares authoritative base value, not raw quantity.
+- `sim_day` reads simulation time. `issue_count`, `case_count`, and `decision_count` may filter by `issue_type_id` and `status`. `action_count` requires `action_id` and may filter by actor, control object, and target.
+- Do not add a client mutation endpoint for progress. New fact kinds must read durable framework state, provide exact validation paths, participate in snapshot/restore tests, and remain deterministic under reload and rollback.
+
+### Studio and release workflow
+
+1. Open DLC Studio and use the “目标” or “结局” tab. Prefer reference selectors and the visual condition tree; use condition-level or whole-document advanced JSON only for structures not yet exposed visually.
+2. Validate the draft before publish. Fix the exact returned path for unknown entities/resources/Actions/Issue types/objective IDs and resource-kind mismatches.
+3. Check Raw JSON, keyed Diff and history behavior. Publishing must include objectives/endings in the same atomic Content write and Generation archive as the rest of the DLC.
+4. Exercise sandbox, ordered and independent milestones, failure conditions, disabled definitions, simultaneous endings, hot reload, rollback, runtime snapshot, manual save and restart recovery.
+5. Verify `GET /api/objectives`, `GET /api/endings`, the main Objective panel, and WebSocket `objective_transitions` without hard-coded theme terminology.
+
+The optional external Provider smoke test is `tests/integration/test_external_api_connection.py`. Supply `AGENTERA_TEST_BASE_URL` and `AGENTERA_TEST_API_KEY` only through a temporary process environment; `AGENTERA_TEST_MODEL`, `AGENTERA_TEST_TIMEOUT_S`, and `AGENTERA_TEST_MODEL_ATTEMPTS` are optional. The test must skip when URL/key are absent and must never print or persist credentials or raw provider responses.

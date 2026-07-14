@@ -227,6 +227,31 @@ async def get_issue_types():
     return state.orchestrator.issues_public_state()
 
 
+@router.get("/objectives")
+async def get_objectives():
+    if not state.orchestrator:
+        return {
+            "configured": False, "sandbox": True, "generation": 0,
+            "status": "sandbox", "objectives": [], "endings": [],
+            "current_ending": None, "recent_transitions": [],
+        }
+    return state.orchestrator.objectives_public_state()
+
+
+@router.get("/endings")
+async def get_endings():
+    if not state.orchestrator:
+        return {"generation": 0, "status": "sandbox", "sandbox": True, "endings": [], "current_ending": None}
+    objective_state = state.orchestrator.objectives_public_state()
+    return {
+        "generation": objective_state["generation"],
+        "status": objective_state["status"],
+        "sandbox": objective_state["sandbox"],
+        "endings": objective_state["endings"],
+        "current_ending": objective_state["current_ending"],
+    }
+
+
 @router.get("/issues")
 async def get_issues(status: str = ""):
     if not state.orchestrator:

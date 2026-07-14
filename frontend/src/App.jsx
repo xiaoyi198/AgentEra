@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import GodView from './GodView'
 import WorldStateView from './WorldStateView'
 import RelationsView from './RelationsView'
 import SettingsCenter from './SettingsCenter'
+import ObjectivePanel from './ObjectivePanel'
 import './App.css'
 
 const WS_URL = `ws://${window.location.host}/ws`
@@ -181,6 +182,22 @@ function App() {
   const [secondsPerDay, setSecondsPerDay] = useState(600)
   const [showSaveManager, setShowSaveManager] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [objectiveState, setObjectiveState] = useState({
+    configured: false, sandbox: true, generation: 0, status: 'sandbox',
+    objectives: [], endings: [], current_ending: null, recent_transitions: [],
+  })
+  const objectiveRefreshAt = useRef(0)
+
+  const refreshObjectives = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/objectives`)
+      const data = await response.json()
+      if (data && typeof data === 'object') {
+        setObjectiveState(data)
+        objectiveRefreshAt.current = Date.now()
+      }
+    } catch { /* ??????????????? */ }
+  }, [])
 
   // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
   useEffect(() => {
@@ -190,6 +207,7 @@ function App() {
     setSimTime(data.sim_time)
     setInTransit(data.in_transit || [])
     setTokenUsage(data.token_usage || {})
+    if (data.objective_transitions?.length > 0 || Date.now() - objectiveRefreshAt.current > 5000) refreshObjectives()
     if (data.new_issues?.length > 0) {
       setIssues(prev => {
         const existingIds = new Set(prev.map(item => item.issue_id))
@@ -204,7 +222,7 @@ function App() {
         return fresh.length > 0 ? [...fresh, ...prev] : prev
       })
     }
-  }, [lastMessage])
+  }, [lastMessage, refreshObjectives])
 
   // Issue / Case / DecisionRequest 是题材无关的玩家事项权威状态。
   useEffect(() => {
@@ -280,6 +298,7 @@ function App() {
     setDecisionRequests([])
     setSelectedIssue(null)
     window.setTimeout(() => {
+      refreshObjectives()
       Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
         .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
         .catch(() => {})
@@ -305,6 +324,7 @@ function App() {
     setIssues(prev => prev.map(item => item.issue_id === response.issue?.issue_id ? response.issue : item))
     setDecisionRequests(prev => prev.map(item => item.decision_request_id === response.decision_request?.decision_request_id ? response.decision_request : item))
     setSelectedIssue(response.issue || selectedIssue)
+    refreshObjectives()
   }
 
   const handleDecree = async () => {
@@ -412,6 +432,8 @@ function App() {
           </div>
         )}
       </header>
+
+      <ObjectivePanel state={objectiveState} onRefresh={refreshObjectives} />
 
       {currentView === 'god' ? (
         <GodView />

@@ -22,6 +22,7 @@ from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .gameplay_contract import GameplayContract
 from .issue_contract import IssueContractError, IssueManager
+from .objective_contract import ObjectiveManager
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -92,6 +93,10 @@ class Orchestrator:
         self._gameplay_contract = GameplayContract()
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
+        self.objective_manager = ObjectiveManager()
+        # Objective transitions can be produced by API/action calls between ticks.
+        # Buffer them so the next TickResult/WebSocket frame cannot lose them.
+        self._pending_objective_transitions: deque[dict[str, Any]] = deque(maxlen=2000)
         self._gameplay_generation: int = 0
         self._gameplay_contract_published: bool = False
         self._memory_compressor = memory_compressor
@@ -233,6 +238,32 @@ class Orchestrator:
     def issues_public_state(self) -> dict[str, Any]:
         return self.issue_manager.public_state(sim_time=self._sim_time)
 
+    def configure_objective_catalog(
+        self, objectives: list[dict[str, Any]], endings: list[dict[str, Any]], *,
+        generation: int = 0, gameplay: GameplayContract | None = None,
+    ) -> None:
+        """Publish the primary DLC campaign contract without clearing receipts."""
+        self.objective_manager.configure(
+            objectives, endings, generation=generation,
+            gameplay=gameplay or self._gameplay_contract,
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def _evaluate_objectives(self) -> dict[str, Any]:
+        result = self.objective_manager.evaluate(
+            world_state=self.world_state, sim_time=self._sim_time,
+            issue_manager=self.issue_manager, action_catalog=self.action_catalog,
+        )
+        if result["changed"]:
+            self._pending_objective_transitions.extend(result["transitions"])
+            if self.persistor:
+                self.persistor.mark_state_dirty()
+        return result
+
+    def objectives_public_state(self) -> dict[str, Any]:
+        return self._evaluate_objectives()["state"]
+
     def _sync_legacy_memorials(self) -> None:
         self.memorials = self.issue_manager.legacy_memorials(sim_time=self._sim_time)
 
@@ -250,6 +281,7 @@ class Orchestrator:
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
+        self._evaluate_objectives()
         return result
 
     def append_issue_evidence(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -257,6 +289,7 @@ class Orchestrator:
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
+        self._evaluate_objectives()
         return result
 
     def preview_decision(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -274,6 +307,7 @@ class Orchestrator:
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
+        self._evaluate_objectives()
         return result
 
     def close_case(self, case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +315,7 @@ class Orchestrator:
         self._sync_legacy_memorials()
         if self.persistor:
             self.persistor.mark_state_dirty()
+        self._evaluate_objectives()
         return result
 
     def _action_agent_ids(self) -> set[str]:
@@ -322,6 +357,7 @@ class Orchestrator:
         })
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
+        self._evaluate_objectives()
         return result
 
     def _is_player_recipient(self, target_id: str, official: Any = None) -> bool:
@@ -659,6 +695,8 @@ class Orchestrator:
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
             "action_runtime": self.action_catalog.snapshot(),
+            "issue_runtime": self.issue_manager.snapshot(),
+            "objective_runtime": self.objective_manager.snapshot(),
             "agent_memories": agent_memories,
         }
 
@@ -676,6 +714,14 @@ class Orchestrator:
         )
         self.action_catalog.restore(
             state.get("action_runtime", {}), sim_time=self._sim_time
+        )
+        self.issue_manager.restore(
+            state.get("issue_runtime", {}), sim_time=self._sim_time,
+            legacy_memorials=state.get("memorials", []),
+        )
+        self._sync_legacy_memorials()
+        self.objective_manager.restore(
+            state.get("objective_runtime", {}), sim_time=self._sim_time
         )
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})
@@ -1049,6 +1095,11 @@ class Orchestrator:
             })
 
         # 5. Token 统计 + 后台任务数
+        self._evaluate_objectives()
+        if self._pending_objective_transitions:
+            result.objective_transitions.extend(self._pending_objective_transitions)
+            self._pending_objective_transitions.clear()
+
         result.token_usage = self.router.llm.token_counter.to_dict()
         result.token_usage["pending_tasks"] = len(self._agent_tasks)
 

@@ -10,6 +10,7 @@ from multiagent_framework.agent_runtime import AgentConfig, OfficialAgent
 from multiagent_framework.runtime_persistor import RuntimePersistor
 from multiagent_framework.gameplay_contract import GameplayContract
 from multiagent_framework.issue_contract import IssueManager
+from multiagent_framework.objective_contract import ObjectiveManager
 
 
 class UnusedLLM:
@@ -195,3 +196,66 @@ def test_runtime_persistor_round_trips_issue_runtime_and_legacy_projection(tmp_p
     assert restored_manager.list_issues(sim_time=12)[0]["issue_id"] == issue_id
     assert restored_manager.public_state(sim_time=12)["generation"] == 2
     assert restored_orch.memorials[0]["content"] == "Persist this generic report"
+
+
+def test_runtime_persistor_round_trips_objective_receipts_and_ending(tmp_path, monkeypatch):
+    state_file = tmp_path / "runtime" / "state.json"
+    agents_dir = tmp_path / "runtime" / "agents"
+    agents_dir.mkdir(parents=True)
+    monkeypatch.setattr(runtime_persistor, "STATE_FILE", state_file)
+    monkeypatch.setattr(runtime_persistor, "AGENTS_DIR", agents_dir)
+
+    definitions = [{
+        "objective_id": "persist_goal",
+        "display_name": "Persist goal",
+        "completion": {"kind": "sim_day", "operator": "gte", "value": 1},
+    }]
+    endings = [{
+        "ending_id": "persist_ending",
+        "display_name": "Persist ending",
+        "outcome": "victory",
+        "trigger": {"objective_ids": ["persist_goal"]},
+    }]
+    source_manager = ObjectiveManager()
+    source_manager.configure(definitions, endings, generation=3)
+    source_manager.evaluate(world_state=None, sim_time=86400)
+    source_orch = SimpleNamespace(
+        _sim_time=86400.0,
+        _seconds_per_day=600.0,
+        memorials=[],
+        agents={},
+        objective_manager=source_manager,
+        causal_event_engine=FakeCausalEngine(),
+    )
+    persistor = RuntimePersistor(source_orch)
+    persistor.mark_state_dirty()
+    asyncio.run(persistor.flush())
+
+    stored = json.loads(state_file.read_text(encoding="utf-8"))
+    assert stored["objective_runtime"]["objective_receipts"]["persist_goal"]["generation"] == 3
+    assert stored["objective_runtime"]["ending_receipt"]["ending_id"] == "persist_ending"
+
+    restored_manager = ObjectiveManager()
+    restored_manager.configure(definitions, endings, generation=4)
+    restored_orch = SimpleNamespace(
+        _sim_time=0.0,
+        _seconds_per_day=600.0,
+        memorials=[],
+        agents={},
+        objective_manager=restored_manager,
+        router=FakeRouter(),
+        timers=FakeLoader(),
+        chain_log=FakeLoader(),
+        causal_event_engine=FakeCausalEngine(),
+    )
+    monkeypatch.setattr(main, "STATE_FILE", state_file)
+    monkeypatch.setattr(main, "AGENTS_DIR", agents_dir)
+
+    main._load_runtime_state(restored_orch)
+
+    restored_state = restored_manager.public_state(
+        world_state=None, sim_time=restored_orch._sim_time
+    )
+    assert restored_state["current_ending"]["ending_id"] == "persist_ending"
+    assert restored_state["current_ending"]["reached_at"] == 86400
+    assert restored_state["objectives"][0]["status"] == "completed"

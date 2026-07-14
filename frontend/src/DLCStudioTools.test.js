@@ -40,6 +40,8 @@ const base = {
   time_rules: [],
   actions: [],
   issue_types: [],
+  objectives: [],
+  endings: [],
   personas: {},
   prompts: {},
 }
@@ -463,4 +465,46 @@ test('import normalization and diff support issue type contracts', () => {
       { section: 'issue_types', key: 'trade', type: 'removed' },
     ],
   )
+})
+
+
+test('objective and ending sections normalize, export and diff by stable IDs', () => {
+  const source = { ...base }
+  delete source.objectives
+  delete source.endings
+  const normalized = normalizeImportedContent(source)
+  assert.deepEqual(normalized.objectives, [])
+  assert.deepEqual(normalized.endings, [])
+  assert.throws(() => normalizeImportedContent({ ...base, objectives: {} }), /objectives must be an array/)
+  assert.throws(() => normalizeImportedContent({ ...base, endings: {} }), /endings must be an array/)
+
+  const objective = {
+    objective_id: 'secure_frontier',
+    display_name: 'Secure frontier',
+    category: 'primary',
+    milestones: [],
+    completion: { kind: 'sim_day', operator: 'gte', value: 3 },
+  }
+  const ending = {
+    ending_id: 'frontier_safe',
+    display_name: 'Frontier safe',
+    outcome: 'victory',
+    trigger: { objective_ids: ['secure_frontier'], operator: 'all' },
+  }
+  const exported = createContentExport({ id: 'demo' }, { ...base, objectives: [objective], endings: [ending] })
+  assert.deepEqual(normalizeImportedContent(exported).objectives, [objective])
+  assert.deepEqual(normalizeImportedContent(exported).endings, [ending])
+
+  const changed = {
+    ...base,
+    objectives: [{ ...objective, display_name: 'Frontier secured' }],
+    endings: [{ ...ending, priority: 10 }],
+  }
+  const diff = summarizeContentDiff({ ...base, objectives: [objective], endings: [ending] }, changed)
+  assert.deepEqual(diff.entries.filter(item => item.section === 'objectives'), [
+    { section: 'objectives', key: 'secure_frontier', type: 'changed' },
+  ])
+  assert.deepEqual(diff.entries.filter(item => item.section === 'endings'), [
+    { section: 'endings', key: 'frontier_safe', type: 'changed' },
+  ])
 })

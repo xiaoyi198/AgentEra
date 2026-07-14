@@ -31,6 +31,7 @@ class FakeOrchestrator:
         self.gameplay_configurations = []
         self.action_configurations = []
         self.issue_configurations = []
+        self.objective_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -59,6 +60,12 @@ class FakeOrchestrator:
     def configure_issue_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("issues", [item["issue_type_id"] for item in definitions]))
         self.issue_configurations.append((definitions, generation, gameplay))
+
+    def configure_objective_catalog(
+        self, objectives, endings, *, generation=0, gameplay=None
+    ) -> None:
+        self.operations.append(("objectives", [item["objective_id"] for item in objectives]))
+        self.objective_configurations.append((objectives, endings, generation, gameplay))
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -908,3 +915,118 @@ def test_cross_dlc_duplicate_issue_type_rejects_reload_without_partial_activatio
 
     assert loader.generation == old_generation
     assert orchestrator.issue_configurations[-1][0] == old_definitions
+
+
+def test_runtime_publishes_objectives_and_preserves_definitions_across_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["objectives"] = [{
+        "objective_id": "secure_city",
+        "display_name": "Secure city v1",
+        "milestones": [{
+            "milestone_id": "funded",
+            "display_name": "Funded",
+            "condition": {
+                "kind": "anchored_inventory",
+                "entity_id": "city",
+                "name": "credits",
+                "operator": "gte",
+                "value": 10,
+            },
+        }],
+        "completion": {
+            "kind": "metric",
+            "entity_id": "city",
+            "name": "morale",
+            "operator": "gte",
+            "value": 80,
+        },
+    }]
+    content["endings"] = [{
+        "ending_id": "city_safe",
+        "display_name": "City safe v1",
+        "outcome": "victory",
+        "trigger": {"objective_ids": ["secure_city"]},
+    }]
+    registry.save_content("sample", content)
+
+    world = WorldState(str(tmp_path / "objectives-world.db"))
+    court = CourtGraph(str(tmp_path / "objectives-world.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active(seed_world=True)[0]
+    objectives, endings, generation, _gameplay = orchestrator.objective_configurations[-1]
+    assert report.objectives == 1 and report.endings == 1
+    assert objectives[0]["display_name"] == "Secure city v1"
+    assert endings[0]["display_name"] == "City safe v1"
+    assert generation == 1
+    runtime = loader.public_runtime()["objectives"]
+    assert runtime["objectives"][0]["objective_id"] == "secure_city"
+    assert runtime["endings"][0]["ending_id"] == "city_safe"
+
+    content = registry.load_content("sample")
+    content["objectives"][0]["display_name"] = "Secure city v2"
+    content["endings"][0]["display_name"] = "City safe v2"
+    registry.save_content("sample", content)
+    asyncio.run(loader.reload_active())
+    objectives, endings, generation, _gameplay = orchestrator.objective_configurations[-1]
+    assert objectives[0]["display_name"] == "Secure city v2"
+    assert endings[0]["display_name"] == "City safe v2"
+    assert generation == 2
+
+    asyncio.run(loader.rollback_active(1))
+    objectives, endings, generation, _gameplay = orchestrator.objective_configurations[-1]
+    assert objectives[0]["display_name"] == "Secure city v1"
+    assert endings[0]["display_name"] == "City safe v1"
+    assert generation == 3
+    assert loader.public_runtime()["objectives"]["objectives"][0]["display_name"] == "Secure city v1"
+
+
+def test_only_explicit_primary_dlc_owns_campaign_objectives(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    registry.save_manifest("sample", {
+        "primary": True,
+        "dependencies": ["support"],
+    })
+    sample_content = registry.load_content("sample")
+    sample_content["objectives"] = [{
+        "objective_id": "primary_goal",
+        "display_name": "Primary goal",
+        "completion": {"kind": "sim_day", "operator": "gte", "value": 1},
+    }]
+    sample_content["endings"] = [{
+        "ending_id": "primary_ending",
+        "display_name": "Primary ending",
+        "trigger": {"objective_ids": ["primary_goal"]},
+    }]
+    registry.save_content("sample", sample_content)
+
+    registry.create({"id": "support", "name": "Support", "version": "1.0.0"})
+    registry.save_content("support", {
+        "resources": [], "entities": [], "inventory": [], "entity_values": [],
+        "relations": [], "agents": [], "initial_events": [], "ongoing_events": [],
+        "random_events": [], "time_rules": [], "personas": {}, "prompts": {},
+        "objectives": [{
+            "objective_id": "support_goal",
+            "display_name": "Support goal",
+            "completion": {"kind": "sim_day", "operator": "gte", "value": 0},
+        }],
+        "endings": [{
+            "ending_id": "support_ending",
+            "display_name": "Support ending",
+            "trigger": {"objective_ids": ["support_goal"]},
+        }],
+    })
+    registry.publish("support")
+    registry.set_enabled("support", True)
+
+    world = WorldState(str(tmp_path / "primary-objectives.db"))
+    court = CourtGraph(str(tmp_path / "primary-objectives.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active(seed_world=True)
+
+    objectives, endings, _generation, _gameplay = orchestrator.objective_configurations[-1]
+    assert [item["objective_id"] for item in objectives] == ["primary_goal"]
+    assert [item["ending_id"] for item in endings] == ["primary_ending"]

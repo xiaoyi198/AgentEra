@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.22.0**
+> 当前版本：**v0.23.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,7 +15,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则和通用行动。
+- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑与结局。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
@@ -28,6 +28,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **任务模型路由**：可按全局任务、DLC、Agent 和显式 Profile 选择不同模型。
 - **详细中文设置中心**：在主界面可视化管理 Provider、模型 Profile、三级任务路由、Agent 多轮预算、记忆压缩、世界 Tick 与安全运维状态；支持后端校验、变更预览、Generation 乐观锁和热更新。
 - **通用 Issue / Case / DecisionRequest**：DLC 可声明题型、证据、期限、紧迫度和动态选项，运行时支持创建、决策、执行 Action、关闭、过期、幂等与存档恢复。
+- **权威目标与结局**：主 DLC 可声明主目标、可选目标、失败条件、有序/独立里程碑与胜利/失败/中立结局；框架只从权威世界事实和持久回执判定，客户端与 LLM 不能直接改写完成状态。
 - **模型评测与晋级**：支持真实轨迹矩阵、独立人工评审、cohort 分区、环境门禁、安全预览、原子应用和失败回滚。
 
 ## 模型路由优先级
@@ -215,6 +216,19 @@ DLC 可通过 `content.json` 的 `issue_types` 声明题材无关的待处理事
 
 通用 API 包括 `GET /api/issue-types`、`GET/POST /api/issues`、追加证据、`GET /api/cases`、关闭 Case、`GET /api/decision-requests`，以及 DecisionRequest 的 preview/resolve。旧 `/api/memorials` 继续作为兼容视图，但新玩法不应依赖“大明奏折”等框架硬编码。
 
+## DLC 目标、里程碑与结局 (v0.23.0)
+
+主 DLC 可在 `content.json` 顶层声明 `objectives` 与 `endings`。依赖 DLC 仍可贡献实体、Action 和 Issue，但不会与主 DLC 争夺 Campaign 结局：
+
+- 目标分类为 `primary`、`optional`、`failure`；里程碑可选 `ordered` 或 `independent`。
+- 条件树支持 `all`、`any`、`not`，事实来源包括锚定库存、指标、参数、实体状态、模拟天数、Issue/Case/Decision 数量和 Action 成功回执数量。
+- 结局结果支持 `victory`、`defeat`、`neutral`。同一 Tick 同时满足多个结局时先比较 `priority`，相同优先级再按 `ending_id` 确定；首个结局锁定后不可反转。
+- 不声明目标和结局即为显式沙盒，不会因为“零目标”自动胜利。目标、里程碑和结局回执只生成一次，并随运行时快照、手动存档、重启、Generation 归档、热重载和回滚恢复。
+- `GET /api/objectives` 返回 Campaign、目标、里程碑、条件诊断与进度；`GET /api/endings` 返回可达结局、已满足状态和锁定结果。
+- 主界面提供可折叠目标面板；DLC Studio 的“目标”和“结局”页签提供中文字段说明、引用下拉框、可视化嵌套条件树、高级 JSON、导入导出、Diff 与历史撤销/重做。
+
+`example_frontier` 展示了巡逻经费、Action 次数、警戒指标、15 天失败期限，以及胜利/失败结局的完整组合。
+
 ## 经济监控
 
 世界状态页会加载 `GET /api/world-state/economy`，显示：
@@ -236,7 +250,7 @@ DLC 可以声明：
 - 初始事件、随机事件和延迟事件
 - 资源定义与统一价值锚
 - 行动耗时规则
-- 通用行动与 Issue / Case / DecisionRequest 题型
+- 通用行动、Issue / Case / DecisionRequest 题型、目标、里程碑、失败条件与结局
 - DLC/Agent 显式模型绑定
 - 因果规则的结构化条件与事务化世界效果（资源、状态、ongoing event、锚值守恒转移）
 
@@ -281,6 +295,18 @@ npm run lint
 npm run build
 ```
 
+外部 OpenAI-compatible 连接 Smoke Test 默认不会访问网络；只有显式提供临时环境变量时才运行，并会自动补齐 `/v1`、拉取模型列表、过滤明显的非聊天模型，再发送最小 Chat Completions 请求：
+
+```powershell
+$env:AGENTERA_TEST_BASE_URL='http://example.test:3000'
+$env:AGENTERA_TEST_API_KEY='<temporary-key>'
+# 可选；留空时测试从 /v1/models 自动选择候选模型
+$env:AGENTERA_TEST_MODEL=''
+python -m pytest -q tests/integration/test_external_api_connection.py
+```
+
+临时密钥只通过当前进程环境传入，不得写入 `.env`、配置文件、测试夹具、日志或 Git；未配置 URL/Key 时这组测试自动 skip，临时通道失效不阻断离线发布门禁。
+
 ## 文档
 
 - [PROJECT_DOC.md](PROJECT_DOC.md)：架构、数据流、运行时和 API 说明
@@ -296,9 +322,21 @@ npm run build
 - `VERSION`：项目权威版本号
 - 后端 `multiagent_framework.version.__version__`
 - 前端 `frontend/package.json`
+- 前端锁文件 `frontend/package-lock.json`
 
-发布时三处版本必须保持一致。
+发布时四处版本必须保持一致。
 
+
+## v0.23.0 发布说明
+
+本版本完成 DLC 驱动玩法框架的 P0.4：
+
+- 新增权威 `ObjectiveManager`、主/可选/失败目标、有序/独立里程碑、嵌套条件 DSL，以及胜利/失败/中立结局。
+- 目标与结局绑定主 DLC 和 Generation，支持 Registry 引用校验、热重载、归档、回滚、运行时快照、手动存档与重启恢复。
+- 新增 `GET /api/objectives`、`GET /api/endings`、主界面目标面板，以及 DLC Studio 目标/结局中文可视化编辑器。
+- `example_frontier` 升级为带巡逻里程碑、15 天失败条件和优先级结局的可玩 Campaign 示例。
+- 新增可选外部 OpenAI-compatible 连接 Smoke Test；模型可自动拉取，凭据只从临时环境变量读取且不落盘。
+- 版本身份同步为 `0.23.0`；本地发布门禁通过 **535 个 Python 测试（另有 2 个未配置外部凭据时按设计跳过）**、**27 个前端测试**、Python 编译、前端 Lint/Build、示例 DLC Registry 校验、凭据模式扫描和 Git Diff 检查。
 
 ## v0.22.0 发布说明
 

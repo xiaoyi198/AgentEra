@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './DLCStudio.css'
 import { PersonaEditor, PromptEditor, StructuredContentEditor } from './DLCContentEditors.jsx'
 import ModelPromotionWorkbench from './ModelPromotionWorkbench.jsx'
+import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -424,6 +425,8 @@ export default function DLCStudio() {
     time_rules: content.time_rules?.length || 0,
     actions: content.actions?.length || 0,
     issue_types: content.issue_types?.length || 0,
+    objectives: content.objectives?.length || 0,
+    endings: content.endings?.length || 0,
     personas: Object.keys(content.personas || {}).length,
     prompts: Object.keys(content.prompts || {}).length,
   }), [content])
@@ -606,6 +609,8 @@ export default function DLCStudio() {
     { key: 'time_rules', label: `\u8017\u65f6\u89c4\u5219 ${counts.time_rules}` },
     { key: 'actions', label: `\u884c\u52a8 ${counts.actions}` },
     { key: 'issue_types', label: `Issue \u7c7b\u578b ${counts.issue_types}` },
+    { key: 'objectives', label: `\u76ee\u6807 ${counts.objectives}` },
+    { key: 'endings', label: `\u7ed3\u5c40 ${counts.endings}` },
     { key: 'personas', label: `Persona ${counts.personas}` },
     { key: 'prompts', label: `Prompt ${counts.prompts}` },
     { key: 'models', label: UI.modelPolicies },
@@ -643,7 +648,9 @@ export default function DLCStudio() {
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
                 : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} agents={content.agents || []} modelProfiles={modelProfiles} />
-                  : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'objectives' ? <ObjectiveEditor key={`objectives:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                    : tab === 'endings' ? <EndingEditor key={`endings:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                    : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'prompts' ? <PromptEditor key={`prompts:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                       : <StructuredContentEditor key={`${tab}:${selectedItem}`} kind={tab} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} onAnalyzeCausal={analyzeCausalDraft} onReplayCausal={replayCausalDraft} busy={busy} />}
         </>}

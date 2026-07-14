@@ -131,6 +131,10 @@ async def save_game(req: SaveRequest):
         "random_events": state.orchestrator.random_event_generator.snapshot(),
         "causal_events": state.orchestrator.causal_event_engine.snapshot(),
         "action_runtime": state.orchestrator.action_catalog.snapshot(),
+        "objective_runtime": (
+            state.orchestrator.objective_manager.snapshot()
+            if hasattr(state.orchestrator, "objective_manager") else {}
+        ),
     }
     (save_path / "runtime.json").write_text(
         json.dumps(runtime, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -226,6 +230,7 @@ async def load_game(req: LoadRequest):
         "random_events": runtime.get("random_events", {}),
         "causal_events": runtime.get("causal_events", {}),
         "action_runtime": runtime.get("action_runtime", {}),
+        "objective_runtime": runtime.get("objective_runtime", {}),
     }
     STATE_FILE.write_text(
         json.dumps(state_data, ensure_ascii=False, indent=2), encoding="utf-8"

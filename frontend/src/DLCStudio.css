@@ -319,3 +319,37 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-causal-replay-result { grid-template-columns: 1fr; }
   .dlc-causal-replay-result span { white-space: normal; }
 }
+
+/* Objective and ending visual contract editors */
+.dlc-field-help { display: block; margin-top: 4px; color: #77828b; font-size: 11px; line-height: 1.45; font-weight: 400; }
+.dlc-objective-form-title, .objective-builder-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dlc-objective-form-title { padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.dlc-objective-form-title h3 { margin: 0; }
+.dlc-objective-form-title p { margin: 4px 0 0; color: #7f8991; font-size: 12px; }
+.objective-builder-title { margin-bottom: 9px; }
+.objective-builder-title > div { display: flex; flex-direction: column; }
+.objective-condition-builder, .objective-milestone-editor { margin-top: 14px; padding: 12px; border: 1px solid rgba(128,146,157,.2); border-radius: 9px; background: rgba(25,33,39,.38); }
+.objective-condition-editor { margin: 8px 0; padding: 10px; border-left: 3px solid rgba(194,153,79,.42); border-radius: 7px; background: rgba(8,14,18,.24); }
+.objective-condition-editor.depth-1 { border-left-color: rgba(83,145,178,.5); }
+.objective-condition-editor.depth-2 { border-left-color: rgba(111,172,136,.5); }
+.objective-condition-editor.depth-3, .objective-condition-editor.depth-4 { border-left-color: rgba(156,122,179,.5); }
+.objective-condition-editor-head { display: grid; grid-template-columns: minmax(130px,.45fr) minmax(220px,1fr) auto; align-items: end; gap: 9px; }
+.objective-condition-editor-head .wide { min-width: 0; }
+.objective-condition-children-editor { display: grid; gap: 7px; margin: 7px 0; }
+.objective-fact-row { align-items: start; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.objective-action-filters { grid-template-columns: repeat(3, 1fr); }
+.objective-milestone-form { margin-top: 10px; padding: 12px; border: 1px solid rgba(255,255,255,.075); border-radius: 8px; background: rgba(255,255,255,.018); }
+.objective-milestone-form > .dlc-row { align-items: end; }
+.dlc-advanced-json { margin-top: 12px; border: 1px dashed rgba(117,140,154,.35); border-radius: 8px; padding: 9px 11px; }
+.dlc-advanced-json summary { color: #9eb3bf; cursor: pointer; font-weight: 600; }
+.dlc-advanced-json > p { color: #73808a; font-size: 11px; }
+.dlc-advanced-json > div:last-child { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.objective-ending-targets { display: grid; gap: 7px; margin: 12px 0; padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; }
+.objective-ending-targets legend { padding: 0 6px; font-weight: 600; }
+.objective-ending-targets > label { display: flex; align-items: center; gap: 9px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,.025); cursor: pointer; }
+.objective-ending-targets > label span { display: flex; flex-direction: column; }
+.objective-ending-targets > label small { color: #77828b; }
+@media (max-width: 850px) {
+  .objective-condition-editor-head { grid-template-columns: 1fr; }
+  .objective-action-filters { grid-template-columns: 1fr; }
+}

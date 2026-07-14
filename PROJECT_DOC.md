@@ -1954,3 +1954,31 @@ Status: **implemented and locally verified**.
 
 - Existing `models.json`, legacy `time.json`, memorial snapshots, and unknown model fields remain compatible.
 - Release identity is synchronized across `VERSION`, `multiagent_framework.version.__version__`, `frontend/package.json`, and `frontend/package-lock.json` at `0.22.0`.
+
+
+## Release architecture note: authoritative DLC objectives and endings (v0.23.0)
+
+Status: **implemented and locally verified**.
+
+### Authority and contract model
+
+- `multiagent_framework/objective_contract.py` defines normalized objective, milestone, ending and validation contracts plus `ObjectiveManager`. A client or LLM may inspect returned progress but cannot submit completion, failure or ending state.
+- The condition interpreter reads only framework-authoritative facts: `anchored_inventory`, `metric`, `parameter`, `entity_status`, `sim_day`, `issue_count`, `case_count`, `decision_count`, and successful `action_count` receipts. Conditions compose through bounded `all`, `any`, and `not` trees.
+- Objectives are classified as `primary`, `optional`, or `failure`; milestones use `ordered` or `independent` progression. Completion receipts are durable and emitted once. Disabled definitions remain inspectable but cannot become newly eligible.
+- Endings reference objective receipts, support `all`/`any` and `victory`/`defeat`/`neutral`. Same-Tick conflicts resolve by descending priority and then stable `ending_id`; the first selected ending is permanently locked. An empty objective/ending catalog is explicit sandbox mode and never auto-completes.
+
+### DLC ownership and Generation lifecycle
+
+- `DLCRegistry` normalizes `content.json.objectives` and `content.json.endings`, validates entity/resource/action/issue/objective references, resource kinds, duplicate IDs and precise nested paths before publication.
+- `DLCBundleLoader` gives Campaign ownership to the active primary package. Dependency DLCs continue contributing entities, resources, Actions and Issues without competing for final endings. Objective/ending definitions and generation metadata are archived with the same publication blueprint used for load, reload and rollback.
+- Reconfiguration preserves committed receipts even when definitions are disabled or removed, while the current catalog controls future evaluation. Runtime persistence and manual saves include `objective_runtime`; restoration re-evaluates against authoritative simulation time without replaying old transitions.
+
+### Tick integration, transition delivery and public API
+
+- `Orchestrator` evaluates objectives after authoritative world/Issue/Action changes. Its pending transition buffer carries API-originated changes between simulation ticks so WebSocket clients receive each transition once instead of losing it between broadcasts.
+- `GET /api/objectives` returns sandbox/Campaign state, objective and milestone status, nested condition diagnostics, actual/expected/operator/progress data, transition-safe receipts and the locked ending summary. `GET /api/endings` returns ending eligibility, reached state, outcome, priority and lock state.
+- The React shell loads a theme-neutral, collapsible `ObjectivePanel`, refreshes after load/decision/objective transitions and rate-limits ordinary Tick polling. DLC Studio adds structured objective/ending editors, reference selectors, nested condition authoring, advanced JSON, keyed Diff and history support.
+- `dlcs/example_frontier` provides the compatibility example: anchored patrol funding, two successful `frontier_patrol` receipts, a warning metric threshold, a day-15 failure condition, and deterministic victory/defeat endings.
+
+
+Release verification for v0.23.0 completed with **535 Python tests passed and 2 environment-gated external-provider tests skipped**, **27 frontend tests passed**, Python compile, frontend ESLint/build, zero-error/zero-warning `example_frontier` Registry validation, credential-pattern scanning, and Git diff checks.

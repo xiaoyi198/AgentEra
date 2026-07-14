@@ -82,6 +82,11 @@ class RuntimePersistor:
                         if hasattr(self._orch, "action_catalog")
                         else {}
                     ),
+                    "objective_runtime": (
+                        self._orch.objective_manager.snapshot()
+                        if hasattr(self._orch, "objective_manager")
+                        else {}
+                    ),
                 }
                 _atomic_write(
                     STATE_FILE,

@@ -344,5 +344,115 @@
       ],
       "enabled": true
     }
+  ],
+  "objectives": [
+    {
+      "objective_id": "secure_frontier",
+      "display_name": "稳固边境防线",
+      "description": "保留足够的统一锚定资产，持续组织巡逻，并在期限前将哨站警戒度提升到安全线。",
+      "category": "primary",
+      "required": true,
+      "milestone_mode": "ordered",
+      "milestones": [
+        {
+          "milestone_id": "fund_patrols",
+          "display_name": "准备巡逻经费",
+          "description": "边境银券的锚定总价值至少达到 50。",
+          "condition": {
+            "kind": "anchored_inventory",
+            "label": "可用巡逻经费",
+            "entity_id": "边境哨站",
+            "name": "边境银券",
+            "operator": "gte",
+            "value": 50
+          }
+        },
+        {
+          "milestone_id": "complete_patrols",
+          "display_name": "完成两次巡逻",
+          "description": "通过通用行动回执确认至少两次巡逻成功执行。",
+          "condition": {
+            "kind": "action_count",
+            "label": "巡逻成功次数",
+            "action_id": "frontier_patrol",
+            "control_object_id": "边境哨站",
+            "target_id": "边境哨站",
+            "operator": "gte",
+            "value": 2
+          }
+        }
+      ],
+      "completion": {
+        "kind": "metric",
+        "label": "警戒度达到安全线",
+        "entity_id": "边境哨站",
+        "name": "警戒度",
+        "operator": "gte",
+        "value": 85
+      },
+      "enabled": true,
+      "order": 0
+    },
+    {
+      "objective_id": "frontier_deadline_failed",
+      "display_name": "边境防线逾期失守",
+      "description": "第 15 天到来时警戒度仍低于安全线，将触发失败结局。",
+      "category": "failure",
+      "required": false,
+      "milestone_mode": "independent",
+      "milestones": [],
+      "completion": {
+        "op": "all",
+        "label": "期限已到且警戒不足",
+        "conditions": [
+          {
+            "kind": "sim_day",
+            "label": "到达防务期限",
+            "operator": "gte",
+            "value": 15
+          },
+          {
+            "kind": "metric",
+            "label": "警戒度低于安全线",
+            "entity_id": "边境哨站",
+            "name": "警戒度",
+            "operator": "lt",
+            "value": 85
+          }
+        ]
+      },
+      "enabled": true,
+      "order": 100
+    }
+  ],
+  "endings": [
+    {
+      "ending_id": "frontier_safe",
+      "display_name": "边境安定",
+      "description": "巡逻体系已经稳定运转，哨站具备足够警戒能力，边境进入可持续防务状态。",
+      "outcome": "victory",
+      "trigger": {
+        "objective_ids": [
+          "secure_frontier"
+        ],
+        "operator": "all"
+      },
+      "priority": 50,
+      "enabled": true
+    },
+    {
+      "ending_id": "frontier_overrun",
+      "display_name": "防线失守",
+      "description": "防务期限耗尽而警戒仍然不足，哨站失去了主动控制边境局势的机会。",
+      "outcome": "defeat",
+      "trigger": {
+        "objective_ids": [
+          "frontier_deadline_failed"
+        ],
+        "operator": "all"
+      },
+      "priority": 100,
+      "enabled": true
+    }
   ]
 }

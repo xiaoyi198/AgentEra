@@ -179,6 +179,7 @@ class TickResult:
     chain_entries: list[ChainLogEntry] = field(default_factory=list)
     agent_errors: list[dict[str, Any]] = field(default_factory=list)
     generated_events: list[dict[str, Any]] = field(default_factory=list)
+    objective_transitions: list[dict[str, Any]] = field(default_factory=list)
     token_usage: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
