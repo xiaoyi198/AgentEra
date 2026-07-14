@@ -29,6 +29,8 @@ class FakeOrchestrator:
         self.causal_event_configurations = []
         self.operations = []
         self.gameplay_configurations = []
+        self.action_configurations = []
+        self.issue_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -49,6 +51,14 @@ class FakeOrchestrator:
 
     def configure_gameplay_contract(self, contract, *, generation=0) -> None:
         self.gameplay_configurations.append((contract, generation))
+
+    def configure_action_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
+        self.operations.append(("actions", [item["action_id"] for item in definitions]))
+        self.action_configurations.append((definitions, generation, gameplay))
+
+    def configure_issue_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
+        self.operations.append(("issues", [item["issue_type_id"] for item in definitions]))
+        self.issue_configurations.append((definitions, generation, gameplay))
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -810,3 +820,91 @@ def test_runtime_materializes_templates_before_configuring_causal_engine(tmp_pat
     assert rule["conditions"][0]["name"] == "credits"
     assert "template_id" not in rule
     assert "condition_group_ids" not in rule
+
+
+def test_runtime_publishes_issue_definitions_and_preserves_them_across_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["issue_types"] = [{
+        "issue_type_id": "city_report",
+        "display_name": "City report v1",
+        "source": {"allowed_kinds": ["agent"], "allowed_ids": ["mayor"]},
+        "match": {"payload_types": ["city_report"], "source_ids": ["mayor"]},
+        "decision_requests": [{
+            "request_id": "review",
+            "title": "Review report",
+            "options": [{
+                "option_id": "monitor",
+                "display_name": "Monitor",
+                "resolution": {"issue_status": "monitoring", "case_status": "monitoring"},
+            }],
+        }],
+    }]
+    registry.save_content("sample", content)
+
+    world = WorldState(str(tmp_path / "issues-world.db"))
+    court = CourtGraph(str(tmp_path / "issues-world.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active(seed_world=True)[0]
+    assert report.issue_types == 1
+    assert orchestrator.issue_configurations[-1][0][0]["display_name"] == "City report v1"
+    assert orchestrator.issue_configurations[-1][1] == 1
+    assert loader.public_runtime()["issues"]["issue_types"][0]["issue_type_id"] == "city_report"
+
+    content = registry.load_content("sample")
+    content["issue_types"][0]["display_name"] = "City report v2"
+    registry.save_content("sample", content)
+    asyncio.run(loader.reload_active())
+    assert orchestrator.issue_configurations[-1][0][0]["display_name"] == "City report v2"
+    assert orchestrator.issue_configurations[-1][1] == 2
+
+    asyncio.run(loader.rollback_active(1))
+    assert orchestrator.issue_configurations[-1][0][0]["display_name"] == "City report v1"
+    assert orchestrator.issue_configurations[-1][1] == 3
+    assert loader.public_runtime()["issues"]["issue_types"][0]["display_name"] == "City report v1"
+
+
+def test_cross_dlc_duplicate_issue_type_rejects_reload_without_partial_activation(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    issue_definition = {
+        "issue_type_id": "shared_report",
+        "display_name": "Shared report",
+        "source": {"allowed_kinds": ["agent"], "allowed_ids": ["mayor"]},
+        "match": {"payload_types": ["shared_report"], "source_ids": ["mayor"]},
+    }
+    content["issue_types"] = [issue_definition]
+    registry.save_content("sample", content)
+
+    world = WorldState(str(tmp_path / "issue-collision.db"))
+    court = CourtGraph(str(tmp_path / "issue-collision.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active(seed_world=True)
+    old_generation = loader.generation
+    old_definitions = orchestrator.issue_configurations[-1][0]
+
+    registry.create({"id": "collision", "name": "Collision", "version": "1.0.0"})
+    registry.save_content("collision", {
+        "resources": [], "entities": [], "inventory": [], "entity_values": [],
+        "relations": [], "agents": [], "initial_events": [], "ongoing_events": [],
+        "random_events": [], "time_rules": [], "personas": {}, "prompts": {},
+        "issue_types": [{
+            "issue_type_id": "shared_report",
+            "display_name": "Collision report",
+            "source": {"allowed_kinds": ["system"]},
+            "match": {"payload_types": ["other"]},
+        }],
+    })
+    registry.publish("collision")
+    registry.set_enabled("collision", True)
+
+    with pytest.raises(DLCRegistryError, match="Duplicate active issue type id"):
+        loader.preview_reload()
+    with pytest.raises(DLCRegistryError, match="Duplicate active issue type id"):
+        asyncio.run(loader.reload_active())
+
+    assert loader.generation == old_generation
+    assert orchestrator.issue_configurations[-1][0] == old_definitions

@@ -23,6 +23,7 @@ from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
+from .issue_contract import normalize_issue_document, validate_issue_definitions
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -390,7 +391,7 @@ class DLCRegistry:
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
             "agents", "initial_events", "ongoing_events", "random_events",
-            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "issue_types",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -404,6 +405,7 @@ class DLCRegistry:
                 normalized.get("gameplay", {})
             )
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
+            normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
         except TypeError as exc:
             raise DLCRegistryError(str(exc)) from exc
         return normalized
@@ -485,6 +487,7 @@ class DLCRegistry:
             "random_events": events.get("random_events", []),
             "causal_event_rules": events.get("causal_event_rules", []),
             "time_rules": events.get("time_rules", []),
+            "issue_types": events.get("issue_types", []),
             "ongoing_events": world.get("ongoing_events", []),
             "personas": personas,
             "prompts": prompts,
@@ -660,6 +663,12 @@ class DLCRegistry:
             resources=action_resources, gameplay=gameplay_contract,
         ):
             add(action_issue.code, action_issue.message, action_issue.path)
+        action_ids = {str(item.get("action_id", "")) for item in content["actions"] if item.get("action_id")}
+        for issue in validate_issue_definitions(
+            content["issue_types"], action_ids=action_ids, entity_ids=entity_ids,
+            agent_ids=agent_ids, gameplay=gameplay_contract,
+        ):
+            add(issue.code, issue.message, issue.path)
 
         agent_bindings = bindings.get("agents", {}) if isinstance(bindings.get("agents", {}), dict) else {}
         for bound_agent in agent_bindings:

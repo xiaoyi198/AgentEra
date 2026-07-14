@@ -39,6 +39,7 @@ const base = {
   causal_event_rules: [],
   time_rules: [],
   actions: [],
+  issue_types: [],
   personas: {},
   prompts: {},
 }
@@ -439,4 +440,27 @@ test('action import export preserves complex contract fields', () => {
   const imported = normalizeImportedContent(exported)
   assert.deepEqual(imported.actions, [action])
   assert.notEqual(imported.actions[0], action)
+})
+
+test('import normalization and diff support issue type contracts', () => {
+  const source = { ...base }
+  delete source.issue_types
+  assert.deepEqual(normalizeImportedContent(source).issue_types, [])
+  assert.throws(() => normalizeImportedContent({ ...base, issue_types: {} }), /issue_types must be an array/)
+
+  const next = {
+    ...base,
+    issue_types: [
+      { issue_type_id: 'security', display_name: 'Security', default_urgency: 'high' },
+      { issue_type_id: 'trade', display_name: 'Trade' },
+    ],
+  }
+  const changed = { ...next, issue_types: [{ issue_type_id: 'security', display_name: 'Security alert' }] }
+  assert.deepEqual(
+    summarizeContentDiff(next, changed).entries.filter(item => item.section === 'issue_types'),
+    [
+      { section: 'issue_types', key: 'security', type: 'changed' },
+      { section: 'issue_types', key: 'trade', type: 'removed' },
+    ],
+  )
 })

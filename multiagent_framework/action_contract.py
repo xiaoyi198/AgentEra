@@ -600,6 +600,11 @@ class ActionCatalog:
         with self._lock:
             return self._fingerprint
 
+    @property
+    def action_ids(self) -> set[str]:
+        with self._lock:
+            return set(self._definitions)
+
     def configure(self, definitions: Iterable[Mapping[str, Any] | ActionDefinition], *, generation: int = 0, gameplay: GameplayContract | None = None) -> None:
         parsed: dict[str, ActionDefinition] = {}
         for index, raw in enumerate(definitions):

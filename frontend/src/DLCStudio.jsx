@@ -423,6 +423,7 @@ export default function DLCStudio() {
     causal_event_rules: content.causal_event_rules?.length || 0,
     time_rules: content.time_rules?.length || 0,
     actions: content.actions?.length || 0,
+    issue_types: content.issue_types?.length || 0,
     personas: Object.keys(content.personas || {}).length,
     prompts: Object.keys(content.prompts || {}).length,
   }), [content])
@@ -604,6 +605,7 @@ export default function DLCStudio() {
     { key: 'causal_event_rules', label: `\u56e0\u679c\u4e8b\u4ef6\u94fe ${counts.causal_event_rules}` },
     { key: 'time_rules', label: `\u8017\u65f6\u89c4\u5219 ${counts.time_rules}` },
     { key: 'actions', label: `\u884c\u52a8 ${counts.actions}` },
+    { key: 'issue_types', label: `Issue \u7c7b\u578b ${counts.issue_types}` },
     { key: 'personas', label: `Persona ${counts.personas}` },
     { key: 'prompts', label: `Prompt ${counts.prompts}` },
     { key: 'models', label: UI.modelPolicies },

@@ -1,4 +1,4 @@
-﻿# 世界模拟器完善优化实施计划
+# 世界模拟器完善优化实施计划
 
 > 创建日期：2026-07-10
 > 适用项目：`F:\世界模拟器`
@@ -1356,3 +1356,33 @@ P0.2 of the DLC-driven gameplay framework is complete:
 - added focused backend and frontend regression coverage, including atomic rollback and concurrent duplicate execution.
 
 Next gameplay priority is P0.3: a generic `Issue / Case / DecisionRequest` lifecycle that can offer DLC-authored actions without relying on memorial-specific framework concepts. The long-term gameplay goal remains active.
+
+## Phase checkpoint: generic Issue lifecycle and detailed visual settings center (v0.22.0, 2026-07-14)
+
+Status: **implemented and locally verified**.
+
+Completed for P0.3 and configuration operations:
+
+- added DLC-authored `issue_types` and a generic Issue / Case / DecisionRequest lifecycle with evidence, urgency, authoritative deadlines, expiration, closure, static/dynamic options, Action preview/resolve, idempotency receipts, and legacy memorial compatibility;
+- bound Issue catalogs and runtime state to DLC Generation publication, encrypted archive restore, rollback, snapshots, manual saves, and restart recovery;
+- exposed theme-neutral Issue/Case/DecisionRequest APIs, added main-view decision UI, added the DLC Studio Issue Type editor, and upgraded `example_frontier` with a runnable authored example;
+- replaced the legacy settings modal with a nine-section Chinese settings center for Providers, Profiles, global/DLC/Agent routing, normal and ActionAgent multi-round budgets, short/structured memory, compression, simulation timing, and read-only operational state;
+- added typed `RuntimeSettings`, `config/runtime.json`, legacy `time.json` compatibility, a Chinese schema endpoint, validation/Diff preview, optimistic generation locking, atomic writes, complete three-file rollback, and runtime hot activation;
+- enforced the credential boundary: Session Keys remain process-memory-only, GET never returns key material, configuration files and browser storage never receive raw keys, and secret-bearing Provider host changes require explicit confirmation;
+- synchronized release version `0.22.0` and maintained README, architecture documentation, developer workflow, examples, and focused backend/frontend regression suites.
+
+Release gate for this checkpoint:
+
+- run the complete Python test suite and compile gate;
+- run all frontend unit tests, ESLint, and production build;
+- smoke-test the settings schema/read/validate endpoints and inspect responses for secret disclosure;
+- run `git diff --check`, stop the local test server, then publish the branch to GitHub.
+
+Next gameplay priorities remain:
+
+1. P0.4 generic objectives, failure conditions, milestones, and endings.
+2. P0.5 DLC UI Manifest and capability-driven layout/terminology.
+3. P0.6 action/capability registries that drive player UI, Router, and Agent tools without theme-specific branches.
+4. Continue multi-turn memory evaluation, task-aware model selection, economic stress/retry tests, and production credential-gated promotion rehearsal.
+
+The persistent gameplay-framework goal remains active. This checkpoint completes P0.3 and makes the growing runtime/model configuration surface operable, but it does not complete P0.4-P0.6 or the broader long-term optimization plan.

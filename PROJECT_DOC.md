@@ -1,4 +1,4 @@
-﻿# 世界模拟器 — 大明王朝·朝堂风云 开发文档
+# 世界模拟器 — 大明王朝·朝堂风云 开发文档
 
 ## 一、项目概述
 
@@ -1908,3 +1908,49 @@ Release identity is `0.20.0` across `VERSION`, the backend version module, front
 
 - Runtime and manual saves include `action_runtime`; manual save/load also preserves random and causal runtime snapshots.
 - Focused verification covers schema/default/range validation, permissions, targets, preconditions, anchored conversion, atomic rollback, authoritative duration, cooldown, generation conflict, concurrent idempotency, side effects, snapshot/restore, API mapping, Registry references, and Generation archive rollback.
+
+## Release architecture note: generic Issue lifecycle and detailed settings center (v0.22.0)
+
+Status: **implemented and locally verified**.
+
+### Generic Issue / Case / DecisionRequest runtime
+
+- `multiagent_framework.issue_contract.IssueManager` owns the theme-neutral lifecycle for Issue, Case, DecisionRequest, evidence, deadlines, expiration, closure, decision receipts, external idempotency receipts, ordering, snapshot, restore, and legacy memorial migration.
+- DLC packages author `issue_types`. Registry validation checks stable IDs, source restrictions, required evidence, urgency/deadline defaults, Action references, static/dynamic options, and package-local reference integrity before publication.
+- Decision options freeze the authored semantics used to create a request. Preview and resolve bridge to `ActionContract`; `invocation_id` makes retries deterministic, while reused IDs with a different request are rejected.
+- `DLCGeneration` carries the issue-type catalog beside gameplay and action contracts. Hot reload, archive restore, rollback, and in-flight work therefore retain generation-scoped semantics instead of reading mutable draft content.
+- `Orchestrator` exposes IssueManager operations, refreshes deadlines against authoritative simulation time, includes issue runtime in snapshots, and restores both native v1 snapshots and legacy memorial records.
+- `routers/simulation.py` publishes issue-type, issue, evidence, case, and decision-request APIs. `/api/memorials` remains a compatibility projection over non-final Issues, not the authoritative new model.
+- The React main view renders generic pending work and dynamic decision options. DLC Studio includes an Issue Type editor and persists `issue_types` through the same validation, history, import/export, and publication path as other authored entities.
+
+### Runtime settings ownership and schema
+
+- `multiagent_framework.runtime_settings.RuntimeSettings` is the typed owner for simulation timing, normal Agent budgets, ActionAgent budgets, short/structured memory limits, and compression temperature. `config/runtime.json` is authoritative; when it is absent, legacy `config/time.json` values are still imported.
+- `settings_schema()` provides Chinese labels, descriptions, kinds, ranges, units, warnings, and grouping metadata. The frontend consumes this metadata rather than maintaining a second independent validation contract.
+- Model configuration remains owned by `config/models.json`. Settings mutations preserve unknown top-level and nested model fields through `merge_known_model_config`, so newer or plugin-defined fields are not erased by the visual editor.
+- `GET /api/settings/schema` and `GET /api/settings` return schema and a secret-free document. `POST /api/settings/validate` normalizes without side effects. `POST /api/settings` requires `expected_generation`, validates again, persists, activates, and returns the new generation document.
+
+### Atomic persistence, activation, and rollback
+
+- Save snapshots the previous bytes of `models.json`, `runtime.json`, and legacy `time.json`; JSON writes use same-directory temporary files plus atomic replace.
+- Activation updates Gateway configuration, normal Agent defaults, ActionAgent budgets, memory compression settings, `seconds_per_day`, and `tick_interval` only after all validation and security checks pass.
+- If any persistence or activation step fails, all three files are restored and the previous Gateway/Orchestrator runtime values remain active. Generation advances only after a successful transaction.
+- `expected_generation` provides optimistic concurrency control. A stale browser cannot silently overwrite a newer settings publication.
+
+### Credential boundary and operational state
+
+- Provider API keys are represented only by an environment-variable name or a process-memory Session Key. API responses expose only `api_key_configured`; raw key values are never returned, written to config, logged in the settings document, or stored in browser persistence.
+- Changing the host of a Provider that already has a configured key is rejected unless the request explicitly sets `allow_secret_host_change` after the operator reviews the validation warning.
+- Admin API enablement, admin token presence, generation archive encryption, and alert/calibration environment state are read-only process-start concerns. The settings UI reports configured/not-configured status without exposing values and explains when restart is required.
+
+### Frontend settings center
+
+- `frontend/src/SettingsCenter.jsx` replaces the legacy settings modal. Its nine Chinese sections cover overview, Providers, model Profiles, three-level task routing, Agent rounds, memory, simulation, operations/security, and advanced JSON.
+- Provider/Profile rename operations update dependent references; ordered route candidates retain fallback priority. Destructive operations and dirty close are confirmed.
+- Saving is deliberately two-stage: server-side validation produces normalized content, warnings, and a diff preview; the user then confirms the generation-bound save. Successful saves clear all Session Key inputs.
+- `SettingsSchemaTools.js` strips server-only metadata from editable JSON and fingerprints non-secret state. Secret fingerprints record presence only and include the host-change confirmation bit, never the secret itself.
+
+### Compatibility and release identity
+
+- Existing `models.json`, legacy `time.json`, memorial snapshots, and unknown model fields remain compatible.
+- Release identity is synchronized across `VERSION`, `multiagent_framework.version.__version__`, `frontend/package.json`, and `frontend/package-lock.json` at `0.22.0`.

@@ -54,7 +54,14 @@ class RuntimePersistor:
                 state_data: dict[str, Any] = {
                     "sim_time": self._orch._sim_time,
                     "seconds_per_day": self._orch._seconds_per_day,
-                    "memorials": self._orch.memorials,
+                    "memorials": (
+                        self._orch.issue_manager.legacy_memorials(sim_time=self._orch._sim_time)
+                        if hasattr(self._orch, "issue_manager") else self._orch.memorials
+                    ),
+                    "issue_runtime": (
+                        self._orch.issue_manager.snapshot()
+                        if hasattr(self._orch, "issue_manager") else {}
+                    ),
                     "random_events": (
                         self._orch.random_event_generator.snapshot()
                         if hasattr(self._orch, "random_event_generator")

@@ -3,6 +3,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import GodView from './GodView'
 import WorldStateView from './WorldStateView'
 import RelationsView from './RelationsView'
+import SettingsCenter from './SettingsCenter'
 import './App.css'
 
 const WS_URL = `ws://${window.location.host}/ws`
@@ -163,11 +164,12 @@ function SaveManagerModal({ onClose, onLoaded }) {
 function App() {
   const { connected, lastMessage } = useWebSocket(WS_URL)
 
-  const [memorials, setMemorials] = useState([])
+  const [issues, setIssues] = useState([])
+  const [decisionRequests, setDecisionRequests] = useState([])
   const [gameplay, setGameplay] = useState({
     configured: false, package_id: '', package_name: '', player: null,
   })
-  const [selectedMemorial, setSelectedMemorial] = useState(null)
+  const [selectedIssue, setSelectedIssue] = useState(null)
   const [inTransit, setInTransit] = useState([])
   const [simTime, setSimTime] = useState(0)
   const [running, setRunning] = useState(false)
@@ -179,42 +181,40 @@ function App() {
   const [secondsPerDay, setSecondsPerDay] = useState(600)
   const [showSaveManager, setShowSaveManager] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [settings, setSettings] = useState({
-    base_url: '', api_key_masked: '', api_key_env: '', model: '',
-    timeout_s: 30, max_concurrent: 4, seconds_per_day: 600,
-  })
-  const [settingsForm, setSettingsForm] = useState({})
-  const [settingsSaving, setSettingsSaving] = useState(false)
-  const [settingsMsg, setSettingsMsg] = useState('')
 
   // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!lastMessage || lastMessage.type !== 'tick') return
     const data = lastMessage.data
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror an external WebSocket event into view state.
     setSimTime(data.sim_time)
     setInTransit(data.in_transit || [])
     setTokenUsage(data.token_usage || {})
-    if (data.new_memorials?.length > 0) {
-      setMemorials(prev => {
-        const existingIds = new Set(prev.map(m => m.memorial_id))
-        const fresh = data.new_memorials.filter(m => !existingIds.has(m.memorial_id))
+    if (data.new_issues?.length > 0) {
+      setIssues(prev => {
+        const existingIds = new Set(prev.map(item => item.issue_id))
+        const fresh = data.new_issues.filter(item => !existingIds.has(item.issue_id))
+        return fresh.length > 0 ? [...fresh, ...prev] : prev
+      })
+    }
+    if (data.new_decision_requests?.length > 0) {
+      setDecisionRequests(prev => {
+        const existingIds = new Set(prev.map(item => item.decision_request_id))
+        const fresh = data.new_decision_requests.filter(item => !existingIds.has(item.decision_request_id))
         return fresh.length > 0 ? [...fresh, ...prev] : prev
       })
     }
   }, [lastMessage])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
-  // 挂载时从后端拉取已有 memorials（刷新不丢）
+  // Issue / Case / DecisionRequest 是题材无关的玩家事项权威状态。
   useEffect(() => {
-    fetch(`${API_BASE}/memorials`)
-      .then(r => r.json())
-      .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          setMemorials(data)
-        }
-      })
-      .catch(() => {})
+    Promise.all([
+      fetch(`${API_BASE}/issues`).then(r => r.json()),
+      fetch(`${API_BASE}/decision-requests`).then(r => r.json()),
+    ]).then(([issueData, requestData]) => {
+      if (Array.isArray(issueData)) setIssues(issueData)
+      if (Array.isArray(requestData)) setDecisionRequests(requestData)
+    }).catch(() => {})
   }, [])
 
 
@@ -276,28 +276,35 @@ function App() {
     setPaused(false)
     setSimTime(data.sim_time)
     setSecondsPerDay(data.seconds_per_day)
-    setMemorials(data.pending_memorials || [])
-    setSelectedMemorial(null)
+    setIssues([])
+    setDecisionRequests([])
+    setSelectedIssue(null)
+    window.setTimeout(() => {
+      Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
+        .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
+        .catch(() => {})
+    }, 0)
     setInTransit([])
     alert(`读档成功：${data.save_name}（第${Math.floor(data.sim_time / 86400)}天）`)
   }
 
-  const handlePlayerAction = async (actionType) => {
-    if (!selectedMemorial) return
-    await apiPost('/player-action', {
-      action_type: actionType,
-      memorial_id: selectedMemorial.memorial_id,
-      content: actionType === 'issue_decree' ? decreeText : '',
+  const handleDecision = async (request, option) => {
+    const decisionId = request.decision_request_id
+    const response = await apiPost(`/decision-requests/${encodeURIComponent(request.decision_request_id)}/resolve`, {
+      decision_id: decisionId,
+      option_id: option.option_id,
+      expected_generation: request.generation,
       note: noteText,
+      invocation: {},
     })
+    if (response.error || response.detail) {
+      alert('决策失败：' + (response.error || response.detail?.message || response.detail?.code || 'unknown error'))
+      return
+    }
     setNoteText('')
-    setMemorials(prev =>
-      prev.map(m =>
-        m.memorial_id === selectedMemorial.memorial_id
-          ? { ...m, handled: true, action: actionType }
-          : m
-      )
-    )
+    setIssues(prev => prev.map(item => item.issue_id === response.issue?.issue_id ? response.issue : item))
+    setDecisionRequests(prev => prev.map(item => item.decision_request_id === response.decision_request?.decision_request_id ? response.decision_request : item))
+    setSelectedIssue(response.issue || selectedIssue)
   }
 
   const handleDecree = async () => {
@@ -311,43 +318,7 @@ function App() {
     await apiPost('/time-scale', { seconds_per_day: value })
   }
 
-  const openSettings = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/settings`)
-      const data = await res.json()
-      setSettings(data)
-      setSettingsForm({
-        base_url: data.base_url || '',
-        api_key: '',
-        api_key_env: data.api_key_env || '',
-        model: data.model || '',
-        timeout_s: data.timeout_s || 30,
-        max_concurrent: data.max_concurrent || 4,
-        seconds_per_day: data.seconds_per_day || 600,
-      })
-      setSettingsMsg('')
-    } catch {
-      setSettingsForm({
-        base_url: '', api_key: '', api_key_env: '', model: '',
-        timeout_s: 30, max_concurrent: 4, seconds_per_day: 600,
-      })
-    }
-    setShowSettings(true)
-  }
-
-  const saveSettings = async () => {
-    setSettingsSaving(true)
-    setSettingsMsg('')
-    const res = await apiPost('/settings', settingsForm)
-    setSettingsSaving(false)
-    if (res.error) {
-      setSettingsMsg(res.error)
-    } else {
-      setSettingsMsg('saved')
-      setSecondsPerDay(settingsForm.seconds_per_day)
-      setTimeout(() => setShowSettings(false), 800)
-    }
-  }
+  const openSettings = () => setShowSettings(true)
 
   const controlledObjects = gameplay.player?.controlled_objects || []
   const playerDisplayName = gameplay.player?.display_name || '\u73a9\u5bb6'
@@ -451,52 +422,53 @@ function App() {
       ) : (
         <div className="layout">
           <aside className="panel memorial-list">
-            <h2>待批折子 ({memorials.filter(m => !m.handled).length})</h2>
-            {memorials.length === 0 && <div className="empty">等待模拟开始...</div>}
-            {memorials.map(m => (
+            <h2>待处理事项 ({issues.filter(item => !['resolved', 'closed', 'dismissed'].includes(item.status)).length})</h2>
+            {issues.length === 0 && <div className="empty">等待世界产生需要处理的事项...</div>}
+            {issues.map(item => (
               <div
-                key={m.memorial_id}
-                className={`item ${selectedMemorial?.memorial_id === m.memorial_id ? 'selected' : ''} ${m.handled ? 'handled' : ''}`}
-                onClick={() => setSelectedMemorial(m)}
+                key={item.issue_id}
+                className={`item ${selectedIssue?.issue_id === item.issue_id ? 'selected' : ''} ${['resolved', 'closed', 'dismissed'].includes(item.status) ? 'handled' : ''}`}
+                onClick={() => setSelectedIssue(item)}
               >
-                <div className="item-title">{m.content?.slice(0, 30) || '(无内容)'}...</div>
+                <div className="item-title">{item.title || item.summary?.slice(0, 30) || '(无标题事项)'}</div>
                 <div className="item-meta">
-                  {m.from} · {timeStr(m.received_at || 0)}
+                  {item.source?.display_name || item.source?.id || item.source?.kind || '未知来源'} · {item.urgency || 'normal'} · {timeStr(item.created_at || 0)}
                 </div>
-                {m.handled && (
-                  <span className={`badge ${m.action}`}>
-                    {{ approve: '准', reject: '驳', hold: '留' }[m.action] || m.action}
-                  </span>
-                )}
+                <span className={`badge ${item.status}`}>{item.status}</span>
               </div>
             ))}
           </aside>
 
           <main className="panel detail">
-            {selectedMemorial ? (
+            {selectedIssue ? (
               <>
-                <h2>折子详情</h2>
-                <div className="field"><label>来源</label><span>{selectedMemorial.from}</span></div>
-                <div className="field"><label>内容</label><p>{selectedMemorial.content}</p></div>
-                {selectedMemorial.event_id && (
-                  <div className="field"><label>事件</label><span>{selectedMemorial.event_id}</span></div>
-                )}
-                {!selectedMemorial.handled && (
-                  <div className="actions">
-                    <input placeholder="批注..." value={noteText} onChange={e => setNoteText(e.target.value)} />
-                    <button className="btn approve" onClick={() => handlePlayerAction('approve')}>批准</button>
-                    <button className="btn reject" onClick={() => handlePlayerAction('reject')}>驳回</button>
-                    <button className="btn hold" onClick={() => handlePlayerAction('hold')}>留中</button>
-                  </div>
-                )}
+                <h2>{selectedIssue.title || '事项详情'}</h2>
+                <div className="field"><label>来源</label><span>{selectedIssue.source?.display_name || selectedIssue.source?.id || selectedIssue.source?.kind || '未知'}</span></div>
+                <div className="field"><label>内容</label><p>{selectedIssue.summary}</p></div>
+                <div className="field"><label>状态</label><span>{selectedIssue.status} · {selectedIssue.urgency}</span></div>
+                <div className="field"><label>Case</label><span>{selectedIssue.case_id}</span></div>
+                {selectedIssue.deadline_at != null && <div className="field"><label>期限</label><span>{timeStrFull(selectedIssue.deadline_at)}</span></div>}
+                <div className="field"><label>证据</label><div>{(selectedIssue.evidence || []).length === 0 ? '暂无证据' : (selectedIssue.evidence || []).map(evidence => <p key={evidence.evidence_id}><strong>{evidence.kind}</strong>：{evidence.summary || evidence.content || evidence.description || evidence.evidence_id}</p>)}</div></div>
+                {decisionRequests.filter(request => request.issue_id === selectedIssue.issue_id && request.status === 'pending').map(request => (
+                  <section key={request.decision_request_id} className="decision-request">
+                    <h3>{request.title}</h3>
+                    <p>{request.prompt}</p>
+                    {request.deadline_at != null && <small>决策期限：{timeStrFull(request.deadline_at)}</small>}
+                    <div className="actions">
+                      <input placeholder="决策备注..." value={noteText} onChange={event => setNoteText(event.target.value)} />
+                      {(request.options || []).map(option => <button key={option.option_id} className="btn approve" onClick={() => handleDecision(request, option)} title={option.description || ''}>{option.display_name || option.option_id}</button>)}
+                    </div>
+                  </section>
+                ))}
+                {decisionRequests.filter(request => request.issue_id === selectedIssue.issue_id && request.status === 'pending').length === 0 && <div className="empty">此事项当前没有待处理决策。</div>}
               </>
             ) : (
-              <div className="empty">选择一份折子查看详情</div>
+              <div className="empty">选择一项 Issue 查看来源、证据、期限和动态决策选项</div>
             )}
             <div className="decree-section">
-              <h3>下旨</h3>
-              <textarea placeholder="拟旨内容..." value={decreeText} onChange={e => setDecreeText(e.target.value)} />
-              <button className="btn decree" onClick={handleDecree} disabled={!decreeText.trim()}>颁布圣旨</button>
+              <h3>发布消息</h3>
+              <textarea placeholder="输入玩家消息..." value={decreeText} onChange={e => setDecreeText(e.target.value)} />
+              <button className="btn decree" onClick={handleDecree} disabled={!decreeText.trim()}>发送</button>
             </div>
           </main>
 
@@ -523,91 +495,14 @@ function App() {
         />
       )}
 
-      {showSettings && (
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>设置</h2>
-              <button className="modal-close" onClick={() => setShowSettings(false)}>&times;</button>
-            </div>
-            <div className="modal-body">
-              <div className="setting-group">
-                <h3>模型接口</h3>
-                <label>接口地址</label>
-                <input
-                  value={settingsForm.base_url}
-                  onChange={e => setSettingsForm(s => ({...s, base_url: e.target.value}))}
-                  placeholder="https://api.openai.com/v1"
-                />
-                <label>密钥 {settings.api_key_masked && <span className="masked">({settings.api_key_masked})</span>}</label>
-                <input
-                  type="password"
-                  value={settingsForm.api_key}
-                  onChange={e => setSettingsForm(s => ({...s, api_key: e.target.value}))}
-                  placeholder="Session-only key; prefer the environment variable below"
-                />
-                <label>API key environment variable</label>
-                <input
-                  value={settingsForm.api_key_env || ''}
-                  readOnly
-                  title="Edit config/models.json or config/llm.json locally to change this value"
-                  placeholder="WORLD_SIM_API_KEY"
-                />
-                <label>模型名称</label>
-                <input
-                  value={settingsForm.model}
-                  onChange={e => setSettingsForm(s => ({...s, model: e.target.value}))}
-                  placeholder="gpt-4o-mini"
-                />
-                <div className="setting-row">
-                  <div>
-                    <label>超时时间 (秒)</label>
-                    <input
-                      type="number" min="5" max="120"
-                      value={settingsForm.timeout_s}
-                      onChange={e => setSettingsForm(s => ({...s, timeout_s: Number(e.target.value)}))}
-                    />
-                  </div>
-                  <div>
-                    <label>最大并发数</label>
-                    <input
-                      type="number" min="1" max="16"
-                      value={settingsForm.max_concurrent}
-                      onChange={e => setSettingsForm(s => ({...s, max_concurrent: Number(e.target.value)}))}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="setting-group">
-                <h3>模拟速度</h3>
-                <label>时间倍率</label>
-                <select
-                  value={settingsForm.seconds_per_day}
-                  onChange={e => setSettingsForm(s => ({...s, seconds_per_day: Number(e.target.value)}))}
-                >
-                  <option value={600}>慢速 (10分钟/天)</option>
-                  <option value={300}>中速 (5分钟/天)</option>
-                  <option value={120}>快速 (2分钟/天)</option>
-                  <option value={60}>极速 (1分钟/天)</option>
-                </select>
-              </div>
-
-              {settingsMsg && (
-                <div className={`settings-msg ${settingsMsg === 'saved' ? 'ok' : 'err'}`}>
-                  {settingsMsg === 'saved' ? '已保存' : settingsMsg}
-                </div>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button className="btn ghost" onClick={() => setShowSettings(false)}>取消</button>
-              <button className="btn primary" onClick={saveSettings} disabled={settingsSaving}>
-                {settingsSaving ? '保存中...' : '保存'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SettingsCenter
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        onSaved={nextDocument => {
+          const value = nextDocument?.runtime?.simulation?.seconds_per_day
+          if (Number.isFinite(value)) setSecondsPerDay(value)
+        }}
+      />
     </div>
   )
 }

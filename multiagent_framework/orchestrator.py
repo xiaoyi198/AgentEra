@@ -21,6 +21,7 @@ from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .gameplay_contract import GameplayContract
+from .issue_contract import IssueContractError, IssueManager
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -75,6 +76,7 @@ class Orchestrator:
         chain_log: ChainLog,
         router: RouterAgent,
         seconds_per_day: float = 600.0,
+        tick_interval: float = 0.25,
         on_tick: Callable[[TickResult], Awaitable[None]] | None = None,
         action_agent: ActionAgent | None = None,
         memory_compressor: MemoryCompressor | None = None,
@@ -89,6 +91,7 @@ class Orchestrator:
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
         self.action_catalog = ActionCatalog()
+        self.issue_manager = IssueManager()
         self._gameplay_generation: int = 0
         self._gameplay_contract_published: bool = False
         self._memory_compressor = memory_compressor
@@ -121,6 +124,7 @@ class Orchestrator:
         self._bind_runtime_component(action_agent, self.runtime_bindings)
         self._bind_runtime_component(memory_compressor, self.runtime_bindings)
         self._seconds_per_day = seconds_per_day
+        self._tick_interval = max(0.05, float(tick_interval))
         self._on_tick = on_tick
 
         # 时间状态
@@ -211,6 +215,73 @@ class Orchestrator:
 
     def actions_public_state(self) -> dict[str, Any]:
         return self.action_catalog.public_state()
+
+    def configure_issue_catalog(
+        self, definitions: list[dict[str, Any]], *, generation: int = 0,
+        gameplay: GameplayContract | None = None,
+    ) -> None:
+        """Publish DLC issue definitions while preserving durable cases and receipts."""
+        self.issue_manager.configure(
+            definitions, generation=generation,
+            action_ids=self.action_catalog.action_ids,
+            gameplay=gameplay or self._gameplay_contract,
+        )
+        self._sync_legacy_memorials()
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def issues_public_state(self) -> dict[str, Any]:
+        return self.issue_manager.public_state(sim_time=self._sim_time)
+
+    def _sync_legacy_memorials(self) -> None:
+        self.memorials = self.issue_manager.legacy_memorials(sim_time=self._sim_time)
+
+    def list_issues(self, *, status: str = "") -> list[dict[str, Any]]:
+        return self.issue_manager.list_issues(sim_time=self._sim_time, status=status)
+
+    def list_cases(self, *, status: str = "") -> list[dict[str, Any]]:
+        return self.issue_manager.list_cases(sim_time=self._sim_time, status=status)
+
+    def list_decision_requests(self, *, status: str = "") -> list[dict[str, Any]]:
+        return self.issue_manager.list_decision_requests(sim_time=self._sim_time, status=status)
+
+    def open_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.issue_manager.open_issue(payload, sim_time=self._sim_time)
+        self._sync_legacy_memorials()
+        if self.persistor and not result.get("replayed", False):
+            self.persistor.mark_state_dirty()
+        return result
+
+    def append_issue_evidence(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.issue_manager.append_evidence(issue_id, payload, sim_time=self._sim_time)
+        self._sync_legacy_memorials()
+        if self.persistor and not result.get("replayed", False):
+            self.persistor.mark_state_dirty()
+        return result
+
+    def preview_decision(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.issue_manager.preview_decision(
+            request_id, payload, sim_time=self._sim_time,
+            action_preview=self.preview_dlc_action,
+        )
+
+    def resolve_decision(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.issue_manager.resolve_decision(
+            request_id, payload, sim_time=self._sim_time,
+            action_preview=self.preview_dlc_action,
+            action_execute=self.execute_dlc_action,
+        )
+        self._sync_legacy_memorials()
+        if self.persistor and not result.get("replayed", False):
+            self.persistor.mark_state_dirty()
+        return result
+
+    def close_case(self, case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.issue_manager.close_case(case_id, payload, sim_time=self._sim_time)
+        self._sync_legacy_memorials()
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+        return result
 
     def _action_agent_ids(self) -> set[str]:
         result = set(self.agents)
@@ -619,7 +690,7 @@ class Orchestrator:
 
     # ── 主循环 ──
 
-    async def run(self, tick_interval: float = 0.25) -> None:
+    async def run(self, tick_interval: float | None = None) -> None:
         """启动主循环.
 
         时间推进逻辑：
@@ -627,6 +698,8 @@ class Orchestrator:
         - Agent 调用作为后台 asyncio.Task，不阻塞 tick 循环
         - 定时器检查和前端广播每 tick 都执行
         """
+        if tick_interval is not None:
+            self._tick_interval = max(0.05, float(tick_interval))
         self._running = True
         self._paused = False
         self._last_real_time = time.monotonic()
@@ -673,7 +746,7 @@ class Orchestrator:
                     logger.info("Simulation paused at sim_time=%.1f (day %.1f)",
                                 self._sim_time, self.sim_day)
 
-                await asyncio.sleep(tick_interval)
+                await asyncio.sleep(self._tick_interval)
         except asyncio.CancelledError:
             logger.info("Orchestrator cancelled")
         finally:
@@ -883,18 +956,61 @@ class Orchestrator:
 
             agent_wakeups = []
             for wakeup in player_wakeups:
-                memorial = {
-                    "memorial_id": f"mem_{uuid.uuid4().hex[:8]}",
-                    "from": wakeup.get("payload", {}).get("from", "unknown"),
-                    "content": wakeup.get("payload", {}).get("message", ""),
-                    "chain_id": wakeup.get("chain_id", ""),
-                    "event_id": wakeup.get("payload", {}).get("event_id", ""),
-                    "received_at": self._sim_time,
+                payload = dict(wakeup.get("payload", {}))
+                chain_id = str(wakeup.get("chain_id", ""))
+                event_id = str(payload.get("event_id", wakeup.get("event_id", "")))
+                source_id = str(payload.get("source_id", payload.get("from", "")))
+                external_id = str(payload.get("external_id", ""))
+                if not external_id and (chain_id or event_id):
+                    external_id = f"wakeup:{chain_id}:{event_id}:{wakeup.get('target', '')}"
+                issue_payload = {
+                    "external_id": external_id,
+                    "issue_type_id": payload.get("issue_type_id", ""),
+                    "type": payload.get("type", payload.get("event_type", "")),
+                    "source": {
+                        "kind": str(payload.get("source_kind", "agent" if source_id else "system")),
+                        "id": source_id,
+                        "display_name": str(payload.get("from", source_id)),
+                    },
+                    "summary": str(payload.get("summary", payload.get("message", ""))),
+                    "details": dict(payload.get("details", payload)),
+                    "evidence": list(payload.get("evidence", [])),
+                    "urgency": payload.get("urgency", "normal"),
+                    "metadata": {
+                        **dict(payload.get("metadata", {})),
+                        "chain_id": chain_id,
+                        "event_id": event_id,
+                        "target_id": str(wakeup.get("target", "")),
+                    },
                 }
-                result.new_memorials.append(memorial)
-                self.memorials.append(memorial)
-                if self.persistor:
-                    self.persistor.mark_state_dirty()
+                if payload.get("deadline_days") is not None:
+                    issue_payload["deadline_days"] = payload["deadline_days"]
+                try:
+                    opened = self.open_issue(issue_payload)
+                except IssueContractError as exc:
+                    logger.warning(
+                        "Player wakeup rejected by issue contract: target=%s code=%s",
+                        wakeup.get("target", ""), exc.code,
+                    )
+                    result.agent_errors.append({
+                        "agent_id": str(wakeup.get("target", "")),
+                        "error": "issue_contract_rejected",
+                        "code": exc.code,
+                        "path": exc.path,
+                        "chain_id": chain_id,
+                        "event_id": event_id,
+                    })
+                    continue
+                issue = opened["issue"]
+                result.new_issues.append(issue)
+                result.new_cases.append(opened["case"])
+                result.new_decision_requests.extend(opened["decision_requests"])
+                memorial = next(
+                    (item for item in self.memorials if item.get("memorial_id") == issue["issue_id"]),
+                    None,
+                )
+                if memorial is not None:
+                    result.new_memorials.append(memorial)
             for target_id, wakeup in merged_agent_wakeups.items():
                 agent = self.agents[target_id]
                 agent_wakeups.append((agent, wakeup))

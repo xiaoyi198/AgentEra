@@ -1,4 +1,4 @@
-﻿# 开发指南 — 大明王朝·朝堂风云
+# 开发指南 — 大明王朝·朝堂风云
 
 > 项目目录结构、数据库 schema、API 接口、前端组件详见 [PROJECT_DOC.md](PROJECT_DOC.md)。
 
@@ -2379,3 +2379,86 @@ Pop-Location
 ```
 
 Also validate the real `example_frontier` package and execute its action against a temporary `WorldState` when changing effect materialization, anchored cost semantics, or persistence ordering.
+
+## Generic Issue and visual settings development workflow (v0.22.0)
+
+### Adding or changing a runtime setting
+
+A runtime setting is not complete until the typed config, Chinese schema, runtime activation, visual editor, compatibility behavior, and tests change together:
+
+1. Add the field to the appropriate dataclass in `multiagent_framework/runtime_settings.py` and define a conservative default.
+2. Parse and bound the field in `RuntimeSettings.from_dict`; keep absent-field behavior compatible with older files.
+3. Add Chinese `label`, `description`, input kind, range/options, unit, and operational warning to `settings_schema()`.
+4. Wire the value into initial construction in `main.py` and hot activation in `routers/settings._apply_runtime_settings`.
+5. Add the control to the matching `SettingsCenter` section. Do not duplicate bounds in ad-hoc frontend save logic when schema metadata can drive them.
+6. Update `config/runtime.example.json`, README, `PROJECT_DOC.md`, this guide, and the optimization checkpoint when the field changes an operator-facing contract.
+7. Add tests for minimum/maximum values, missing legacy values, validation, successful hot update, stale generation, and activation rollback.
+
+`config/runtime.json` currently has four sections: `simulation`, `agent_defaults`, `action_agent`, and `memory`. Do not move model Provider/Profile/router data into this file; it stays in `config/models.json`.
+
+### Settings API payload and two-stage save
+
+Validation and save accept the same logical request:
+
+```json
+{
+  "expected_generation": 12,
+  "models": {
+    "providers": {},
+    "models": {},
+    "task_policies": {},
+    "dlc_task_policies": {},
+    "agent_task_policies": {}
+  },
+  "runtime": {
+    "simulation": {"seconds_per_day": 120, "tick_interval": 0.25},
+    "agent_defaults": {},
+    "action_agent": {},
+    "memory": {}
+  },
+  "runtime_keys": {"primary": "temporary-key"},
+  "clear_runtime_keys": [],
+  "allow_secret_host_change": false
+}
+```
+
+Development clients must call `POST /api/settings/validate` first, present its normalized document, warnings, and diff to the operator, then call `POST /api/settings` with the same generation and confirmed content. Never bypass the second server validation or rely only on frontend validation.
+
+Security rules are mandatory:
+
+- Never add a raw API key, admin token, archive key, or alert secret to a response model, Diff, log, exception detail, test fixture committed to Git, `models.json`, `runtime.json`, localStorage, or sessionStorage.
+- `runtime_keys` are write-only request data held in backend process memory. A GET response may expose only whether a key is configured.
+- A long-lived credential must be referenced through `api_key_env`; environment status endpoints return booleans only.
+- If a configured Provider's Base URL changes host, validation must warn and save must require `allow_secret_host_change=true`.
+- The Advanced JSON editor may edit only `providers`, `models`, `task_policies`, `dlc_task_policies`, and `agent_task_policies`; strip read-only metadata such as `api_key_configured` before serialization.
+- Preserve unknown model fields when applying known-section edits. Visual configuration must not become a lossy migration tool.
+
+### Developing Issue types and options
+
+- Add Issue schemas to `content.json.issue_types`; IDs must be stable and package-local references must resolve during Registry validation.
+- Source restrictions, required evidence, urgency, deadlines, Case creation, and options belong in the Issue type, not in theme-specific router branches.
+- Options that execute gameplay use existing generic `action_id` definitions. Parameter mappings must be deterministic and previewable; do not allow a client or LLM to inject an authoritative completion time or bypass Action permissions/costs.
+- External producers must provide a stable `external_id` when retries are possible. Decision resolution must provide a stable `invocation_id`. Same-ID/same-payload is a replay; same-ID/different-payload is a conflict.
+- Deadline transitions use authoritative simulation time. Do not use wall-clock time for Issue expiration.
+- New lifecycle fields must be included in `IssueManager.snapshot/restore`, manual saves, runtime persistence, generation archives where applicable, and legacy migration tests.
+- Keep `/api/memorials` as compatibility-only. New UI and DLC code should use `/api/issues`, `/api/cases`, and `/api/decision-requests`.
+- DLC Studio edits must participate in validation, import/export, diff, history, and unsaved-draft behavior, with a frontend tool test for normalization.
+
+### Required release gate
+
+Run from the repository root:
+
+```powershell
+python -m pytest -q -p no:cacheprovider
+python -m compileall -q multiagent_framework routers main.py
+
+Push-Location frontend
+npm test
+npm run lint
+npm run build
+Pop-Location
+
+git -c safe.directory='F:/世界模拟器' diff --check
+```
+
+Settings-focused work must additionally cover secret non-disclosure, Provider host-change confirmation, unknown-field preservation, generation conflicts, successful hot activation, and full three-file rollback when activation fails. Issue-focused work must cover Registry validation, dynamic options, Action preview/resolve, idempotency conflicts, deadlines, snapshot/manual-save restore, and Generation reload/archive behavior.

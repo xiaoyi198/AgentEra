@@ -287,3 +287,38 @@ def test_generation_archive_restores_action_definitions(tmp_path: Path):
     result = asyncio.run(loader.rollback_active(1))
     assert result["source_generation"] == 1
     assert loader.public_runtime()["actions"]["actions"][0]["display_name"] == "Generation One Relief"
+
+
+def _archived_issue(display_name: str) -> dict:
+    return {
+        "issue_type_id": "city_report",
+        "display_name": display_name,
+        "source": {"allowed_kinds": ["agent"], "allowed_ids": ["mayor"]},
+        "match": {"payload_types": ["city_report"], "source_ids": ["mayor"]},
+    }
+
+
+def test_generation_archive_persists_issue_definitions_for_restart_rollback(tmp_path: Path):
+    registry = _registry(tmp_path)
+    content = registry.load_content("sample")
+    content["issue_types"] = [_archived_issue("Generation One Report")]
+    registry.save_content("sample", content)
+
+    first = _loader(tmp_path, registry, FakeOrchestrator())
+    first.load_active(seed_world=True)
+    content = registry.load_content("sample")
+    content["issue_types"] = [_archived_issue("Generation Two Report")]
+    registry.save_content("sample", content)
+    asyncio.run(first.reload_active())
+
+    records = first._generation_archive.load_all().records
+    assert records[0].blueprint["issue_definitions"][0]["display_name"] == "Generation One Report"
+    assert records[1].blueprint["issue_definitions"][0]["display_name"] == "Generation Two Report"
+
+    restarted = _loader(tmp_path, registry, FakeOrchestrator())
+    restarted.load_active(seed_world=False)
+    assert restarted.public_runtime()["issues"]["issue_types"][0]["display_name"] == "Generation Two Report"
+    result = asyncio.run(restarted.rollback_active(1))
+
+    assert result["source_generation"] == 1
+    assert restarted.public_runtime()["issues"]["issue_types"][0]["display_name"] == "Generation One Report"

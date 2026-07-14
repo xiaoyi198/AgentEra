@@ -275,5 +275,74 @@
         ]
       }
     }
+  ],
+  "issue_types": [
+    {
+      "issue_type_id": "frontier_security_report",
+      "display_name": "边境安全报告",
+      "description": "哨站守备官上报的边境风险事项，可由玩家选择立即巡查或持续监控。",
+      "category": "security",
+      "default_urgency": "high",
+      "default_deadline_days": 3,
+      "source": {
+        "allowed_kinds": [
+          "agent"
+        ],
+        "allowed_ids": [
+          "哨站守备官"
+        ]
+      },
+      "match": {
+        "payload_types": [
+          "frontier_security_report"
+        ],
+        "source_ids": [
+          "哨站守备官"
+        ],
+        "default_for_player_reports": false
+      },
+      "evidence": [
+        {
+          "kind": "patrol_report",
+          "display_name": "巡查报告",
+          "required": true
+        }
+      ],
+      "decision_requests": [
+        {
+          "request_id": "security_response",
+          "title": "决定边境应对方式",
+          "prompt": "请选择立即巡查或持续监控。",
+          "deadline_days": 2,
+          "options": [
+            {
+              "option_id": "patrol",
+              "display_name": "立即巡查",
+              "action_id": "frontier_patrol",
+              "control_object_id": "边境哨站",
+              "target_id": "边境哨站",
+              "parameters": {
+                "alert_gain": 8
+              },
+              "resolution": {
+                "issue_status": "resolved",
+                "case_status": "resolved",
+                "summary": "已启动边境巡查"
+              }
+            },
+            {
+              "option_id": "monitor",
+              "display_name": "持续监控",
+              "resolution": {
+                "issue_status": "monitoring",
+                "case_status": "monitoring",
+                "summary": "暂不行动，继续收集情报"
+              }
+            }
+          ]
+        }
+      ],
+      "enabled": true
+    }
   ]
 }

@@ -123,6 +123,10 @@ async def save_game(req: SaveRequest):
             for aid, agent in state.orchestrator.agents.items()
         },
         "pending_memorials": memorials,
+        "issue_runtime": (
+            state.orchestrator.issue_manager.snapshot()
+            if hasattr(state.orchestrator, "issue_manager") else {}
+        ),
         "seconds_per_day": state.orchestrator._seconds_per_day,
         "random_events": state.orchestrator.random_event_generator.snapshot(),
         "causal_events": state.orchestrator.causal_event_engine.snapshot(),
@@ -142,6 +146,7 @@ async def save_game(req: SaveRequest):
         "agent_count": len(state.orchestrator.agents),
         "timer_count": state.orchestrator.timers.count(),
         "memorial_count": len(memorials),
+        "issue_count": len(state.orchestrator.list_issues()) if hasattr(state.orchestrator, "list_issues") else len(memorials),
     }
     (save_path / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -217,6 +222,7 @@ async def load_game(req: LoadRequest):
         "sim_time": meta["sim_time"],
         "seconds_per_day": runtime.get("seconds_per_day", meta.get("seconds_per_day", 600.0)),
         "memorials": runtime.get("pending_memorials", []),
+        "issue_runtime": runtime.get("issue_runtime", {}),
         "random_events": runtime.get("random_events", {}),
         "causal_events": runtime.get("causal_events", {}),
         "action_runtime": runtime.get("action_runtime", {}),
