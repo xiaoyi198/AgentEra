@@ -1,10 +1,10 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.25.0**
+> 当前版本：**v0.26.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
-项目不仅包含游戏运行时，也提供 DLC Studio、模型路由、多轮记忆、真实模型轨迹评测和安全晋级门禁，便于快速创建新的世界与 Agent 群体。
+项目不仅包含游戏运行时，也提供 DLC Studio、通用 Actor 组件、模型路由、多轮记忆、真实模型轨迹评测和安全晋级门禁，便于快速创建新的世界与 Agent 群体。
 
 ## 核心能力
 
@@ -15,7 +15,8 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Generation 能力注册表**：玩家、普通 Agent 与 Router 共用 DLC `capability_id`；框架以稳定工具解释执行 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类安全 handler，并随热重载、归档、回滚和重启恢复切换。
@@ -298,6 +299,24 @@ DLC Studio 的“晋级工作台”可直接完成上述 Preview/Apply 流程：
 
 工作台地址仍为 `http://localhost:3000/dlc.html`。管理接口必须通过 `WORLD_SIM_ENABLE_ADMIN_API` 和 `WORLD_SIM_ADMIN_TOKEN` 显式启用。
 
+## 通用 Actor 组件（v0.26.0）
+
+DLC 在 `content.json.actors` 中声明题材无关的 Actor。`actors` 是权威角色定义，`agents[].actor_id` 只负责把 LLM 调用者绑定到角色；未填写 `actor_id` 的旧 Agent 会自动投影同 ID Actor，因此旧 DLC 无需立即迁移。Actor 可以没有 Agent，适合库存管理员、组织、群体或暂未启用 LLM 的角色。
+
+Actor 组件包括：
+
+- `attributes`：有界数值或标量属性；
+- `traits`：带强度、标签和描述的稳定特质；
+- `needs`：当前值、目标值、上下界和变化率；
+- `goals`：优先级、状态、进度与期限；
+- `capability_ids`：引用当前 Generation 的 DLC 能力；
+- `identities`：身份、称号、实体和有效期；
+- `memberships`：组织、角色、状态和权重；
+- `states`：可持久化的安全 JSON 动态状态；
+- `metadata`：编辑和扩展信息，默认不会注入模型 Prompt。
+
+DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时校验、Actor-only 创建和 Agent 绑定选择。运行时提供 `GET /api/actors` 与 `GET /api/actors/{actor_id}`；Prompt 可使用 `{actor_id}`、`{actor_attributes}`、`{actor_traits}`、`{actor_needs}`、`{actor_goals}`、`{actor_capabilities}`、`{actor_identities}`、`{actor_memberships}` 和 `{actor_states}`。
+
 ## 测试
 
 ```powershell
@@ -342,6 +361,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.26.0 发布说明
+
+- 新增 Generation-bound 通用 Actor 契约，将角色数据从固定 `Official`/Agent 表达中解耦，覆盖属性、Trait、需求、目标、能力、身份、成员关系和状态。
+- Registry 校验 Actor、实体、能力、组织与 Agent 引用以及跨 DLC ID 冲突；旧 Agent 继续自动投影同 ID Actor，显式未知 Actor 会被拒绝。
+- Runtime、Generation archive、热重载、回滚与存档均携带 Actor 定义和动态状态；热重载只保留仍符合新 Schema 的状态值。
+- 新增安全 Actor 列表/详情 API、Actor Prompt 变量和 DLC Studio 中文 Actor 编辑器；Agent 编辑器支持显式绑定 Actor，Prompt 不注入 Metadata。
+- `example_frontier` 升级至 `1.5.0`，包含两个 Agent-bound Actor 和一个 Actor-only 角色。
+- 发布版本统一升级为 `0.26.0`。本地门禁通过 576 个 Python 测试（另有 2 个外部 API 环境门禁测试因当前进程未注入凭据而按设计跳过）、34 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、凭据扫描与 Git 差异检查。
+
+长期 Goal 继续保持 active；P1.1 已完成，下一阶段进入 P1.2 DLC 自定义关系。
 
 ## v0.25.0 发布说明
 

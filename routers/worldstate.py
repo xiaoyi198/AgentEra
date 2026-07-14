@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import _state as state
@@ -26,6 +26,27 @@ def _ws():
     if not state.orchestrator:
         return None
     return getattr(state.orchestrator, "world_state", None)
+
+
+@router.get("/actors")
+async def list_actors():
+    """返回当前 DLC Generation 的安全 Actor 定义与运行状态。"""
+    orchestrator = state.orchestrator
+    if orchestrator is None or not hasattr(orchestrator, "actor_manager"):
+        return {"error": "actor runtime not initialized", "configured": False, "actors": []}
+    return orchestrator.actors_public_state()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: str):
+    """按 Actor ID 返回单个安全定义与运行状态。"""
+    orchestrator = state.orchestrator
+    if orchestrator is None or not hasattr(orchestrator, "actor_manager"):
+        raise HTTPException(status_code=503, detail="actor runtime not initialized")
+    actor = orchestrator.actor_manager.get(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="actor not found")
+    return actor
 
 
 @router.get("/world-state")

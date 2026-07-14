@@ -12,6 +12,7 @@ from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
 from .action_contract import ActionCatalog
+from .actor_contract import ActorDefinition, ActorManager
 from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
@@ -94,6 +95,7 @@ class Orchestrator:
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
         self._ui_manifest = UIManifest.from_content({})
+        self.actor_manager = ActorManager()
         self.capability_catalog = CapabilityCatalog()
         configure_router_capabilities = getattr(self.router, "configure_capability_catalog", None)
         if callable(configure_router_capabilities):
@@ -228,6 +230,23 @@ class Orchestrator:
             **self._ui_manifest.to_dict(),
             "generation": self._ui_manifest_generation,
         }
+
+    def configure_actor_catalog(
+        self,
+        definitions: list[ActorDefinition | dict[str, Any]],
+        *,
+        generation: int = 0,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish immutable Actor components while preserving valid runtime overlays."""
+        self.actor_manager.configure(
+            definitions, generation=generation, preserve_state=preserve_state
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def actors_public_state(self) -> dict[str, Any]:
+        return self.actor_manager.public_state()
 
     def configure_capability_catalog(
         self, definitions: list[dict[str, Any]], *, generation: int = 0,
@@ -853,6 +872,7 @@ class Orchestrator:
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
             "objective_runtime": self.objective_manager.snapshot(),
+            "actor_runtime": self.actor_manager.snapshot(),
             "agent_memories": agent_memories,
         }
 

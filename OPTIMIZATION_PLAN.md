@@ -1448,3 +1448,20 @@ This checkpoint completes P0.6 and the full P0 gameplay loop foundation:
 The persistent gameplay-framework goal remains **active**. P0 is complete, but P1/P2 remain open. The next work should move into generic Actor components, DLC-defined relationships, richer causal conditions/effects, and world/Actor/player knowledge layers rather than adding theme-specific branches.
 
 The v0.25.0 release gate passed 567 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 32 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, encoding checks, and Git diff checks.
+
+
+## Phase checkpoint: Generation-bound generic Actor components (v0.26.0, 2026-07-14)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.1:
+
+- introduced a DLC-authored generic Actor contract for attributes, traits, needs, goals, capabilities, identities, memberships and states;
+- separated Actor identity/state from LLM Agent execution while preserving same-ID legacy projection and supporting Actor-only roles;
+- integrated Actor validation, cross-package ownership, Generation materialization, encrypted archive recovery, reload/rollback and persisted runtime overlays;
+- added safe Actor APIs, prompt variables and a detailed Chinese DLC Studio Actor editor with import/export, keyed diff and history support;
+- upgraded `example_frontier` to v1.5.0 and synchronized AgentEra to v0.26.0.
+
+The persistent gameplay-framework goal remains **active**. P1.1 is complete; P1.2 should next generalize relationship contracts with direction, strength, visibility, expiry and multi-dimensional values. P1.3+ and P2 remain open.
+
+The v0.26.0 release gate passed 576 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 34 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, encoding and credential scans, and Git diff checks.

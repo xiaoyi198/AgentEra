@@ -31,6 +31,7 @@ class FakeOrchestrator:
         self.gameplay_configurations = []
         self.action_configurations = []
         self.capability_configurations = []
+        self.actor_configurations = []
         self.issue_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
@@ -58,6 +59,10 @@ class FakeOrchestrator:
     def configure_action_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("actions", [item["action_id"] for item in definitions]))
         self.action_configurations.append((definitions, generation, gameplay))
+
+    def configure_actor_catalog(self, definitions, *, generation=0, preserve_state=True) -> None:
+        self.operations.append(("actors", [item.actor_id for item in definitions]))
+        self.actor_configurations.append((definitions, generation, preserve_state))
 
     def configure_capability_catalog(self, definitions, *, generation=0) -> None:
         self.operations.append(("capabilities", [item["capability_id"] for item in definitions]))
@@ -1134,3 +1139,44 @@ def test_runtime_publishes_capabilities_across_reload_and_rollback(tmp_path: Pat
     assert rollback["source_generation"] == 1
     assert orchestrator.capability_configurations[-1][0][0]["display_name"] == "Generation One Report"
     assert loader.public_runtime()["capabilities"]["capabilities"][0]["capability_id"] == "city_report"
+
+
+
+def test_runtime_materializes_explicit_actor_components_and_actor_only_definition(tmp_path: Path):
+    registry = DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
+    registry.create({"id": "actors", "name": "Actors", "version": "1.0.0"})
+    registry.save_content("actors", {
+        "entities": [
+            {"id": "outpost", "type": "location", "name": "Outpost"},
+            {"id": "garrison", "type": "organization", "name": "Garrison"},
+        ],
+        "actors": [
+            {
+                "actor_id": "guard_actor", "display_name": "Guard", "entity_id": "outpost",
+                "attributes": {"rank": 6},
+                "needs": [{"need_id": "supply", "current": 40, "target": 80}],
+                "identities": [{"identity_id": "watch_commander"}],
+                "memberships": [{"organization_id": "garrison", "role": "commander", "primary": True}],
+                "states": {"alert": True},
+            },
+            {"actor_id": "actor_only", "display_name": "Quartermaster"},
+        ],
+        "agents": [{"id": "guard_agent", "actor_id": "guard_actor"}],
+        "prompts": {"official_template": "{name}|{actor_id}|{actor_needs}|{actor_states}"},
+    })
+    registry.publish("actors")
+    registry.set_enabled("actors", True)
+    world = WorldState(str(tmp_path / "actors.db"))
+    court = CourtGraph(str(tmp_path / "actors.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active(seed_world=False)[0]
+
+    assert report.actors == 2 and report.agents == 1
+    definitions, generation, preserve_state = orchestrator.actor_configurations[-1]
+    assert generation == 1 and preserve_state is False
+    assert {item.actor_id for item in definitions} == {"guard_actor", "actor_only"}
+    assert orchestrator.agents["guard_agent"].config.display_name == "Guard"
+    prompt = orchestrator.agents["guard_agent"].config.system_prompt
+    assert "guard_actor" in prompt and '"supply"' in prompt and '"alert":true' in prompt

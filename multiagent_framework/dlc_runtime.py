@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from .agent_runtime import AgentConfig, BaseAgent, InstitutionAgent, OfficialAgent
+from .actor_contract import ActorDefinition, ActorManager, effective_actor_documents
 from .court_graph import CourtGraph, Official
 from .causal_templates import expand_causal_rule_document
 from .dlc_registry import (
@@ -46,7 +47,9 @@ _DEFAULT_OFFICIAL_TEMPLATE = (
 _AGENT_PROMPT_VARIABLES = {
     "id", "name", "rank", "rank_title", "location", "location_id",
     "personality", "personality_seed", "superior", "superior_id",
-    "role", "agent_type",
+    "role", "agent_type", "actor", "actor_id", "actor_type", "actor_entity_id",
+    "actor_attributes", "actor_traits", "actor_needs", "actor_goals",
+    "actor_capabilities", "actor_identities", "actor_memberships", "actor_states",
 }
 
 
@@ -60,6 +63,7 @@ class DLCLoadReport:
     relations: int = 0
     ongoing_events: int = 0
     officials: int = 0
+    actors: int = 0
     agents: int = 0
     initial_events: int = 0
     random_events: int = 0
@@ -116,6 +120,8 @@ class _DLCMaterializedSnapshot:
     agents: dict[str, BaseAgent]
     officials: list[Official]
     official_ids: set[str]
+    actor_definitions: list[ActorDefinition]
+    actor_packages: dict[str, str]
     prompts: dict[str, "PromptRegistry"]
     model_profiles: dict[str, str]
     agent_packages: dict[str, str]
@@ -168,7 +174,9 @@ class PromptRegistry(FrameworkPromptRegistry):
         self.metadata = dict(package.manifest.metadata)
         self.render_reports: dict[str, PromptRenderResult] = {}
 
-    def build_agent_prompt(self, official: Official) -> str:
+    def build_agent_prompt(
+        self, official: Official, actor_values: dict[str, str] | None = None
+    ) -> str:
         rank_titles = self.metadata.get("rank_titles", {})
         rank_title = rank_titles.get(str(official.rank), f"rank {official.rank}")
         values = {
@@ -185,6 +193,7 @@ class PromptRegistry(FrameworkPromptRegistry):
             "role": official.role,
             "agent_type": official.agent_type,
         }
+        values.update(actor_values or {})
         prompt_name = official.id if self.has(official.id) else "official_template"
         unsupported = [
             item for item in self.lint(prompt_name, allowed_variables=_AGENT_PROMPT_VARIABLES)
@@ -302,11 +311,13 @@ class AgentFactory:
         *,
         package: DLCPackage,
         agent_sources: list[dict[str, Any]] | None = None,
+        actor_values_by_agent: dict[str, dict[str, str]] | None = None,
         excluded_agent_ids: set[str] | frozenset[str] | None = None,
         legacy_role_player: bool = True,
     ) -> list[BaseAgent]:
         agents: list[BaseAgent] = []
         sources = {str(item.get("id", "")): item for item in (agent_sources or [])}
+        actor_values = actor_values_by_agent or {}
         excluded = set(excluded_agent_ids or ())
         base_client = self.llm_client
         if hasattr(base_client, "for_dlc"):
@@ -324,7 +335,9 @@ class AgentFactory:
                 agent_id=official.id,
                 agent_type=official.agent_type,
                 display_name=official.name,
-                system_prompt=prompts.build_agent_prompt(official),
+                system_prompt=prompts.build_agent_prompt(
+                    official, actor_values.get(official.id)
+                ),
                 personality_seed=official.personality_seed,
                 **self.agent_defaults,
             )
@@ -424,19 +437,52 @@ class DLCBundleLoader:
         )
 
     @staticmethod
-    def _official(item: dict[str, Any]) -> Official:
+    def _official(
+        item: dict[str, Any], actor: ActorDefinition | None = None
+    ) -> Official:
+        primary_membership = next(
+            (entry for entry in (actor.memberships if actor else ()) if entry.get("primary")),
+            (actor.memberships[0] if actor and actor.memberships else {}),
+        )
+        primary_identity = actor.identities[0] if actor and actor.identities else {}
+        first_trait = actor.traits[0] if actor and actor.traits else {}
+        rank_value = item.get("rank")
+        if rank_value is None and actor is not None:
+            rank_value = actor.attributes.get("rank", primary_membership.get("rank", 1))
+        actor_type = actor.actor_type if actor else "person"
         return Official(
             id=str(item["id"]),
-            name=str(item.get("name", item["id"])),
-            rank=int(item.get("rank", 1)),
-            location_id=str(item.get("location_id", "")),
-            role=str(item.get("role", "official")),
-            agent_type=str(item.get("agent_type", "official")),
+            name=str(item.get("name") or (actor.display_name if actor else item["id"])),
+            rank=int(rank_value if rank_value is not None else 1),
+            location_id=str(item.get("location_id") or (actor.entity_id if actor else "")),
+            role=str(item.get("role") or primary_membership.get("role") or primary_identity.get("identity_id") or "official"),
+            agent_type=str(item.get("agent_type") or ("institution" if actor_type in {"organization", "institution", "system"} else "official")),
             superior_id=item.get("superior_id"),
-            personality_seed=str(item.get("personality_seed", "")),
-            enabled=bool(item.get("enabled", True)),
+            personality_seed=str(item.get("personality_seed") or first_trait.get("trait_id", "")),
+            enabled=bool(item.get("enabled", True)) and bool(actor.enabled if actor else True),
             extra_prompt=str(item.get("extra_prompt", "")),
         )
+
+    @staticmethod
+    def _actor_materialization(
+        content: dict[str, Any], *, generation: int = 0
+    ) -> tuple[list[ActorDefinition], dict[str, ActorDefinition], dict[str, dict[str, str]]]:
+        documents = effective_actor_documents(content.get("actors", []), content.get("agents", []))
+        definitions = [
+            ActorDefinition.parse(item, f"actors[{index}]")
+            for index, item in enumerate(documents)
+        ]
+        actors_by_id = {actor.actor_id: actor for actor in definitions}
+        manager = ActorManager()
+        manager.configure(definitions, generation=generation, preserve_state=False)
+        prompt_values: dict[str, dict[str, str]] = {}
+        for agent in content.get("agents", []):
+            if not isinstance(agent, dict):
+                continue
+            agent_id = str(agent.get("id", ""))
+            actor_id = str(agent.get("actor_id") or agent_id)
+            prompt_values[agent_id] = manager.prompt_values(actor_id)
+        return definitions, actors_by_id, prompt_values
 
     def load_package(self, package: DLCPackage, *, seed_world: bool = True) -> DLCLoadReport:
         issues = self.registry.validate(package.manifest.id)
@@ -463,13 +509,20 @@ class DLCBundleLoader:
         # prompt/model bindings therefore fail the package load without partial seeding.
         # Directly player-controlled Agent records remain addressable court/actor nodes,
         # but do not receive an autonomous LLM runtime.
-        officials = [self._official(item) for item in content["agents"]]
+        actor_definitions, actors_by_id, actor_prompt_values = self._actor_materialization(content)
+        officials = [
+            self._official(
+                item, actors_by_id.get(str(item.get("actor_id") or item.get("id", "")))
+            )
+            for item in content["agents"]
+        ]
         prompts = PromptRegistry(content, package)
         agents = self.agent_factory.create(
             officials,
             prompts,
             package=package,
             agent_sources=content["agents"],
+            actor_values_by_agent=actor_prompt_values,
             excluded_agent_ids=package_gameplay.direct_agent_ids,
             legacy_role_player=package_gameplay.source != "explicit",
         )
@@ -537,7 +590,8 @@ class DLCBundleLoader:
             package_id=package.manifest.id,
             resources=len(resources), entities=len(entities), inventory=len(inventory),
             entity_values=len(values), relations=len(content["relations"]),
-            ongoing_events=len(ongoing), officials=len(officials), agents=len(agents),
+            ongoing_events=len(ongoing), officials=len(officials),
+            actors=len(actor_definitions), agents=len(agents),
             initial_events=len(events) if seed_world else 0,
             random_events=len(content["random_events"]),
             causal_event_rules=len(content["causal_event_rules"]),
@@ -563,6 +617,9 @@ class DLCBundleLoader:
         packages = self.registry.ordered_active_packages()
         agents: dict[str, BaseAgent] = {}
         officials: list[Official] = []
+        actor_definitions: list[ActorDefinition] = []
+        actor_packages: dict[str, str] = {}
+        actor_ids: set[str] = set()
         prompts_by_package: dict[str, PromptRegistry] = {}
         model_profiles: dict[str, str] = {}
         agent_packages: dict[str, str] = {}
@@ -635,13 +692,26 @@ class DLCBundleLoader:
                 },
                 "content": content,
             })
-            package_officials = [self._official(item) for item in content["agents"]]
+            package_actor_definitions, actors_by_id, actor_prompt_values = self._actor_materialization(content)
+            for actor in package_actor_definitions:
+                if actor.actor_id in actor_ids:
+                    raise DLCRegistryError(f"Duplicate active Actor id: {actor.actor_id}")
+                actor_ids.add(actor.actor_id)
+                actor_definitions.append(actor)
+                actor_packages[actor.actor_id] = package.manifest.id
+            package_officials = [
+                self._official(
+                    item, actors_by_id.get(str(item.get("actor_id") or item.get("id", "")))
+                )
+                for item in content["agents"]
+            ]
             prompt_registry = PromptRegistry(content, package)
             package_agents = self.agent_factory.create(
                 package_officials,
                 prompt_registry,
                 package=package,
                 agent_sources=content["agents"],
+                actor_values_by_agent=actor_prompt_values,
                 excluded_agent_ids=package_gameplay.direct_agent_ids,
                 legacy_role_player=package_gameplay.source != "explicit",
             )
@@ -770,6 +840,8 @@ class DLCBundleLoader:
             agents=agents,
             officials=officials,
             official_ids={official.id for official in officials},
+            actor_definitions=actor_definitions,
+            actor_packages=actor_packages,
             prompts=prompts_by_package,
             model_profiles=model_profiles,
             agent_packages=agent_packages,
@@ -910,6 +982,8 @@ class DLCBundleLoader:
                 for agent_id, agent in sorted(snapshot.agents.items())
             ],
             "officials": [asdict(item) for item in snapshot.officials],
+            "actor_definitions": [actor.to_dict() for actor in snapshot.actor_definitions],
+            "actor_packages": dict(snapshot.actor_packages),
             "prompts": {
                 package_id: self._prompt_registry_blueprint(registry)
                 for package_id, registry in sorted(snapshot.prompts.items())
@@ -1054,6 +1128,32 @@ class DLCBundleLoader:
         officials = [
             Official(**dict(item)) for item in blueprint.get("officials", [])
         ]
+        actor_definitions = [
+            ActorDefinition.parse(dict(item), f"actor_definitions[{index}]")
+            for index, item in enumerate(blueprint.get("actor_definitions", []))
+        ]
+        if not actor_definitions:
+            actor_definitions = [
+                ActorDefinition.parse(
+                    {
+                        "actor_id": official.id,
+                        "display_name": official.name,
+                        "actor_type": "institution" if official.agent_type == "institution" else "person",
+                        "entity_id": official.location_id,
+                        "enabled": official.enabled,
+                        "attributes": {"rank": official.rank},
+                        "traits": ([{"trait_id": official.personality_seed}] if official.personality_seed else []),
+                        "identities": [{"identity_id": official.role}],
+                        "states": {"legacy_projection": True},
+                    },
+                    f"actor_definitions[{index}]",
+                )
+                for index, official in enumerate(officials)
+            ]
+        actor_packages = {
+            str(key): str(value)
+            for key, value in dict(blueprint.get("actor_packages", {})).items()
+        }
         archived_gameplay = blueprint.get("gameplay_contract")
         gameplay_contract = (
             GameplayContract.from_dict(archived_gameplay)
@@ -1084,6 +1184,8 @@ class DLCBundleLoader:
             agents=agents,
             officials=officials,
             official_ids={item.id for item in officials},
+            actor_definitions=actor_definitions,
+            actor_packages=actor_packages,
             prompts=prompts,
             model_profiles=model_profiles,
             agent_packages=agent_packages,
@@ -1193,6 +1295,8 @@ class DLCBundleLoader:
             agents=agents,
             officials=copy.deepcopy(snapshot.officials),
             official_ids=set(snapshot.official_ids),
+            actor_definitions=copy.deepcopy(snapshot.actor_definitions),
+            actor_packages=dict(snapshot.actor_packages),
             prompts=dict(snapshot.prompts),
             model_profiles=dict(snapshot.model_profiles),
             agent_packages=dict(snapshot.agent_packages),
@@ -1537,6 +1641,12 @@ class DLCBundleLoader:
                         candidate.action_definitions, generation=target_generation,
                         gameplay=candidate.gameplay_contract,
                     )
+                if hasattr(self.orchestrator, "configure_actor_catalog"):
+                    self.orchestrator.configure_actor_catalog(
+                        candidate.actor_definitions,
+                        generation=target_generation,
+                        preserve_state=True,
+                    )
                 if hasattr(self.orchestrator, "configure_capability_catalog"):
                     self.orchestrator.configure_capability_catalog(
                         candidate.capability_definitions, generation=target_generation
@@ -1681,6 +1791,7 @@ class DLCBundleLoader:
             "package_ids": list(snapshot.package_ids) if snapshot else [],
             "agent_count": len(self._managed_agent_ids),
             "official_count": len(self._managed_official_ids),
+            "actor_count": len(snapshot.actor_definitions) if snapshot else 0,
             "retired_memory_archives": len(self._archived_agent_memory),
             "available_generations": self._public_generation_history(),
             "generation_archive": self._archive_public_status(),
@@ -1704,6 +1815,16 @@ class DLCBundleLoader:
                 self.orchestrator.actions_public_state()
                 if hasattr(self.orchestrator, "actions_public_state")
                 else {"configured": bool(snapshot and snapshot.action_definitions), "generation": self.generation, "actions": copy.deepcopy(snapshot.action_definitions) if snapshot else []}
+            ),
+            "actors": (
+                self.orchestrator.actors_public_state()
+                if hasattr(self.orchestrator, "actors_public_state")
+                else {
+                    "configured": bool(snapshot and snapshot.actor_definitions),
+                    "generation": self.generation,
+                    "actor_count": len(snapshot.actor_definitions) if snapshot else 0,
+                    "actors": [actor.to_dict() for actor in snapshot.actor_definitions] if snapshot else [],
+                }
             ),
             "capabilities": (
                 self.orchestrator.capabilities_public_state()
@@ -1789,6 +1910,12 @@ class DLCBundleLoader:
             self.orchestrator.configure_action_catalog(
                 candidate.action_definitions, generation=self.generation,
                 gameplay=candidate.gameplay_contract,
+            )
+        if hasattr(self.orchestrator, "configure_actor_catalog"):
+            self.orchestrator.configure_actor_catalog(
+                candidate.actor_definitions,
+                generation=self.generation,
+                preserve_state=False,
             )
         if hasattr(self.orchestrator, "configure_capability_catalog"):
             self.orchestrator.configure_capability_catalog(

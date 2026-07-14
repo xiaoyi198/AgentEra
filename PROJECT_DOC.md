@@ -2048,3 +2048,34 @@ Status: **implemented and locally verified**.
 - `POST /api/capabilities/{capability_id}/invoke` 校验目标、参数和 Generation 后调用 Orchestrator，响应采用结构化成功/错误码。
 - React `CapabilityPanel` 从 API 动态构建能力、目标和参数表单；Generation 更新后重新读取目录。
 - DLC Studio 的“能力”页签提供完整中文字段说明、白名单选择、参数与目标编辑、即时验证、Content Diff、导入导出及撤销/重做。
+
+
+## Release architecture note: Generation-bound generic Actor components (v0.26.0)
+
+### Canonical Actor contract
+
+- `multiagent_framework/actor_contract.py` owns normalization, validation, immutable `ActorDefinition` values and the mutable `ActorManager` overlay.
+- `content.json.actors` is authoritative. Components cover attributes, traits, needs, goals, capability IDs, identities, memberships, states and metadata. IDs and nested JSON are bounded; non-finite numbers, unsafe shapes, duplicate local IDs and duplicate organization memberships are rejected.
+- Actor and Agent are deliberately separate. `agents[].actor_id` binds an LLM runtime to a role, Actor-only entries are valid, and legacy Agents without an explicit binding project to same-ID Actors. Explicit references to unknown Actors are validation errors.
+
+### Package ownership and validation
+
+- `DLCRegistry` normalizes Actor documents before materialization and validates entity, capability, identity, membership and Agent references. Actor IDs must remain unique across the active package set.
+- Prompt variable allowlists include the public Actor components but exclude metadata. The Registry continues to reject executable code, provider credentials and arbitrary prompt fields.
+- `example_frontier` v1.5.0 demonstrates Agent/Actor ID separation, Actor-only roles, organization membership and Actor-driven Prompt context.
+
+### Generation and persistence lifecycle
+
+- `DLCRuntimeManager` materializes Actor definitions and Agent-to-Actor prompt packages into the same immutable Generation snapshot as agents, actions and capabilities. Generation archives preserve Actor definitions and can reconstruct legacy snapshots from the former Official projection.
+- Reload configures the `ActorManager` atomically. Compatible runtime overlays survive a normal hot reload; values that violate the replacement Schema are discarded or clamped to the new definition. Rollback/recovery configures the archived catalog before restoring runtime state.
+- `Orchestrator.save_state()` and `load_state()` persist the `actor_runtime` overlay with the rest of authoritative world state. Public runtime summaries expose only safe definitions and state.
+
+### API and authoring surfaces
+
+- `GET /api/actors` returns the safe Actor catalog/runtime summary and `GET /api/actors/{actor_id}` returns a single public Actor or 404. Provider profiles and credentials are never part of these payloads.
+- DLC Studio includes an Actor editor with Chinese field guidance for every component. Actor content participates in import/export, keyed diff, history, undo/redo and advanced JSON. Agent authoring includes an explicit Actor selector.
+- Agent prompt packages can consume structured Actor variables such as attributes, traits, needs, goals and states while keeping metadata outside the LLM context boundary.
+
+### Release verification
+
+The v0.26.0 checkpoint passed 576 Python tests with 2 credential-gated external API tests skipped, 34 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding checks, secret scans and `git diff --check`. The persistent gameplay goal remains active: P1.1 is complete; P1.2 and later phases remain open.

@@ -33,6 +33,17 @@
         "x": 1200,
         "y": 200
       }
+    },
+    {
+      "id": "frontier_garrison",
+      "type": "organization",
+      "name": "边境守军",
+      "description": "负责哨站巡防、补给与边境预警的组织实体。",
+      "current_status": "战备值守",
+      "metadata": {
+        "x": 1140,
+        "y": 250
+      }
     }
   ],
   "inventory": [
@@ -64,7 +75,8 @@
       "agent_type": "official",
       "superior_id": null,
       "personality_seed": "沉着",
-      "enabled": true
+      "enabled": true,
+      "actor_id": "frontier_commander"
     },
     {
       "id": "哨站守备官",
@@ -75,7 +87,8 @@
       "agent_type": "official",
       "superior_id": "边境指挥官",
       "personality_seed": "沉着",
-      "enabled": true
+      "enabled": true,
+      "actor_id": "frontier_guard"
     }
   ],
   "initial_events": [
@@ -96,7 +109,7 @@
     "沉着": "你沉着谨慎，先核实情报，再采取可执行的防务行动。"
   },
   "prompts": {
-    "official_template": "你是{name}，驻守{location}。{personality}\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
+    "official_template": "你是{name}，驻守{location}。{personality}\nActor={actor_id}，需求={actor_needs}，目标={actor_goals}，状态={actor_states}。\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
   },
   "random_events": [],
   "time_rules": [
@@ -121,7 +134,7 @@
     "player": {
       "identity_id": "frontier_commander",
       "display_name": "边境指挥官",
-      "actor_id": "边境指挥官",
+      "actor_id": "frontier_commander",
       "controlled_objects": [
         {
           "kind": "entity",
@@ -183,7 +196,7 @@
           "边境哨站"
         ],
         "actor_ids": [
-          "边境指挥官"
+          "frontier_commander"
         ]
       },
       "preconditions": [
@@ -807,6 +820,233 @@
         "content_placeholder": "可选：补充本次巡逻重点。"
       },
       "enabled": true
+    }
+  ],
+  "actors": [
+    {
+      "actor_id": "frontier_commander",
+      "display_name": "边境指挥官",
+      "description": "玩家控制的边境防务总负责人。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 10,
+        "command": 90,
+        "resilience": 80
+      },
+      "traits": [
+        {
+          "trait_id": "calm_commander",
+          "display_name": "沉着指挥",
+          "description": "优先核实情报并分配可执行任务。",
+          "intensity": 0.9,
+          "tags": [
+            "command",
+            "defense"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "situational_awareness",
+          "display_name": "态势掌握",
+          "description": "维持对边境威胁和补给状况的认知。",
+          "current": 70,
+          "target": 95,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 95
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "secure_frontier",
+          "display_name": "稳定边境",
+          "description": "保持哨站安全并避免补给崩溃。",
+          "status": "active",
+          "priority": 100,
+          "progress": 15,
+          "target": 100
+        }
+      ],
+      "capability_ids": [
+        "frontier_report",
+        "frontier_command",
+        "frontier_operation",
+        "launch_frontier_patrol"
+      ],
+      "identities": [
+        {
+          "identity_id": "frontier_commander",
+          "display_name": "边境指挥官",
+          "kind": "role",
+          "public": true,
+          "description": "边境哨站最高防务负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "commander",
+          "status": "active",
+          "rank": 10,
+          "primary": true,
+          "description": "统领边境守军。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "duty_phase": "command"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "frontier_guard",
+      "display_name": "哨站守备官",
+      "description": "执行巡逻、核验警情并向指挥官汇报。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 2,
+        "vigilance": 85,
+        "stamina": 75
+      },
+      "traits": [
+        {
+          "trait_id": "vigilant_guard",
+          "display_name": "谨慎守备",
+          "description": "面对模糊威胁时先侦察再处置。",
+          "intensity": 0.85,
+          "tags": [
+            "patrol",
+            "report"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "supply",
+          "display_name": "巡防补给",
+          "description": "巡逻和警戒所需的补给充足度。",
+          "current": 60,
+          "target": 85,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 80
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "inspect_north",
+          "display_name": "核查北侧踪迹",
+          "description": "完成北侧巡查并提交可信报告。",
+          "status": "active",
+          "priority": 90,
+          "progress": 0,
+          "target": 10
+        }
+      ],
+      "capability_ids": [
+        "frontier_operation"
+      ],
+      "identities": [
+        {
+          "identity_id": "outpost_guard",
+          "display_name": "哨站守备官",
+          "kind": "role",
+          "public": true,
+          "description": "边境守军一线守备负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "guard_officer",
+          "status": "active",
+          "rank": 2,
+          "primary": true,
+          "description": "负责哨站巡防。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "patrol_status": "ready"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "frontier_quartermaster",
+      "display_name": "军需记录官",
+      "description": "Actor-only 示例：参与世界模拟但暂不创建自主 LLM Agent。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 1,
+        "logistics": 88
+      },
+      "traits": [
+        {
+          "trait_id": "methodical",
+          "display_name": "条理严谨",
+          "description": "重视库存账目和价值锚一致性。",
+          "intensity": 0.8,
+          "tags": [
+            "logistics"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "inventory_accuracy",
+          "display_name": "账实一致",
+          "current": 75,
+          "target": 100,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 90
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "reconcile_assets",
+          "display_name": "核对锚定资产",
+          "status": "active",
+          "priority": 80,
+          "progress": 20,
+          "target": 100
+        }
+      ],
+      "capability_ids": [],
+      "identities": [
+        {
+          "identity_id": "quartermaster",
+          "display_name": "军需记录官",
+          "kind": "role",
+          "public": true
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "quartermaster",
+          "status": "active",
+          "rank": 1,
+          "primary": true
+        }
+      ],
+      "states": {
+        "ledger_open": true
+      },
+      "metadata": {
+        "actor_only": true
+      }
     }
   ]
 }

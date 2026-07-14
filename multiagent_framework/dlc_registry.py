@@ -23,6 +23,9 @@ from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
+from .actor_contract import (
+    effective_actor_documents, normalize_actor_document, validate_actor_definitions,
+)
 from .capability_contract import normalize_capability_document, validate_capability_definitions
 from .issue_contract import normalize_issue_document, validate_issue_definitions
 from .objective_contract import (
@@ -41,6 +44,9 @@ AGENT_PROMPT_VARIABLES = {
     "id", "name", "rank", "rank_title", "location", "location_id",
     "personality", "personality_seed", "superior", "superior_id",
     "role", "agent_type",
+    "actor", "actor_id", "actor_type", "actor_entity_id", "actor_attributes",
+    "actor_traits", "actor_needs", "actor_goals", "actor_capabilities",
+    "actor_identities", "actor_memberships", "actor_states",
 }
 
 
@@ -396,7 +402,7 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "agents", "initial_events", "ongoing_events", "random_events",
+            "actors", "agents", "initial_events", "ongoing_events", "random_events",
             "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
@@ -410,6 +416,7 @@ class DLCRegistry:
             normalized["gameplay"] = normalize_gameplay_document(
                 normalized.get("gameplay", {})
             )
+            normalized["actors"] = normalize_actor_document(normalized.get("actors", []))
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
             normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
@@ -650,6 +657,7 @@ class DLCRegistry:
 
         entities = content["entities"]
         agents = content["agents"]
+        actors = effective_actor_documents(content["actors"], agents)
         resources = content["resources"]
         for collection, key in ((entities, "id"), (agents, "id"), (resources, "name")):
             label = "resources" if key == "name" else ("entities" if collection is entities else "agents")
@@ -683,6 +691,11 @@ class DLCRegistry:
                 capability_issue.code, capability_issue.message,
                 capability_issue.path, capability_issue.severity,
             )
+        capability_ids = {str(item.get("capability_id", "")) for item in content["capabilities"] if item.get("capability_id")}
+        for actor_issue in validate_actor_definitions(
+            actors, agents=agents, entity_ids=entity_ids, capability_ids=capability_ids,
+        ):
+            add(actor_issue.code, actor_issue.message, actor_issue.path, actor_issue.severity)
         for issue in validate_issue_definitions(
             content["issue_types"], action_ids=action_ids, entity_ids=entity_ids,
             agent_ids=agent_ids, gameplay=gameplay_contract,
@@ -1041,8 +1054,11 @@ class DLCRegistry:
                 for item in other_content["capabilities"]
                 for identifier in [item.get("capability_id", ""), *(item.get("aliases", []) or [])]
             }
+            own_actor_ids = {str(item.get("actor_id", item.get("id", ""))) for item in actors}
+            other_actors = effective_actor_documents(other_content["actors"], other_content["agents"])
             comparisons = (
                 ("entity", entity_ids, {str(item.get("id", "")) for item in other_content["entities"]}),
+                ("actor", own_actor_ids, {str(item.get("actor_id", item.get("id", ""))) for item in other_actors}),
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
                 ("capability", own_capability_ids, other_capability_ids),

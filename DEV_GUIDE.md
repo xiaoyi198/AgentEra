@@ -2658,3 +2658,59 @@ python -c "from pathlib import Path; from multiagent_framework.dlc_registry impo
 ```
 
 可选外部 API 连通测试只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入凭据时测试必须 skip；严禁把 URL 或 Key 写入命令、源码、日志、配置和提交。
+
+
+## Generic Actor development workflow (v0.26.0)
+
+### Authoritative schema and compatibility
+
+Define reusable roles in `content.json.actors`; bind an LLM Agent with `agents[].actor_id`. Do not duplicate mutable role state inside Agent configuration. An omitted binding keeps legacy behavior by projecting a same-ID Actor, while an explicit unknown Actor ID fails Registry validation. Actor-only definitions are supported.
+
+`actor_id`, component-local IDs and references must be stable package data, not translated display labels. Use `display_name` and `description` for localized text. Actor components are:
+
+- `attributes`: bounded scalar values used by rules and presentation;
+- `traits`: stable `trait_id`, intensity/value, tags and optional description;
+- `needs`: stable `need_id`, current/target/min/max values and optional rate;
+- `goals`: stable `goal_id`, priority, progress, status and optional deadline;
+- `capability_ids`: references to enabled DLC capability IDs;
+- `identities`: named identities/titles with optional entity and validity interval;
+- `memberships`: one record per organization, with role, status and weight;
+- `states`: bounded JSON-safe runtime state;
+- `metadata`: authoring extensions that are persisted but not injected into prompts.
+
+### Runtime invariants
+
+1. Actor definitions are immutable within one Generation; only the `ActorManager` runtime overlay may change.
+2. Reload, rollback and archive recovery must publish Actor, Agent, capability and prompt mappings from the same Generation snapshot.
+3. Preserved state must be revalidated against the new Actor Schema. Never carry a need, goal or state value across reload merely because the field name matches.
+4. Actor public state and persistence payloads must remain secret-free. Provider URLs, API keys and model-profile credentials never belong in Actor attributes, states or metadata.
+5. Keep the compatibility projection to `Official/CourtGraph` isolated. New generic behavior should read Actor components rather than adding more court-specific fields.
+
+### Prompt and API rules
+
+The allowlisted prompt variables are `actor`, `actor_id`, `actor_type`, `actor_entity_id`, `actor_attributes`, `actor_traits`, `actor_needs`, `actor_goals`, `actor_capabilities`, `actor_identities`, `actor_memberships` and `actor_states`. They are serialized as bounded safe JSON. Do not add `actor_metadata` without a separate threat-model and disclosure review.
+
+Use `GET /api/actors` for the catalog/runtime summary and `GET /api/actors/{actor_id}` for details. A missing Actor returns 404; an unavailable runtime returns 503. Do not expose internal model bindings through either endpoint.
+
+### DLC Studio workflow
+
+1. Open “Actor / 角色组件” and create the Actor before adding an explicit Agent binding.
+2. Fill stable IDs first, then localized display names and component values. Every field includes Chinese guidance.
+3. Use the Agent editor to select `actor_id`; leave it empty only when intentionally relying on legacy same-ID projection.
+4. Add Actor prompt variables only where the Agent needs them. Prefer the smallest component set and avoid dumping the entire Actor document.
+5. Review Content Diff, run Registry validation, then reload. Verify Actor-only entries, Agent-bound entries and state preservation separately.
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_actor_contract.py tests/unit/test_actor_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py
+python -m pytest -q
+python -m compileall multiagent_framework routers
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; print(DLCRegistry(Path('.')).validate('example_frontier'))"
+git diff --check
+```
+
+The optional external API smoke test remains process-environment only. It pulls `/v1/models`, auto-selects bounded chat candidates and tests `/v1/chat/completions`; it must skip when the required environment variables are absent and must not print provider response bodies or persist secrets.
