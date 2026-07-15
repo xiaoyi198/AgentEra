@@ -27,6 +27,7 @@ from .prompt_registry import (
     PromptRenderResult,
 )
 from .types import EventObject
+from .relationship_contract import RelationshipCatalog
 from .gameplay_contract import GameplayContract
 from .ui_manifest import UIManifest
 from .world_state import (
@@ -61,6 +62,7 @@ class DLCLoadReport:
     inventory: int = 0
     entity_values: int = 0
     relations: int = 0
+    relationship_types: int = 0
     ongoing_events: int = 0
     officials: int = 0
     actors: int = 0
@@ -99,6 +101,7 @@ class DLCReloadPlan:
     gameplay_changed: bool = False
     ui_manifest_changed: bool = False
     capabilities_changed: bool = False
+    relationship_types_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -131,6 +134,8 @@ class _DLCMaterializedSnapshot:
     inventory: list[InventoryItem]
     entity_values: list[EntityValue]
     relations: list[dict[str, Any]]
+    relationship_definitions: list[dict[str, Any]]
+    relationship_packages: dict[str, str]
     ongoing_events: list[OngoingEvent]
     random_event_templates: list[dict[str, Any]]
     causal_event_rules: list[dict[str, Any]]
@@ -590,6 +595,7 @@ class DLCBundleLoader:
             package_id=package.manifest.id,
             resources=len(resources), entities=len(entities), inventory=len(inventory),
             entity_values=len(values), relations=len(content["relations"]),
+            relationship_types=len(content["relationship_types"]),
             ongoing_events=len(ongoing), officials=len(officials),
             actors=len(actor_definitions), agents=len(agents),
             initial_events=len(events) if seed_world else 0,
@@ -630,6 +636,9 @@ class DLCBundleLoader:
         inventory: list[InventoryItem] = []
         entity_values: list[EntityValue] = []
         relations: list[dict[str, Any]] = []
+        relationship_definitions: list[dict[str, Any]] = []
+        relationship_packages: dict[str, str] = {}
+        relationship_type_ids: set[str] = set()
         ongoing_events: list[OngoingEvent] = []
         random_event_templates: list[dict[str, Any]] = []
         causal_event_rules: list[dict[str, Any]] = []
@@ -787,6 +796,17 @@ class DLCBundleLoader:
                 kind=str(item.get("kind", "metric")), value=float(item.get("value", 0.0)),
                 description=str(item.get("description", "")), version=int(item.get("version", 0)),
             ) for item in content["entity_values"])
+            for relationship_definition in content["relationship_types"]:
+                relationship_type_id = str(relationship_definition.get(
+                    "relationship_type_id", relationship_definition.get("id", "")
+                ))
+                if relationship_type_id in relationship_type_ids:
+                    raise DLCRegistryError(
+                        f"Duplicate active relationship type id: {relationship_type_id}"
+                    )
+                relationship_type_ids.add(relationship_type_id)
+                relationship_definitions.append(copy.deepcopy(relationship_definition))
+                relationship_packages[relationship_type_id] = package.manifest.id
             relations.extend(dict(item) for item in content["relations"])
             random_event_templates.extend(copy.deepcopy(content["random_events"]))
             for causal_rule in expand_causal_rule_document(content):
@@ -834,6 +854,11 @@ class DLCBundleLoader:
                 source_action_id=str(item.get("source_action_id", "")),
             ) for item in content["ongoing_events"])
 
+        relationship_catalog = RelationshipCatalog(relationship_definitions)
+        relations = [
+            relationship_catalog.normalize_relation(item, f"relations[{index}]")
+            for index, item in enumerate(relations)
+        ]
         return _DLCMaterializedSnapshot(
             package_ids=tuple(package.manifest.id for package in packages),
             package_hashes=package_hashes,
@@ -851,6 +876,8 @@ class DLCBundleLoader:
             inventory=inventory,
             entity_values=entity_values,
             relations=relations,
+            relationship_definitions=relationship_definitions,
+            relationship_packages=relationship_packages,
             ongoing_events=ongoing_events,
             random_event_templates=random_event_templates,
             causal_event_rules=causal_event_rules,
@@ -938,12 +965,17 @@ class DLCBundleLoader:
                 current is None
                 or current.capability_definitions != candidate.capability_definitions
             ),
+            relationship_types_changed=(
+                current is None
+                or current.relationship_definitions != candidate.relationship_definitions
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
                 "inventory_seed_candidates": len(candidate.inventory),
                 "entity_value_seed_candidates": len(candidate.entity_values),
                 "relations_upserted": len(candidate.relations),
+                "relationship_types": len(candidate.relationship_definitions),
                 "ongoing_event_candidates": len(candidate.ongoing_events),
                 "random_event_templates": len(candidate.random_event_templates),
                 "causal_event_rules": len(candidate.causal_event_rules),
@@ -959,12 +991,28 @@ class DLCBundleLoader:
         )
 
     @staticmethod
+    def _archive_json_value(value: Any) -> Any:
+        """Return an archive-safe value with sequence types normalized to JSON lists."""
+        if isinstance(value, dict):
+            return {
+                str(key): DLCBundleLoader._archive_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [DLCBundleLoader._archive_json_value(item) for item in value]
+        return copy.deepcopy(value)
+
+    @staticmethod
     def _prompt_registry_blueprint(registry: PromptRegistry) -> dict[str, Any]:
-        return {
+        # PromptBlock stores variable collections as tuples. Generation archives are
+        # normally JSON round-tripped (which converts them to lists), but rollback
+        # and in-memory archive tests may restore the blueprint directly. Normalize
+        # here so both restore paths obey PromptRegistry's public list contract.
+        return DLCBundleLoader._archive_json_value({
             "definitions": registry.export_definitions(),
-            "personas": copy.deepcopy(registry.personas),
-            "metadata": copy.deepcopy(registry.metadata),
-        }
+            "personas": registry.personas,
+            "metadata": registry.metadata,
+        })
 
     def _snapshot_to_archive_blueprint(
         self, snapshot: _DLCMaterializedSnapshot
@@ -996,6 +1044,8 @@ class DLCBundleLoader:
             "inventory": [asdict(item) for item in snapshot.inventory],
             "entity_values": [asdict(item) for item in snapshot.entity_values],
             "relations": copy.deepcopy(snapshot.relations),
+            "relationship_definitions": copy.deepcopy(snapshot.relationship_definitions),
+            "relationship_packages": dict(snapshot.relationship_packages),
             "ongoing_events": [asdict(item) for item in snapshot.ongoing_events],
             "random_event_templates": copy.deepcopy(snapshot.random_event_templates),
             "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
@@ -1213,6 +1263,13 @@ class DLCBundleLoader:
             relations=[
                 dict(item) for item in blueprint.get("relations", [])
             ],
+            relationship_definitions=[
+                dict(item) for item in blueprint.get("relationship_definitions", [])
+            ],
+            relationship_packages={
+                str(key): str(value)
+                for key, value in dict(blueprint.get("relationship_packages", {})).items()
+            },
             ongoing_events=[
                 OngoingEvent(**dict(item))
                 for item in blueprint.get("ongoing_events", [])
@@ -1306,6 +1363,8 @@ class DLCBundleLoader:
             inventory=copy.deepcopy(snapshot.inventory),
             entity_values=copy.deepcopy(snapshot.entity_values),
             relations=copy.deepcopy(snapshot.relations),
+            relationship_definitions=copy.deepcopy(snapshot.relationship_definitions),
+            relationship_packages=dict(snapshot.relationship_packages),
             ongoing_events=copy.deepcopy(snapshot.ongoing_events),
             random_event_templates=copy.deepcopy(snapshot.random_event_templates),
             causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
@@ -1568,6 +1627,7 @@ class DLCBundleLoader:
                     candidate.resources,
                     officials=candidate.officials,
                     replace_official_ids=self._managed_official_ids,
+                    relationship_definitions=candidate.relationship_definitions,
                 )
                 if hasattr(self.court, "refresh_cache"):
                     self.court.refresh_cache()
@@ -1795,6 +1855,9 @@ class DLCBundleLoader:
             "retired_memory_archives": len(self._archived_agent_memory),
             "available_generations": self._public_generation_history(),
             "generation_archive": self._archive_public_status(),
+            "relationship_types": self.world_state.relationship_types_public_state(
+                generation=self.generation
+            ),
             "gameplay": (
                 self.orchestrator.gameplay_public_state()
                 if hasattr(self.orchestrator, "gameplay_public_state")
@@ -1869,6 +1932,9 @@ class DLCBundleLoader:
 
     def load_active(self, *, seed_world: bool = True) -> list[DLCLoadReport]:
         candidate = self._materialize_active()
+        self.world_state.configure_relationship_catalog(
+            candidate.relationship_definitions, generation=max(1, self.generation + 1)
+        )
         # Configure causality before initial-event injection so authored opening
         # events participate in the same deterministic chain semantics.
         if hasattr(self.orchestrator, "configure_causal_events"):

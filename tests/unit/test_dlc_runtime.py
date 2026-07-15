@@ -1180,3 +1180,53 @@ def test_runtime_materializes_explicit_actor_components_and_actor_only_definitio
     assert orchestrator.agents["guard_agent"].config.display_name == "Guard"
     prompt = orchestrator.agents["guard_agent"].config.system_prompt
     assert "guard_actor" in prompt and '"supply"' in prompt and '"alert":true' in prompt
+
+
+def test_relationship_contract_survives_materialization_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["entities"].append({"id": "gate", "type": "location", "name": "Gate"})
+    content["relationship_types"] = [{
+        "relationship_type_id": "trust",
+        "display_name": "Trust v1",
+        "direction": "undirected",
+        "minimum_strength": -100,
+        "maximum_strength": 100,
+        "default_strength": 0,
+        "default_visibility": "private",
+        "allow_expiry": True,
+        "dimensions": [{
+            "dimension_id": "personal", "display_name": "Personal",
+            "minimum": -100, "maximum": 100, "default": 0,
+        }],
+    }]
+    content["relations"] = [{
+        "parent_id": "gate", "child_id": "city", "rel_type": "trust",
+        "strength": 70, "visibility": "limited", "expires_at": 20,
+        "values": {"personal": 80},
+    }]
+    registry.save_content("sample", content)
+    world = WorldState(str(tmp_path / "relationships.db"))
+    court = CourtGraph(str(tmp_path / "relationships.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    reports = loader.load_active()
+    assert reports[0].relationship_types == 1
+    assert world.relationship_catalog.get("trust").display_name == "Trust v1"
+    assert world.get_all_relations()[0]["parent_id"] == "city"
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    assert restored.relationship_definitions[0]["relationship_type_id"] == "trust"
+
+    content["relationship_types"][0]["display_name"] = "Trust v2"
+    registry.save_content("sample", content)
+    result = asyncio.run(loader.reload_active())
+    assert result["generation"] == 2
+    assert world.relationship_catalog.get("trust").display_name == "Trust v2"
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    assert rollback["activation_kind"] == "rollback"
+    assert rollback["generation"] == 3
+    assert world.relationship_catalog.get("trust").display_name == "Trust v1"

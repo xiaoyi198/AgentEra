@@ -2079,3 +2079,37 @@ Status: **implemented and locally verified**.
 ### Release verification
 
 The v0.26.0 checkpoint passed 576 Python tests with 2 credential-gated external API tests skipped, 34 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding checks, secret scans and `git diff --check`. The persistent gameplay goal remains active: P1.1 is complete; P1.2 and later phases remain open.
+
+## UI scroll containment maintenance (2026-07-15)
+
+The 2026 fixed-viewport visual shells keep headers and the floating application navigation stable, but every information-bearing column must own an explicit scroll container. A regression in the visual override layer changed both the registry detail column and the TianJi tool catalog to `overflow: hidden`, so long Agent forms and the 18-tool catalog were clipped below the viewport.
+
+The frontend now restores independent vertical scrolling for `frontend/src/editor.css` `.editor-right` and `frontend/src/tianji.css` `.tj-tools-panel`. Both containers use contained overscroll, stable scrollbar gutters, and vertical touch panning. The TianJi tool heading remains sticky while the catalog scrolls. Mobile breakpoints continue to return the registry to normal document flow, while the bounded TianJi catalog remains directly scrollable.
+
+Browser verification used the running DLC data at a 1280 x 720 viewport: the registry detail column exposed 908 px of content inside a 548 px viewport and scrolled to its 360 px maximum; the TianJi catalog exposed more than 2300 px inside the same 548 px viewport and accepted wheel scrolling while preserving the sticky heading.
+
+## Release architecture note: Generation-bound DLC relationship contracts (v0.27.0)
+
+### Canonical contract and validation
+
+- `multiagent_framework/relationship_contract.py` owns `RelationshipTypeDefinition`, `RelationshipCatalog`, normalization, edge validation and the two legacy compatibility definitions. `content.json.relationship_types` is the authoritative package-authored source.
+- A type defines stable identity, localized presentation, `directed`/`undirected` semantics, minimum/maximum/default strength, default visibility, expiry permission, optional bounded dimensions, graph style and JSON-safe metadata. The Registry rejects duplicate IDs, invalid ranges, unsupported visibility, unsafe nested values and cross-package ownership conflicts.
+- Edges are identified by the composite `(parent_id, child_id, rel_type)` key and carry strength, visibility, optional start/expiry timestamps, dimension values, note and metadata. The catalog supplies defaults and rejects unknown dimensions, out-of-range values and forbidden expiry. Undirected endpoints are canonicalized so reversed input addresses the same edge.
+
+### WorldState and persistence
+
+- `WorldState` owns the active immutable `RelationshipCatalog`; every relation read/write is normalized against it. Active state is derived from `starts_at <= current_time < expires_at`, while historical/inactive edges remain queryable when requested.
+- SQLite persists the catalog in `relationship_type_catalog` and migrates legacy `entity_relations` tables by adding the v0.27.0 columns without discarding existing subordinate/affiliated rows. World-state export Schema is `2.1` and includes the dynamic catalog and extended edge shape.
+- `DLCRuntimeManager` builds relationship definitions during Generation preparation, archives the JSON-safe blueprint, and publishes the catalog together with the rest of the committed Generation. Reload, rollback and restart recovery install the archived catalog before relation state restoration, preventing mixed-generation validation.
+
+### API and frontend consumption
+
+- `GET /api/relationship-types` and `GET /api/relationship-types/{id}` expose the safe active catalog. `GET /api/relations` and `GET /api/world-state/{entity_id}/relations` support active/inactive filtering; `POST /api/relations` and `DELETE /api/relations` mutate validated edges through WorldState.
+- `RelationsView` renders labels, colors, dashed strokes and endpoint markers from the catalog, supports dynamic filters and dimension forms, and edits time windows, visibility and metadata without court-specific type branches.
+- DLC Studio treats `relationship_types` as a first-class keyed collection. The relationship-type editor and relation-edge editor share validation semantics, participate in import/export, diff, history and raw JSON, and block deletion while draft edges still reference the type.
+
+### Compatibility and release state
+
+- `subordinate` and `affiliated` remain effective defaults for older DLCs and databases. A DLC may override either stable ID to customize its presentation and constraints, but unrelated active packages may not claim the same non-legacy ID.
+- `example_frontier` v1.6.0 exercises directed command, undirected trust/rivalry, visibility, expiry, dimensions, style and metadata. AgentEra is synchronized at v0.27.0.
+- The v0.27.0 release gate passed 592 Python tests with 2 credential-gated external API tests skipped, 35 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding and credential scans, and `git diff --check`. The persistent gameplay goal remains active. P1.2 is complete; P1.3 (richer causal condition/effect expressiveness) is the next phase.

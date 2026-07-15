@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.26.0**
+> 当前版本：**v0.27.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -18,6 +18,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
+- **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Generation 能力注册表**：玩家、普通 Agent 与 Router 共用 DLC `capability_id`；框架以稳定工具解释执行 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类安全 handler，并随热重载、归档、回滚和重启恢复切换。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
@@ -362,6 +363,18 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+## v0.27.0 发布说明
+
+- 新增 DLC 自定义关系契约：`content.json.relationship_types` 可声明稳定类型 ID、中文名称与说明、有向/无向语义、强度上下界与默认值、默认公开性、是否允许到期、多维数值、图样式和安全 Metadata。旧 `subordinate` / `affiliated` 类型继续兼容，并允许 DLC 用同 ID 显式覆盖展示契约。
+- 关系边统一支持 `strength`、`visibility`、`starts_at`、`expires_at`、`values`、`note` 和 `metadata`；无向边规范化端点顺序，时间窗口决定 active/inactive，所有写入均由当前 Generation 的 `RelationshipCatalog` 校验。
+- WorldState 新增 SQLite `relationship_type_catalog`，旧 `entity_relations` 表自动补齐新列；目录与关系边随 Generation archive、热重载、回滚和重启恢复，发布过程保持原子一致。世界状态导出 Schema 升级为 `2.1`。
+- 新增 `GET /api/relationship-types`、关系类型详情、关系列表/实体关系查询以及关系新增、更新和删除接口；主界面关系图从动态目录读取颜色、标签、虚线、箭头和维度，不再写死朝堂关系类型。
+- DLC Studio 新增详细中文“关系类型”编辑器，并扩展关系边表单；关系类型与边均进入导入导出、即时校验、Content Diff、历史、撤销/重做和高级 JSON 工作流，删除类型前会检查草稿中的边引用。
+- `example_frontier` 升级至 `1.6.0`，新增 `command`、`trust`、`rivalry` 三类关系及有向、无向、到期、多维值、样式示例；AgentEra 四处产品版本同步至 `0.27.0`。
+- 本地发布门禁通过 592 个 Python 测试（另有 2 个外部 API 环境门禁测试因当前进程未注入凭据而按设计跳过）、35 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、编码与凭据扫描和 Git 差异检查。外部 API 连通测试仅在显式注入 `AGENTERA_TEST_*` 环境变量时运行。
+
+长期 Goal 继续保持 active；P1.2 已完成，下一阶段进入 P1.3 因果条件与效果表达力。
+
 ## v0.26.0 发布说明
 
 - 新增 Generation-bound 通用 Actor 契约，将角色数据从固定 `Official`/Agent 表达中解耦，覆盖属性、Trait、需求、目标、能力、身份、成员关系和状态。
@@ -371,7 +384,7 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 - `example_frontier` 升级至 `1.5.0`，包含两个 Agent-bound Actor 和一个 Actor-only 角色。
 - 发布版本统一升级为 `0.26.0`。本地门禁通过 576 个 Python 测试（另有 2 个外部 API 环境门禁测试因当前进程未注入凭据而按设计跳过）、34 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、凭据扫描与 Git 差异检查。
 
-长期 Goal 继续保持 active；P1.1 已完成，下一阶段进入 P1.2 DLC 自定义关系。
+长期 Goal 继续保持 active；P1.1 已完成；P1.2 的完成状态见 v0.27.0 发布说明。
 
 ## v0.25.0 发布说明
 

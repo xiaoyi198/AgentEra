@@ -418,3 +418,29 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .ui-manifest-terms > label { grid-template-columns: 1fr; }
   .ui-manifest-table.navigation article, .ui-manifest-table.widgets article { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+
+/* DLC-authored relationship contracts */
+.dlc-row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.relationship-type-form { max-width: 980px; }
+.relationship-dimensions {
+  margin: 4px 0 14px;
+  padding: 14px;
+  border: 1px solid rgba(201, 168, 76, 0.3);
+  border-radius: 10px;
+  background: rgba(16, 20, 29, 0.38);
+}
+.relationship-dimensions legend { padding: 0 8px; color: var(--gold, #c9a84c); font-weight: 700; }
+.relationship-dimensions > p { margin: 0 0 12px; color: #9ea8b8; font-size: 12px; line-height: 1.6; }
+.relationship-dimensions.compact { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.relationship-dimensions.compact label { margin: 0; }
+.relationship-dimension-card {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(125, 141, 166, 0.28);
+  border-radius: 8px;
+  background: rgba(34, 42, 56, 0.42);
+}
+.compact-button { width: auto; padding: 6px 10px; margin-top: 8px; }
+.dlc-editor-callout.compact { margin: 8px; font-size: 11px; }
+@media (max-width: 850px) { .dlc-row.three { grid-template-columns: 1fr; } }

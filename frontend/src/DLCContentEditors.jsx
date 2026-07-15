@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft, normalizeCausalReplayFixture } from './DLCStudioTools.js'
+import { effectiveRelationshipTypes } from './RelationshipTypeTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -53,6 +54,11 @@ const T = {
   prompts: 'Prompts',
   quantity: '\u6570\u91cf',
   relationType: '\u5173\u7cfb\u7c7b\u578b',
+  strength: '\u5173\u7cfb\u5f3a\u5ea6',
+  visibility: '\u53ef\u89c1\u6027',
+  startsAt: '\u5f00\u59cb\u6a21\u62df\u65f6\u95f4',
+  expiresAt: '\u5230\u671f\u6a21\u62df\u65f6\u95f4',
+  dimensionValues: '\u591a\u7ef4\u5173\u7cfb\u503c',
   relations: '\u5173\u7cfb',
   requiredVariables: '\u5fc5\u9700\u53d8\u91cf\uff08\u9017\u53f7\u5206\u9694\uff09',
   resource: '\u8d44\u6e90',
@@ -74,7 +80,7 @@ const CAUSAL_RESERVED_FIELDS = [
 const EMPTY = {
   inventory: { entity_id: '', item_name: '', category: '', quantity: 0, description: '' },
   entity_values: { entity_id: '', name: '', kind: 'metric', value: 0, description: '' },
-  relations: { parent_id: '', child_id: '', rel_type: 'subordinate', note: '' },
+  relations: { parent_id: '', child_id: '', rel_type: 'subordinate', strength: 100, visibility: 'public', starts_at: 0, expires_at: '', values: {}, note: '', metadata: {} },
   initial_events: { event_id: '', event_type: 'world_event', severity: 5, target_agents: [], initial_payload: {}, generated_at: 0 },
   ongoing_events: { event_id: '', entity_id: '', event_type: 'state_change', description: '', start_time: 0, end_time: 0, expected_result: {}, source_action_id: '' },
   random_events: { template_id: '', event_type: 'world_event', target_agents: [], initial_payload: {}, severity_min: 3, severity_max: 7, min_interval_days: 30, max_interval_days: 90, probability: 1, max_occurrences: 0, enabled: true },
@@ -149,6 +155,11 @@ function normalizedListForm(kind, value) {
       ...effect,
       _expected_result_text: effect.effect_type === 'create_ongoing_event' ? jsonText(effect.expected_result) : undefined,
     }))
+  }
+  if (kind === 'relations') {
+    source._values_text = jsonText(source.values || source.dimension_values)
+    source._metadata_text = jsonText(source.metadata)
+    source.expires_at = source.expires_at ?? ''
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
@@ -357,6 +368,23 @@ function serializeListForm(kind, form) {
     if (numbers.some(field => !Number.isFinite(data[field]) || data[field] < 0)) throw new Error('Time factors must be finite non-negative numbers.')
     if (data.max_days < data.min_days) throw new Error('max_days must be greater than or equal to min_days.')
     if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
+  }
+  if (kind === 'relations') {
+    data.parent_id = String(data.parent_id || '').trim()
+    data.child_id = String(data.child_id || '').trim()
+    data.rel_type = String(data.rel_type || '').trim()
+    data.strength = Number(data.strength)
+    data.visibility = String(data.visibility || 'public')
+    data.starts_at = Number(data.starts_at || 0)
+    data.expires_at = data.expires_at === '' || data.expires_at == null ? null : Number(data.expires_at)
+    data.values = parseObject(data._values_text, T.dimensionValues)
+    data.metadata = parseObject(data._metadata_text, T.metadata)
+    data.note = String(data.note || '')
+    delete data._values_text
+    delete data._metadata_text
+    if (!Number.isFinite(data.strength)) throw new Error('Relationship strength must be a finite number.')
+    if (!Number.isFinite(data.starts_at)) throw new Error('starts_at must be a finite number.')
+    if (data.expires_at !== null && (!Number.isFinite(data.expires_at) || data.expires_at <= data.starts_at)) throw new Error('expires_at must be later than starts_at.')
   }
   if (kind === 'ongoing_events') {
     data.expected_result = parseObject(data._result_text, T.expectedResult)
@@ -608,6 +636,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const entities = content.entities || []
   const agents = content.agents || []
   const resources = content.resources || []
+  const relationshipTypes = effectiveRelationshipTypes(content)
   const causalTemplates = content.causal_rule_templates || []
   const causalConditionGroups = content.causal_condition_groups || []
   const assetResources = resources.filter(item => item.kind === 'asset')
@@ -770,6 +799,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
     onSaveContent({ ...content, [kind]: items.filter((_, index) => index !== selectedIndex) }, `${TITLES[kind]} deleted`)
   }
 
+  const relationshipDefinition = relationshipTypes.find(item => item.relationship_type_id === form.rel_type) || relationshipTypes[0]
   const inventoryResource = assetResources.find(item => item.name === form.item_name)
   const anchoredValue = Number(form.quantity || 0) * Number(inventoryResource?.anchor_rate || 0)
 
@@ -796,9 +826,15 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
       </>}
 
       {kind === 'relations' && <>
-        <div className="dlc-row"><EntitySelect label={T.parent} value={form.parent_id} entities={entities} onChange={value => set('parent_id', value)} /><EntitySelect label={T.child} value={form.child_id} entities={entities} onChange={value => set('child_id', value)} /></div>
-        <label>{T.relationType}<select value={form.rel_type || 'subordinate'} onChange={event => set('rel_type', event.target.value)}><option value="subordinate">subordinate</option><option value="affiliated">affiliated</option></select></label>
+        <div className="dlc-editor-callout">{relationshipDefinition?.description || '关系边会按当前 DLC 关系契约校验强度、可见性、期限和多维值。'}</div>
+        <div className="dlc-row"><EntitySelect label={relationshipDefinition?.direction === 'undirected' ? '实体 A' : T.parent} value={form.parent_id} entities={entities} onChange={value => set('parent_id', value)} /><EntitySelect label={relationshipDefinition?.direction === 'undirected' ? '实体 B' : T.child} value={form.child_id} entities={entities} onChange={value => set('child_id', value)} /></div>
+        <label>{T.relationType}<select value={form.rel_type || relationshipTypes[0]?.relationship_type_id || 'subordinate'} onChange={event => { const definition = relationshipTypes.find(item => item.relationship_type_id === event.target.value); setForm(current => ({ ...current, rel_type: event.target.value, strength: definition?.default_strength ?? current.strength ?? 0, visibility: definition?.default_visibility || current.visibility || 'public', expires_at: definition?.allow_expiry ? current.expires_at : '', values: Object.fromEntries((definition?.dimensions || []).map(item => [item.dimension_id, item.default ?? 0])), _values_text: jsonText(Object.fromEntries((definition?.dimensions || []).map(item => [item.dimension_id, item.default ?? 0]))) })) }}><option value="">--</option>{relationshipTypes.map(item => <option key={item.relationship_type_id} value={item.relationship_type_id}>{item.display_name || item.relationship_type_id} ({item.relationship_type_id})</option>)}</select></label>
+        <div className="dlc-row three"><label>{T.strength}<input type="number" step="any" min={relationshipDefinition?.minimum_strength} max={relationshipDefinition?.maximum_strength} value={form.strength ?? relationshipDefinition?.default_strength ?? 0} onChange={event => set('strength', event.target.value)} /><small>{relationshipDefinition?.minimum_strength ?? '-'} ~ {relationshipDefinition?.maximum_strength ?? '-'}</small></label><label>{T.visibility}<select value={form.visibility || relationshipDefinition?.default_visibility || 'public'} onChange={event => set('visibility', event.target.value)}><option value="public">公开</option><option value="limited">有限公开</option><option value="private">私有</option><option value="secret">秘密</option></select></label><label>方向<input value={relationshipDefinition?.direction === 'undirected' ? '无向' : '有向'} disabled /></label></div>
+        <div className="dlc-row"><label>{T.startsAt}<input type="number" step="any" value={form.starts_at ?? 0} onChange={event => set('starts_at', event.target.value)} /></label><label>{T.expiresAt}<input type="number" step="any" disabled={!relationshipDefinition?.allow_expiry} value={form.expires_at ?? ''} onChange={event => set('expires_at', event.target.value)} placeholder={relationshipDefinition?.allow_expiry ? '留空表示不到期' : '该类型不允许到期'} /></label></div>
+        {!!relationshipDefinition?.dimensions?.length && <fieldset className="relationship-dimensions compact"><legend>{T.dimensionValues}</legend>{relationshipDefinition.dimensions.map(dimension => { let values = {}; try { values = JSON.parse(form._values_text || '{}') } catch { /* keep raw editor error for save */ } return <label key={dimension.dimension_id}>{dimension.display_name || dimension.dimension_id}<input type="number" step="any" min={dimension.minimum} max={dimension.maximum} value={values[dimension.dimension_id] ?? dimension.default ?? 0} onChange={event => { const next = { ...values, [dimension.dimension_id]: Number(event.target.value) }; setForm(current => ({ ...current, values: next, _values_text: jsonText(next) })) }} /><small>{dimension.dimension_id}: {dimension.minimum} ~ {dimension.maximum}</small></label> })}</fieldset>}
+        <label>{T.dimensionValues} JSON<textarea className="dlc-json-field" rows="6" spellCheck="false" value={form._values_text || '{}'} onChange={event => set('_values_text', event.target.value)} /></label>
         <label>{T.note}<textarea rows="3" value={form.note || ''} onChange={event => set('note', event.target.value)} /></label>
+        <label>{T.metadata}<textarea className="dlc-json-field" rows="5" spellCheck="false" value={form._metadata_text || '{}'} onChange={event => set('_metadata_text', event.target.value)} /></label>
         {form.parent_id && form.parent_id === form.child_id && <EditorError>A relation cannot point to itself.</EditorError>}
       </>}
 

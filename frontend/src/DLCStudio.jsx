@@ -5,6 +5,7 @@ import ModelPromotionWorkbench from './ModelPromotionWorkbench.jsx'
 import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
 import UIManifestEditor from './UIManifestEditor.jsx'
 import ActorEditor from './ActorEditor.jsx'
+import RelationshipTypeEditor from './RelationshipTypeEditor.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -420,6 +421,7 @@ export default function DLCStudio() {
     inventory: content.inventory?.length || 0,
     entity_values: content.entity_values?.length || 0,
     relations: content.relations?.length || 0,
+    relationship_types: content.relationship_types?.length || 0,
     initial_events: content.initial_events?.length || 0,
     ongoing_events: content.ongoing_events?.length || 0,
     random_events: content.random_events?.length || 0,
@@ -606,7 +608,8 @@ export default function DLCStudio() {
     { key: 'resources', label: `${UI.resources} ${counts.resources}` },
     { key: 'inventory', label: `\u5e93\u5b58 ${counts.inventory}` },
     { key: 'entity_values', label: `\u6307\u6807 ${counts.entity_values}` },
-    { key: 'relations', label: `\u5173\u7cfb ${counts.relations}` },
+    { key: 'relationship_types', label: `关系类型 ${counts.relationship_types}` },
+    { key: 'relations', label: `关系边 ${counts.relations}` },
     { key: 'initial_events', label: `\u521d\u59cb\u4e8b\u4ef6 ${counts.initial_events}` },
     { key: 'ongoing_events', label: `\u6301\u7eed\u4e8b\u4ef6 ${counts.ongoing_events}` },
     { key: 'random_events', label: `\u968f\u673a\u4e8b\u4ef6 ${counts.random_events}` },
@@ -656,7 +659,8 @@ export default function DLCStudio() {
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
-                : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} actors={content.actors || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'objectives' ? <ObjectiveEditor key={`objectives:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'endings' ? <EndingEditor key={`endings:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />

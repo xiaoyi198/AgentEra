@@ -20,7 +20,10 @@ from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRe
 from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEventRule
 from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
-from .world_state import RELATION_TYPES, RESOURCE_TOKENS
+from .world_state import RESOURCE_TOKENS
+from .relationship_contract import (
+    normalize_relationship_type_document, validate_relationship_definitions,
+)
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
 from .actor_contract import (
@@ -402,7 +405,7 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "actors", "agents", "initial_events", "ongoing_events", "random_events",
+            "relationship_types", "actors", "agents", "initial_events", "ongoing_events", "random_events",
             "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
@@ -782,23 +785,11 @@ class DLCRegistry:
                 add("value.invalid_kind", f"Entity value must reference metric/parameter: {name}", f"{path}.name")
             if item.get("kind") and resource and item.get("kind") != resource.get("kind"):
                 add("value.kind_mismatch", f"Value kind differs from resource definition: {name}", f"{path}.kind")
-        for index, relation in enumerate(content["relations"]):
-            path = f"relations[{index}]"
-            parent_id = str(relation.get("parent_id", ""))
-            child_id = str(relation.get("child_id", ""))
-            rel_type = str(relation.get("rel_type", ""))
-            if parent_id not in entity_ids:
-                add("relation.missing_parent", f"Unknown parent entity: {parent_id}", f"{path}.parent_id")
-            if child_id not in entity_ids:
-                add("relation.missing_child", f"Unknown child entity: {child_id}", f"{path}.child_id")
-            if rel_type not in RELATION_TYPES:
-                add(
-                    "relation.invalid_type",
-                    f"Invalid relation type: {rel_type or '<empty>'}",
-                    f"{path}.rel_type",
-                )
-            if parent_id and parent_id == child_id:
-                add("relation.self_reference", "A relation cannot point to itself", path)
+        for issue in validate_relationship_definitions(
+            content["relationship_types"], content["relations"], entity_ids=entity_ids
+        ):
+            code = "relation.invalid_type" if issue.code == "relation.unknown_type" else issue.code
+            add(code, issue.message, issue.path, issue.severity)
 
         for index, agent in enumerate(agents):
             path = f"agents[{index}]"
@@ -1062,6 +1053,11 @@ class DLCRegistry:
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
                 ("capability", own_capability_ids, other_capability_ids),
+                (
+                    "relationship_type",
+                    {str(item.get("relationship_type_id", item.get("id", ""))) for item in content["relationship_types"]},
+                    {str(item.get("relationship_type_id", item.get("id", ""))) for item in other_content["relationship_types"]},
+                ),
             )
             for kind, own_ids, other_ids in comparisons:
                 for conflict in sorted((own_ids & other_ids) - {""}):

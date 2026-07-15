@@ -1465,3 +1465,19 @@ This checkpoint completes P1.1:
 The persistent gameplay-framework goal remains **active**. P1.1 is complete; P1.2 should next generalize relationship contracts with direction, strength, visibility, expiry and multi-dimensional values. P1.3+ and P2 remain open.
 
 The v0.26.0 release gate passed 576 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 34 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, encoding and credential scans, and Git diff checks.
+
+## Phase checkpoint: DLC-authored relationship contracts (v0.27.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.2:
+
+- introduced package-authored `relationship_types` with directed/undirected semantics, strength bounds/defaults, visibility, expiry, bounded dimensions, style and metadata;
+- normalized and validated extended relationship edges through a Generation-bound `RelationshipCatalog`, including canonical undirected endpoints and active/inactive time state;
+- migrated SQLite persistence, world-state export Schema, generation archives, hot reload, rollback and restart recovery to preserve catalog/edge consistency;
+- added dynamic relationship APIs, a catalog-driven relationship graph, and detailed Chinese DLC Studio editors with import/export, diff and history support;
+- upgraded `example_frontier` to v1.6.0 and synchronized AgentEra to v0.27.0.
+
+The persistent gameplay-framework goal remains **active**. P1.2 is complete; P1.3 should next generalize causal condition/effect expressiveness while preserving deterministic preview, replay and generation lifecycle semantics. P1.4+ and P2 remain open.
+
+The v0.27.0 release gate passed 592 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 35 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern and encoding scans, and Git diff checks.

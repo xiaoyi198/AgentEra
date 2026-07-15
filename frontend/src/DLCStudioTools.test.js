@@ -30,6 +30,7 @@ const base = {
   inventory: [],
   entity_values: [],
   relations: [],
+  relationship_types: [],
   actors: [],
   agents: [],
   initial_events: [],
@@ -67,12 +68,25 @@ test('import normalization fills missing collections and rejects wrong shapes', 
   assert.equal(normalized.schema_version, '1.0')
   assert.deepEqual(normalized.prompts, {})
   assert.deepEqual(normalized.inventory, [])
+  assert.deepEqual(normalized.relationship_types, [])
   assert.throws(() => normalizeImportedContent({ entities: {} }), /entities must be an array/)
   assert.throws(() => normalizeImportedContent({ prompts: [] }), /prompts must be an object/)
   assert.throws(
     () => normalizeImportedContent({ format: 'world-simulator-dlc-content-v2', content: base }),
     /Unsupported DLC content format/,
   )
+})
+
+
+test('relationship types normalize export and diff by stable relationship_type_id', () => {
+  const before = { ...base, relationship_types: [{ relationship_type_id: 'trust', display_name: 'Trust', direction: 'undirected' }] }
+  const after = { ...before, relationship_types: [{ ...before.relationship_types[0], display_name: 'Mutual trust' }, { relationship_type_id: 'rivalry', display_name: 'Rivalry' }] }
+  const exported = createContentExport({ id: 'demo' }, after, '2026-07-15T00:00:00.000Z')
+  assert.deepEqual(normalizeImportedContent(exported).relationship_types, after.relationship_types)
+  const section = summarizeContentDiff(before, after).sections.find(item => item.section === 'relationship_types')
+  assert.equal(section.changed, 1)
+  assert.equal(section.added, 1)
+  assert.deepEqual(section.entries.map(item => item.key), ['rivalry', 'trust'])
 })
 
 test('diff summary reports keyed additions removals and changes', () => {

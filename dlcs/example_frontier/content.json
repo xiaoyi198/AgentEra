@@ -44,6 +44,28 @@
         "x": 1140,
         "y": 250
       }
+    },
+    {
+      "id": "frontier_watchtower",
+      "type": "location",
+      "name": "北境瞭望塔",
+      "description": "负责边境观测、烽火通信与先期预警的前沿地点。",
+      "current_status": "日常监测",
+      "metadata": {
+        "x": 1320,
+        "y": 120
+      }
+    },
+    {
+      "id": "frontier_caravan",
+      "type": "organization",
+      "name": "边境商队",
+      "description": "往来哨站与内地的民间贸易与补给组织。",
+      "current_status": "等待通行",
+      "metadata": {
+        "x": 1050,
+        "y": 340
+      }
     }
   ],
   "inventory": [
@@ -64,7 +86,146 @@
       "description": "当前防务警戒"
     }
   ],
-  "relations": [],
+  "relationship_types": [
+    {
+      "relationship_type_id": "command",
+      "display_name": "指挥关系",
+      "description": "组织或指挥节点对下属单位的有向调度与责任关系。",
+      "direction": "directed",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 80,
+      "default_visibility": "public",
+      "allow_expiry": false,
+      "dimensions": [],
+      "style": {
+        "label": "令",
+        "color": "#b65a4a",
+        "dashed": false,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "authority"
+      }
+    },
+    {
+      "relationship_type_id": "trust",
+      "display_name": "信任",
+      "description": "双方对等的信誉与合作预期，可随时间到期或重新评估。",
+      "direction": "undirected",
+      "minimum_strength": -100,
+      "maximum_strength": 100,
+      "default_strength": 0,
+      "default_visibility": "limited",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "personal",
+          "display_name": "人际信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对具体成员与行动者的信任。"
+        },
+        {
+          "dimension_id": "institutional",
+          "display_name": "制度信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对组织承诺和规则的信任。"
+        }
+      ],
+      "style": {
+        "label": "信",
+        "color": "#4f9d83",
+        "dashed": false,
+        "marker": "arrow"
+      },
+      "metadata": {
+        "category": "social"
+      }
+    },
+    {
+      "relationship_type_id": "rivalry",
+      "display_name": "竞争",
+      "description": "两个实体围绕资源、权力或目标形成的对等竞争关系。",
+      "direction": "undirected",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 40,
+      "default_visibility": "public",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "intensity",
+          "display_name": "竞争强度",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 40,
+          "description": "冲突与资源争夺的综合程度。"
+        }
+      ],
+      "style": {
+        "label": "竞",
+        "color": "#d17a45",
+        "dashed": true,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "conflict"
+      }
+    }
+  ],
+  "relations": [
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_watchtower",
+      "rel_type": "command",
+      "strength": 92,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": null,
+      "values": {},
+      "note": "守军直接指挥瞭望塔的轮值与预警。",
+      "metadata": {
+        "source": "example_frontier"
+      }
+    },
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_caravan",
+      "rel_type": "trust",
+      "strength": 36,
+      "visibility": "limited",
+      "starts_at": 0,
+      "expires_at": 15552000,
+      "values": {
+        "personal": 28,
+        "institutional": 44
+      },
+      "note": "一个交易周期内的有限合作信任。",
+      "metadata": {
+        "review_after_days": 180
+      }
+    },
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_caravan",
+      "rel_type": "rivalry",
+      "strength": 58,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": 7776000,
+      "values": {
+        "intensity": 58
+      },
+      "note": "双方对稀缺运力和通行配额存在阶段性竞争。",
+      "metadata": {
+        "review_after_days": 90
+      }
+    }
+  ],
   "agents": [
     {
       "id": "边境指挥官",

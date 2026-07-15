@@ -2714,3 +2714,72 @@ git diff --check
 ```
 
 The optional external API smoke test remains process-environment only. It pulls `/v1/models`, auto-selects bounded chat candidates and tests `/v1/chat/completions`; it must skip when the required environment variables are absent and must not print provider response bodies or persist secrets.
+
+## Scrollable viewport-shell contract (2026-07-15)
+
+When a page uses a fixed desktop shell (`height: 100vh; overflow: hidden`), apply the following rules:
+
+1. Every flex/grid ancestor between the shell and the intended scroller must have `min-height: 0`.
+2. Put `overflow-y: auto` on the element that actually owns the long information, not only on the page body.
+3. Use `overflow: hidden` only for structural/card clipping. Do not include a long-form content column in a grouped selector that forces hidden overflow.
+4. Prefer `overscroll-behavior: contain`, `scrollbar-gutter: stable`, and `touch-action: pan-y` on independent desktop columns.
+5. Sticky controls inside a scroller need an opaque background and a positive `z-index` so content cannot paint over them.
+6. At mobile breakpoints, either restore document flow (`height: auto; overflow: visible`) or keep an explicit bounded inner scroller; never leave a fixed-height, hidden-overflow column without a scroll owner.
+
+Current reference implementations are `.editor-right` in `frontend/src/editor.css` and `.tj-tools-panel` in `frontend/src/tianji.css`. For manual regression checks, load real DLC data, select a registry node with a long detail form, expand all TianJi tool categories, then verify mouse-wheel/touch scrolling and confirm the bottom-most content is reachable at both desktop and mobile widths.
+
+## DLC relationship contract authoring workflow (v0.27.0)
+
+### Relationship type schema
+
+在 `content.json.relationship_types` 中声明关系类型。`relationship_type_id` 是存档、API 和跨版本引用使用的稳定 ID，不要使用会随翻译变化的显示文本。推荐字段：
+
+- `display_name` / `description`：面向作者与玩家的中文名称和说明；
+- `direction`：`directed` 表示 source → target，`undirected` 表示双方对等；无向边会规范化端点顺序，禁止依赖输入顺序表达含义；
+- `minimum_strength`、`maximum_strength`、`default_strength`：有限数值且默认值必须落在区间内；
+- `default_visibility`：`public`、`limited`、`private` 或 `secret`；这是数据语义，不代表 API 自动完成身份鉴权，调用层仍需执行可见性策略；
+- `allow_expiry`：为 false 时边不得填写 `expires_at`；
+- `dimensions`：每项使用稳定 `dimension_id`、名称、说明、最小/最大/默认值；边上的 `values` 只能引用已声明维度并满足范围；
+- `style`：建议使用 `label`、CSS 颜色 `color`、布尔 `dashed` 和 `marker`（如 `arrow`、`closed`、`none`）；它只控制安全展示，不允许脚本或组件名；
+- `metadata`：仅存放 JSON-safe 作者扩展信息，不要放 Provider、模型凭据、Prompt、文件路径或可执行配置。
+
+框架始终提供 `subordinate` 和 `affiliated` 两个 legacy 类型。新 DLC 可继续直接引用，也可用同 ID 覆盖展示/约束；其他自定义 ID 在全部启用 DLC 之间必须唯一。
+
+### Relation edge schema
+
+关系边至少填写 `source_entity_id`、`target_entity_id` 和 `relationship_type_id`，可选填写：
+
+- 关系边使用 `(parent_id, child_id, rel_type)` 复合键；同一复合键再次写入表示覆盖更新；
+- `strength`：省略时采用类型默认值；
+- `visibility`：必须是四种白名单值之一；
+- `starts_at` / `expires_at`：使用世界时间数值，要求 `expires_at > starts_at`；当前时间早于开始或不早于到期时边为 inactive；
+- `values`：关系类型定义的多维数值映射；
+- `note`：简短叙事说明；
+- `metadata`：有界 JSON-safe 扩展数据。
+
+不要在业务代码里按 `subordinate`/`affiliated` 写分支。需要方向、样式、范围或维度时，从当前 Generation 的 `RelationshipCatalog` 查询。对无向边执行查询、更新和删除时同样交给 Catalog 规范化端点。
+
+### DLC Studio workflow
+
+1. 在“关系类型”页签先创建类型，填写稳定 ID、中文说明、方向、强度、公开性、到期规则、维度和样式。
+2. 再进入关系边编辑器，从当前草稿目录选择类型并填写强度、时间窗口、维度、备注和 Metadata。
+3. 删除类型前先删除或迁移所有引用边；Studio 会提示引用位置，但最终仍以 Registry 校验为准。
+4. 使用 Content Diff、撤销/重做和导入导出检查 keyed collection 变化；批量修改时才使用高级 JSON。
+5. 保存后执行 Registry validate，再 reload；同时检查关系类型 API、关系列表和主界面动态图例是否属于同一 Generation。
+
+### Runtime and migration rules
+
+关系目录是 Generation-bound 权威数据。新增运行时入口必须通过 `WorldState`/`RelationshipCatalog`，不能绕过校验直接写 SQLite。Schema 迁移必须保留旧边；archive、rollback 和 restart recovery 必须先恢复目录再恢复边。修改类型范围、方向或维度时，应准备旧边兼容/迁移方案，不能假设热重载会静默接受不再合法的数据。
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_relationship_contract.py tests/unit/test_relationship_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py tests/unit/test_worldstate_time_api.py
+python -m pytest -q
+python -m compileall multiagent_framework routers
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+外部 API 连通测试只允许从 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS` 读取临时配置；未注入时必须 skip。禁止把实际 URL、Key 或响应原文写入源码、命令记录、日志、文档和提交。
