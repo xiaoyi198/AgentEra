@@ -19,7 +19,7 @@ FACT_KINDS = {
     "entity_field", "entity_tag", "entity_state",
     "actor_attribute", "actor_state", "actor_trait", "actor_membership",
     "relationship", "ongoing_event", "event_history", "time",
-    "objective_progress", "aggregate_metric", "player_knowledge",
+    "objective_progress", "aggregate_metric", "player_knowledge", "phase",
 }
 AGGREGATES = {"sum", "avg", "min", "max", "count"}
 AGGREGATE_SOURCES = {

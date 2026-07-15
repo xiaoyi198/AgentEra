@@ -418,3 +418,55 @@ def test_dry_run_generic_conditions_share_runtime_semantics_and_observe_applied_
     assert [node["day"] for node in report["nodes"]] == [2, 3, 4]
     assert report["nodes"][1]["world_effect_status"] == "applied"
     assert report["nodes"][2]["world_effect_status"] == "none"
+
+
+
+def test_dry_run_projects_generic_effects_before_observing_next_rule():
+    content = _content()
+    content["actors"] = [{
+        "actor_id": "governor", "display_name": "Governor", "actor_type": "person",
+        "entity_id": "city", "attributes": {}, "states": {},
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "commands", "display_name": "Commands",
+        "direction": "directed", "minimum_strength": 0, "maximum_strength": 100,
+        "default_strength": 50, "default_visibility": "public",
+    }]
+    content["causal_event_rules"] = [
+        {
+            "rule_id": "seed_to_expansion",
+            "source_event_types": ["seed"],
+            "child_event_type": "expanded",
+            "delay_days": 1,
+            "world_effects": [
+                {"effect_type": "create_entity", "entity_id": "outpost", "entity_type": "location", "name": "Outpost"},
+                {"effect_type": "move_entity", "entity_id": "outpost", "region": "north"},
+                {"effect_type": "modify_relationship", "parent_id": "city", "child_id": "outpost", "rel_type": "commands", "strength": 80},
+                {"effect_type": "modify_membership", "actor_id": "governor", "organization_id": "city", "role": "leader"},
+                {"effect_type": "reveal_information", "entity_id": "outpost", "knowledge_id": "route", "value": "known"},
+                {"effect_type": "switch_phase", "phase_id": "expansion", "metadata": {"chapter": 2}},
+            ],
+        },
+        {
+            "rule_id": "expansion_to_ready",
+            "source_event_types": ["expanded"],
+            "child_event_type": "ready",
+            "delay_days": 1,
+            "conditions": [
+                {"kind": "entity_field", "entity_id": "outpost", "field": "metadata.region", "operator": "eq", "value": "north"},
+                {"kind": "relationship", "entity_id": "city", "target_entity_id": "outpost", "name": "commands", "field": "strength", "operator": "gte", "value": 80},
+                {"kind": "actor_membership", "entity_id": "governor", "name": "city", "field": "role", "operator": "eq", "value": "leader"},
+                {"kind": "player_knowledge", "entity_id": "outpost", "name": "route", "operator": "eq", "value": "known"},
+                {"kind": "phase", "field": "phase_id", "operator": "eq", "value": "expansion"},
+                {"kind": "phase", "field": "metadata.chapter", "operator": "eq", "value": 2},
+            ],
+        },
+    ]
+
+    report = dry_run_causal_rules(
+        content, {"event_id": "manual_seed", "event_type": "seed", "severity": 4},
+        horizon_days=5,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == ["seed", "expanded", "ready"]
+    assert report["nodes"][1]["world_effect_status"] == "applied"

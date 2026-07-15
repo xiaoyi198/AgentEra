@@ -16,6 +16,7 @@ export const CAUSAL_CONDITION_KINDS = [
   { key: 'objective_progress', label: '目标进度', help: '读取 Objective 的 progress、status 等公开状态字段。' },
   { key: 'aggregate_metric', label: '聚合统计', help: '对实体、库存、指标、Actor 属性、关系或持续事件执行 sum/avg/min/max/count。' },
   { key: 'player_knowledge', label: '玩家已知信息', help: '只查询玩家知识 Provider，不读取世界真相；没有 Provider 时普通比较不会成立。' },
+  { key: 'phase', label: '世界阶段', help: '读取当前世界阶段的 phase_id，或通过 metadata.xxx 读取阶段元数据。' },
 ]
 
 export const CAUSAL_CONDITION_OPERATORS = [
@@ -154,6 +155,7 @@ export function defaultCausalCondition(kind = 'anchored_inventory', catalogs = {
   else if (kind === 'objective_progress') condition = { ...condition, entity_id: objectiveId, field: 'progress', operator: 'gte', value: 1 }
   else if (kind === 'aggregate_metric') condition = { ...condition, field: 'entity_count', aggregate: 'count', operator: 'gte', value: 1 }
   else if (kind === 'player_knowledge') condition = { ...condition, name: '', field: '', value: '' }
+  else if (kind === 'phase') condition = { ...condition, field: 'phase_id', value: '' }
   return normalizeCausalConditionForEditor(condition)
 }
 
@@ -234,6 +236,12 @@ export function serializeCausalCondition(source, index = null) {
       requireReference(result, 'name', '关系类型')
     }
     if (result.kind === 'objective_progress' && !result.entity_id && !result.name) throw new Error('目标 ID 不能为空。')
+    if (result.kind === 'phase') {
+      requireReference(result, 'field', '阶段字段')
+      if (result.field !== 'phase_id' && !/^metadata\.[^.]+(?:\.[^.]+)*$/.test(result.field)) {
+        throw new Error('阶段字段只能是 phase_id 或 metadata.xxx。')
+      }
+    }
     if (result.kind === 'aggregate_metric') {
       requireReference(result, 'field', '聚合来源')
       if (!VALID_AGGREGATE_SOURCES.has(result.field)) throw new Error('聚合来源无效。')

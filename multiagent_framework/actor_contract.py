@@ -257,6 +257,8 @@ class ActorManager:
         self._lock, self._generation = threading.RLock(), 0
         self._definitions: dict[str, ActorDefinition] = {}
         self._runtime: dict[str, dict[str, Any]] = {}
+        # SQLite gameplay effects are authoritative; this is a read-only overlay.
+        self._effect_overrides: dict[str, dict[str, Any]] = {}
 
     @property
     def generation(self) -> int: return self._generation
@@ -338,11 +340,43 @@ class ActorManager:
         except (TypeError, ValueError, OverflowError):
             base["version"] = 0
 
+    def set_effect_overrides(self, overrides: Mapping[str, Any] | None) -> None:
+        """Replace the projected membership overlay from GameplayEffectRuntime."""
+        normalized: dict[str, dict[str, Any]] = {}
+        if isinstance(overrides, Mapping):
+            for raw_actor_id, raw in overrides.items():
+                actor_id = str(raw_actor_id)
+                if actor_id in self._definitions and isinstance(raw, Mapping):
+                    normalized[actor_id] = copy.deepcopy(dict(raw))
+        with self._lock:
+            self._effect_overrides = normalized
+
     def get(self, actor_id: str) -> dict[str, Any] | None:
         with self._lock:
             actor = self._definitions.get(str(actor_id))
-            if actor is None: return None
-            result = actor.to_dict(); result["runtime"] = copy.deepcopy(self._runtime.get(actor.actor_id, self._initial(actor))); result["generation"] = self._generation
+            if actor is None:
+                return None
+            result = actor.to_dict()
+            result["runtime"] = copy.deepcopy(
+                self._runtime.get(actor.actor_id, self._initial(actor))
+            )
+            override = self._effect_overrides.get(actor.actor_id, {})
+            memberships = override.get("memberships", {}) if isinstance(override, Mapping) else {}
+            if isinstance(memberships, Mapping):
+                merged = {
+                    str(item.get("organization_id", "")): copy.deepcopy(item)
+                    for item in result.get("memberships", [])
+                    if isinstance(item, Mapping) and item.get("organization_id")
+                }
+                for organization_id, item in memberships.items():
+                    if not isinstance(item, Mapping):
+                        continue
+                    if item.get("removed"):
+                        merged.pop(str(organization_id), None)
+                    else:
+                        merged[str(organization_id)] = copy.deepcopy(dict(item))
+                result["memberships"] = [merged[key] for key in sorted(merged)]
+            result["generation"] = self._generation
             return result
 
     def list(self) -> list[dict[str, Any]]:

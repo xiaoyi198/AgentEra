@@ -1866,6 +1866,15 @@ class DLCBundleLoader:
                     "generation": self.generation,
                 }
             ),
+            "gameplay_effects": (
+                self.orchestrator.gameplay_effects_public_state()
+                if hasattr(self.orchestrator, "gameplay_effects_public_state")
+                else {
+                    "schema_version": "1.0", "phase": {}, "agents": {},
+                    "knowledge": [], "objectives": {}, "action_unlocks": {},
+                    "counts": {"actors": 0, "issues": 0, "knowledge": 0},
+                }
+            ),
             "ui_manifest": (
                 self.orchestrator.ui_manifest_public_state()
                 if hasattr(self.orchestrator, "ui_manifest_public_state")

@@ -462,6 +462,7 @@ class ObjectiveManager:
         self._ending_receipt: dict[str, Any] | None = None
         self._transition_order: deque[dict[str, Any]] = deque(maxlen=_MAX_TRANSITIONS)
         self._last_progress: dict[str, Any] = {}
+        self._effect_overrides: dict[str, dict[str, Any]] = {}
         self._fingerprint = _canonical_hash({"objectives": [], "endings": []})
 
     def configure(
@@ -601,6 +602,23 @@ class ObjectiveManager:
     def _remember_transition(self, transition: dict[str, Any]) -> None:
         self._transition_order.append(copy.deepcopy(transition))
 
+    def set_effect_overrides(self, overrides: Mapping[str, Any] | None) -> None:
+        """Replace objective progress/status projected from gameplay effects."""
+        normalized: dict[str, dict[str, Any]] = {}
+        if isinstance(overrides, Mapping):
+            for raw_id, raw in overrides.items():
+                objective_id = str(raw_id)
+                if objective_id not in self._definitions or not isinstance(raw, Mapping):
+                    continue
+                item = copy.deepcopy(dict(raw))
+                try:
+                    item["progress"] = max(0.0, min(1.0, float(item.get("progress", 0.0))))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                normalized[objective_id] = item
+        with self._lock:
+            self._effect_overrides = normalized
+
     def _state_locked(
         self,
         *,
@@ -612,6 +630,7 @@ class ObjectiveManager:
         objective_states: list[dict[str, Any]] = []
         for definition in sorted(self._definitions.values(), key=lambda item: (item.order, item.objective_id)):
             completion_receipt = self._objective_receipts.get(definition.objective_id)
+            effect_override = self._effect_overrides.get(definition.objective_id, {})
             milestones: list[dict[str, Any]] = []
             milestone_progress: list[float] = []
             locked = False
@@ -639,11 +658,18 @@ class ObjectiveManager:
                 **definition.to_dict(),
                 "status": (
                     "completed" if completion_receipt
+                    else str(effect_override.get("status")) if effect_override.get("status")
                     else "active" if definition.enabled
                     else "disabled"
                 ),
                 "completed_at": completion_receipt.get("completed_at") if completion_receipt else None,
-                "progress": round(1.0 if completion_receipt else max(0.0, min(1.0, progress)), 4),
+                "progress": round(
+                    1.0 if completion_receipt
+                    else float(effect_override["progress"]) if "progress" in effect_override
+                    else max(0.0, min(1.0, progress)),
+                    4,
+                ),
+                "effect_override": copy.deepcopy(effect_override) if effect_override else None,
                 "completion_evaluation": completion_evaluation,
                 "milestones": milestones,
             })
@@ -681,6 +707,29 @@ class ObjectiveManager:
         with self._lock:
             transitions: list[dict[str, Any]] = []
             if self._ending_receipt is None:
+                for definition in sorted(self._definitions.values(), key=lambda item: (item.order, item.objective_id)):
+                    override = self._effect_overrides.get(definition.objective_id, {})
+                    override_completed = (
+                        str(override.get("status", "")) == "completed"
+                        or float(override.get("progress", 0.0)) >= 1.0
+                    )
+                    if (
+                        definition.enabled
+                        and override_completed
+                        and definition.objective_id not in self._objective_receipts
+                    ):
+                        receipt = {
+                            "objective_id": definition.objective_id,
+                            "category": definition.category,
+                            "completed_at": float(override.get("updated_at", sim_time)),
+                            "generation": self._generation,
+                            "source": "gameplay_effect",
+                            "command_id": str(override.get("command_id", "")),
+                        }
+                        self._objective_receipts[definition.objective_id] = receipt
+                        transition = {"type": "objective_completed", **receipt}
+                        transitions.append(transition)
+                        self._remember_transition(transition)
                 for definition in sorted(self._definitions.values(), key=lambda item: (item.order, item.objective_id)):
                     if not definition.enabled or definition.objective_id in self._objective_receipts:
                         continue

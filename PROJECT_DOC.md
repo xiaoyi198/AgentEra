@@ -2140,3 +2140,35 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 
 - Focused causal/runtime verification: 155 passed. Full Python verification: 600 passed, with 2 external-API tests skipped because `AGENTERA_TEST_*` credentials were not injected. Frontend verification: 41 tests, ESLint and Vite production build passed. Python compile and `example_frontier` Registry validation also passed with zero issues.
 - The persistent gameplay-framework goal remains active. This release completes P1.3 only. P1.4 must next expand generic causal effects; P1.5-P1.6 and P2 remain open.
+
+## Release architecture note: generic causal-effect runtime (v0.29.0)
+
+### Shared authored-effect and command contract
+
+- `multiagent_framework/gameplay_effects.py` is the single normalization/materialization boundary for 18 generic `world_effects`. Authored batches are bounded to 32 effects and materialize at most 64 immutable commands.
+- Legacy resource/status/ongoing-event/anchored-transfer shapes remain compatible. New commands cover entity create/move/transform/remove, Agent enable/disable, relationship and membership mutation, Issue creation, player-knowledge revelation, Objective progression, Action unlocks and phase switching.
+- Materialized command IDs are deterministic: `causal:{event_id}:{command_index}`. The scheduler freezes commands before dispatch, and replay of the same child event is idempotent rather than duplicating world side effects.
+
+### Atomic authority and Manager projection
+
+- `WorldState.apply_causal_effects()` snapshots SQLite-backed world data and `GameplayEffectRuntime`, executes the complete command batch inside one transaction, and restores both authorities on any reducer, projection or commit failure.
+- `GameplayEffectRuntime` owns Generation-safe dynamic state for Agent enablement, Actor membership overlays, Issues, player Knowledge, Objective state, Action unlocks and the current Phase. Its snapshot is persisted with runtime state and restored before causal scheduling resumes.
+- Orchestrator projection updates Agent, Actor, Issue, Objective and Action managers only after authoritative command acceptance. Disabled Agents are excluded from targeting and execution; restored legacy runtime state is synchronized into the effect runtime before use.
+
+### Registry, Dry Run and authoring
+
+- Registry validates world effects in author order. A successful `create_entity` extends the rule-local entity catalog so later relationship, membership, knowledge, scope or lifecycle effects may safely reference the new stable ID; duplicate, missing and removed references are rejected at precise paths.
+- Dry Run uses the same materializer, command reducers, transaction boundaries and rollback behavior as production. Projected entities, relationships, memberships, Issues, Knowledge, Objectives, unlocks and Phase are therefore observable by downstream conditions without mutating live SQLite.
+- The condition contract now exposes an 18th `phase` fact kind through `phase_id` or `metadata.xxx`. `frontend/src/CausalConditionTools.js` and `CausalEffectTools.js` provide matching Chinese catalogs, defaults, normalization, bounded JSON parsing and secret-free serialization.
+- DLC Studio groups all 18 effects into six Chinese authoring categories, shows field-level constraints and atomicity guidance, and includes entities created earlier in the same rule in later reference controls.
+
+### Verification
+
+- Full Python gate: `620 passed, 2 skipped`; focused causal/runtime gate: `120 passed`. The two external API tests skipped because `AGENTERA_TEST_*` variables were absent, so no external request was made.
+- Frontend gate: `46 passed`; ESLint and Vite production build passed. Python compile, `git diff --check`, and `example_frontier` Registry validation (`0 issues`) passed.
+- Visual QA confirmed the two saved example rules round-trip as 8 and 4 effects, the effect selector exposes all 18 effect types, the stabilization condition reads `phase_id`, and the 390px layout uses single-column effect fields/toolbars without document-level horizontal overflow.
+
+### Example and remaining scope
+
+- `example_frontier` v1.8.0 demonstrates an atomic response batch that creates `frontier_relief_command`, immediately links it to the garrison and quartermaster, creates an Issue, reveals Knowledge and switches Phase. Its stabilization stage observes the response Phase, advances an Objective, unlocks an Action and switches to chapter two.
+- AgentEra version identity is synchronized at v0.29.0. The persistent gameplay-framework goal remains active: P1.4 is complete; P1.5 must implement three-layer world/Actor/player knowledge, while P1.6 and P2 remain open.

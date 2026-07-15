@@ -2847,3 +2847,44 @@ npm run build
 ```
 
 外部 API 连通测试只能读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入时必须 skip；不得把实际 URL、Key、模型响应或连接错误原文写入命令、测试、文档、日志或 Git。
+
+## 通用因果效果开发流程（v0.29.0）
+
+### 权威边界
+
+1. 所有效果 Schema、边界和物化逻辑统一维护在 `multiagent_framework/gameplay_effects.py`；不得在 `causal_events.py`、`causal_analysis.py`、Orchestrator 或 React 中复制第二套效果解释器。
+2. `GameplayEffectRuntime` 只保存题材无关的动态权威状态：Agent 启停、Actor/Membership、Issue、Knowledge、Objective、Action Unlock 和 Phase。WorldState SQLite 与该 Runtime 必须在同一因果批次中共同提交或共同恢复。
+3. Manager 是投影视图，不是因果效果的第二权威来源。先执行 World Command，再投影到 Agent/Actor/Issue/Objective/Action Manager；投影失败必须导致整批事务回滚。
+4. 每个子事件的命令 ID 固定为 `causal:{event_id}:{command_index}`。不要改成随机 UUID、时间戳或基于描述文本的 ID，否则重启恢复和重复提交会失去幂等性。
+
+### DLC 编写规则
+
+- 单条规则最多 32 个 authored effects，物化后最多 64 条命令。需要更长流程时拆为多个有界因果阶段。
+- 先写 `create_entity`，同一规则后续效果即可引用该 ID；Registry 按顺序扩展临时实体目录。不得引用后面才创建的实体，也不得重复创建现有 ID。
+- `create_issue` 必须引用当前 DLC 的 Issue Type，并使用其允许的来源 kind/id；`advance_objective`、`unlock_action`、关系类型、Actor、Agent、资源和 Scope 均必须通过 Registry 跨引用。
+- `reveal_information` 写入玩家知识层，`switch_phase` 写入当前阶段；阶段条件只使用 `field=phase_id` 或 `field=metadata.xxx`。
+- `create_ongoing_event.expected_result` 使用正式成熟结果字段，例如 `new_status` 和 `inventory_deltas`，不要继续写旧的任意 `status` 键。
+- 每个效果的 `reason` 是安全审计说明，不应包含 Prompt、模型消息、凭据、Provider 地址或原始异常。
+
+### DLC Studio 工作流
+
+1. 在“因果事件规则”中添加效果，先根据六个中文分类选择类型，再按字段帮助选择实体、Agent、Actor、关系、Issue、Objective、Action 和 Scope。
+2. JSON 字段必须是对应的对象、数组或任意安全 JSON 值；保存时统一调用 `serializeWorldEffects()`，不得把 `_metadata_text`、`_source_text` 等编辑态字段写入包。
+3. 同规则创建实体后，确认后续实体引用控件已经出现新 ID；保存并重新打开，检查 roundtrip 后效果顺序不变。
+4. 使用未保存草稿 Dry Run 验证命令数量、原子回滚、下游条件和重复事件幂等，再执行 Registry validate 与 Generation reload。
+5. 条件编辑器当前支持 18 种来源；`phase` 字段只允许 `phase_id` 或 `metadata.xxx`，Studio 与 Runtime 均应覆盖测试。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_causal_generic_effects.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_objective_orchestrator.py tests/unit/test_turn_engine.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试仍只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。不得把值、模型响应或连接错误原文写入命令、源码、文档、日志或 Git。

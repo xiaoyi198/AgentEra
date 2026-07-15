@@ -819,3 +819,71 @@ def test_generic_causal_condition_cross_references_report_missing_components_and
         "causal_event.missing_objective",
         "causal_event.invalid_resource_kind",
     } <= codes
+
+
+def test_generic_causal_effect_cross_references_and_rule_local_entities(registry: DLCRegistry):
+    registry.create(manifest("generic-effects"))
+    content = valid_content()
+    content["relationship_types"] = [
+        {"relationship_type_id": "route", "display_name": "Route", "direction": "directed"},
+    ]
+    content["causal_event_rules"] = [{
+        "rule_id": "spawn_then_change",
+        "source_event_types": ["seed"],
+        "child_event_type": "changed",
+        "world_effects": [
+            {
+                "effect_type": "create_entity", "entity_id": "new_place",
+                "entity_type": "location", "name": "New Place", "resources": {"coin": 5},
+            },
+            {"effect_type": "move_entity", "entity_id": "new_place", "region": "north"},
+            {"effect_type": "modify_relationship", "parent_id": "place", "child_id": "new_place", "rel_type": "route"},
+            {"effect_type": "reveal_information", "entity_id": "new_place", "knowledge_id": "known"},
+        ],
+    }]
+    registry.save_content("generic-effects", content)
+
+    codes = {issue.code for issue in registry.validate("generic-effects")}
+
+    assert "causal_event.effect_missing_entity" not in codes
+    assert "causal_event.effect_missing_resource" not in codes
+    assert "causal_event.effect_missing_relationship_type" not in codes
+
+
+def test_generic_causal_effect_registry_reports_all_reference_kinds(registry: DLCRegistry):
+    registry.create(manifest("generic-effect-errors"))
+    content = valid_content()
+    content["causal_event_rules"] = [{
+        "rule_id": "broken_effects",
+        "source_event_types": ["seed"],
+        "child_event_type": "broken",
+        "world_effects": [
+            {"effect_type": "create_entity", "entity_id": "place", "entity_type": "location", "name": "Duplicate"},
+            {"effect_type": "create_entity", "entity_id": "twice", "entity_type": "location", "name": "First"},
+            {"effect_type": "create_entity", "entity_id": "twice", "entity_type": "location", "name": "Second", "resources": {"missing": 1}},
+            {"effect_type": "move_entity", "entity_id": "missing_entity", "region": "north"},
+            {"effect_type": "enable_agent", "agent_id": "missing_agent", "actor_id": "missing_actor"},
+            {"effect_type": "modify_relationship", "parent_id": "place", "child_id": "missing_entity", "rel_type": "missing_relation"},
+            {"effect_type": "modify_membership", "actor_id": "missing_actor", "organization_id": "missing_org"},
+            {"effect_type": "create_issue", "issue_type_id": "missing_issue"},
+            {"effect_type": "reveal_information", "entity_id": "missing_entity", "knowledge_id": "secret"},
+            {"effect_type": "advance_objective", "objective_id": "missing_objective", "amount": 1},
+            {"effect_type": "unlock_action", "action_id": "missing_action", "scope_id": "missing_scope"},
+        ],
+    }]
+    registry.save_content("generic-effect-errors", content)
+
+    codes = {issue.code for issue in registry.validate("generic-effect-errors")}
+
+    assert {
+        "causal_event.effect_duplicate_entity",
+        "causal_event.effect_missing_resource",
+        "causal_event.effect_missing_entity",
+        "causal_event.effect_missing_agent",
+        "causal_event.effect_missing_actor",
+        "causal_event.effect_missing_relationship_type",
+        "causal_event.effect_missing_issue_type",
+        "causal_event.effect_missing_objective",
+        "causal_event.effect_missing_action",
+        "causal_event.effect_missing_scope",
+    } <= codes

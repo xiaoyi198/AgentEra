@@ -12,6 +12,7 @@ import math
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -900,14 +901,129 @@ class DLCRegistry:
                             add("causal_event.invalid_resource_kind", f"Aggregate requires resource kind {expected_kind}", f"{condition_path}.field")
                     if condition.field == "relation" and condition.name and condition.name not in relationship_type_ids:
                         add("causal_event.missing_relationship_type", f"Unknown aggregate relationship type: {condition.name}", f"{condition_path}.name")
+            available_effect_entities = set(entity_ids)
+            created_effect_entities: set[str] = set()
             for effect_index, effect in enumerate(rule.world_effects):
                 effect_path = f"{path}.world_effects[{effect_index}]"
                 effect_type = str(effect.get("effect_type", ""))
-                entity_fields = ("from_entity_id", "to_entity_id") if effect_type == "transfer_anchored_value" else ("entity_id",)
-                for field_name in entity_fields:
+
+                def require_effect_entity(field_name: str, *, optional: bool = False) -> str:
                     entity_id = str(effect.get(field_name, ""))
-                    if entity_id not in entity_ids:
-                        add("causal_event.effect_missing_entity", f"Unknown world-effect entity: {entity_id}", f"{effect_path}.{field_name}")
+                    if optional and not entity_id:
+                        return entity_id
+                    if entity_id not in available_effect_entities:
+                        add(
+                            "causal_event.effect_missing_entity",
+                            f"Unknown world-effect entity: {entity_id}",
+                            f"{effect_path}.{field_name}",
+                        )
+                    return entity_id
+
+                if effect_type == "create_entity":
+                    created_id = str(effect.get("entity_id", ""))
+                    if created_id in available_effect_entities or created_id in created_effect_entities:
+                        add(
+                            "causal_event.effect_duplicate_entity",
+                            f"World-effect entity already exists or is created twice: {created_id}",
+                            f"{effect_path}.entity_id",
+                        )
+                    else:
+                        created_effect_entities.add(created_id)
+                        available_effect_entities.add(created_id)
+                    for resource_name in effect.get("resources", {}):
+                        if str(resource_name) not in resource_map:
+                            add(
+                                "causal_event.effect_missing_resource",
+                                f"Unknown create-entity resource: {resource_name}",
+                                f"{effect_path}.resources.{resource_name}",
+                            )
+                elif effect_type == "transfer_anchored_value":
+                    require_effect_entity("from_entity_id")
+                    require_effect_entity("to_entity_id")
+                elif effect_type in {
+                    "adjust_resource", "set_resource", "update_status",
+                    "create_ongoing_event", "move_entity", "transform_entity", "remove_entity",
+                }:
+                    referenced_id = require_effect_entity("entity_id")
+                    if effect_type == "remove_entity" and referenced_id in available_effect_entities:
+                        available_effect_entities.remove(referenced_id)
+                elif effect_type in {"enable_agent", "disable_agent"}:
+                    agent_id = str(effect.get("agent_id", ""))
+                    actor_id = str(effect.get("actor_id", ""))
+                    if agent_id not in agent_ids:
+                        add(
+                            "causal_event.effect_missing_agent",
+                            f"Unknown world-effect agent: {agent_id}",
+                            f"{effect_path}.agent_id",
+                        )
+                    if actor_id and actor_id not in actor_ids:
+                        add(
+                            "causal_event.effect_missing_actor",
+                            f"Unknown world-effect actor: {actor_id}",
+                            f"{effect_path}.actor_id",
+                        )
+                elif effect_type == "modify_relationship":
+                    require_effect_entity("parent_id")
+                    require_effect_entity("child_id")
+                    rel_type = str(effect.get("rel_type", ""))
+                    if rel_type not in relationship_type_ids:
+                        add(
+                            "causal_event.effect_missing_relationship_type",
+                            f"Unknown world-effect relationship type: {rel_type}",
+                            f"{effect_path}.rel_type",
+                        )
+                elif effect_type == "modify_membership":
+                    actor_id = str(effect.get("actor_id", ""))
+                    if actor_id not in actor_ids:
+                        add(
+                            "causal_event.effect_missing_actor",
+                            f"Unknown world-effect actor: {actor_id}",
+                            f"{effect_path}.actor_id",
+                        )
+                    require_effect_entity("organization_id")
+                elif effect_type == "create_issue":
+                    issue_type_id = str(effect.get("issue_type_id", ""))
+                    if issue_type_id not in issue_type_ids:
+                        add(
+                            "causal_event.effect_missing_issue_type",
+                            f"Unknown world-effect issue type: {issue_type_id}",
+                            f"{effect_path}.issue_type_id",
+                        )
+                    source = effect.get("source", {})
+                    if isinstance(source, Mapping) and str(source.get("kind", "")) == "entity":
+                        source_id = str(source.get("id", ""))
+                        if source_id not in available_effect_entities:
+                            add(
+                                "causal_event.effect_missing_entity",
+                                f"Unknown world-effect issue source entity: {source_id}",
+                                f"{effect_path}.source.id",
+                            )
+                elif effect_type == "reveal_information":
+                    require_effect_entity("entity_id", optional=True)
+                elif effect_type == "advance_objective":
+                    objective_id = str(effect.get("objective_id", ""))
+                    if objective_id not in objective_ids:
+                        add(
+                            "causal_event.effect_missing_objective",
+                            f"Unknown world-effect objective: {objective_id}",
+                            f"{effect_path}.objective_id",
+                        )
+                elif effect_type == "unlock_action":
+                    action_id = str(effect.get("action_id", ""))
+                    if action_id not in action_ids:
+                        add(
+                            "causal_event.effect_missing_action",
+                            f"Unknown world-effect action: {action_id}",
+                            f"{effect_path}.action_id",
+                        )
+                    scope_id = str(effect.get("scope_id", ""))
+                    if scope_id and scope_id not in available_effect_entities and scope_id not in actor_ids and scope_id not in agent_ids:
+                        add(
+                            "causal_event.effect_missing_scope",
+                            f"Unknown world-effect action scope: {scope_id}",
+                            f"{effect_path}.scope_id",
+                        )
+
                 resource_fields: tuple[str, ...] = ()
                 if effect_type in {"adjust_resource", "set_resource"}:
                     resource_fields = ("resource_name",)

@@ -1498,3 +1498,21 @@ This checkpoint completes P1.3:
 The persistent gameplay-framework goal remains **active**. P1.3 is complete; P1.4 should next generalize causal effects for entity lifecycle, Agent lifecycle, relationships/positions, Issue creation, knowledge revelation, objective progression, action unlocks and stage transitions. P1.5-P1.6 and P2 remain open.
 
 The v0.28.0 local gate passed 600 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected), a 155-test focused causal/runtime suite, 41 frontend tests, Python compile, frontend lint/build and zero-issue `example_frontier` Registry validation. External API tests remain opt-in through `AGENTERA_TEST_*` environment variables only.
+
+## Phase checkpoint: generic causal-effect runtime (v0.29.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.4:
+
+- introduced a shared bounded contract for 18 generic effects and deterministic materialization into stable, idempotent world commands;
+- made WorldState plus Gameplay Effect Runtime one atomic authority with complete rollback, snapshot/restart recovery and Generation-safe public state;
+- added entity and Agent lifecycle effects, relationship/membership mutation, Issue and Knowledge creation, Objective progression, Action unlock and Phase switching;
+- projected accepted state into Agent, Actor, Issue, Objective and Action managers, including disabled-Agent targeting/execution enforcement;
+- unified production and Dry Run transaction semantics and extended Registry validation with ordered same-batch `create_entity` references;
+- replaced the limited Studio effect rows with a full Chinese editor for all 18 effects, and added `phase` as the 18th visual condition source;
+- upgraded `example_frontier` to v1.8.0 and synchronized AgentEra to v0.29.0.
+
+The v0.29.0 local gate passed 620 Python tests, with 2 external-API environment-gated tests skipped because `AGENTERA_TEST_*` credentials were not injected; the focused causal/runtime suite passed 120 tests. Frontend verification passed 46 tests, ESLint and the Vite production build. Python compile, `git diff --check` and zero-issue `example_frontier` Registry validation also passed. Studio visual QA verified both saved effect chains and the 18-option catalog, plus a 390px single-column layout without document-level horizontal overflow. No external API request was attempted.
+
+The persistent gameplay-framework goal remains **active**. P1.4 is complete; P1.5 should next implement explicit world-truth, Actor-belief and player-knowledge layers with provenance, confidence, freshness, secrecy, distortion and investigation. P1.6 and P2 remain open.

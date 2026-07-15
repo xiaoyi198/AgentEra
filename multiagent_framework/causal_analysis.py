@@ -17,6 +17,7 @@ import math
 import re
 from typing import Any
 
+from .action_contract import ActionCatalog
 from .actor_contract import ActorManager
 from .causal_events import (
     CAUSAL_METADATA_FIELDS,
@@ -27,6 +28,10 @@ from .causal_events import (
 )
 from .causal_templates import expand_causal_rule_document
 from .event_generator import GAME_SECONDS_PER_DAY
+from .gameplay_effect_runtime import (
+    GameplayEffectRuntime, empty_gameplay_effect_state, reduce_gameplay_effect_state,
+)
+from .issue_contract import IssueManager
 from .objective_contract import ObjectiveManager
 from .relationship_contract import RelationshipCatalog
 from .types import EventObject
@@ -152,6 +157,8 @@ class _SeedWorldFacts:
                 anchor_rate=anchor_rates.get(item_name, 1.0),
             ))
 
+        self._gameplay_effect_state = empty_gameplay_effect_state()
+
         self._values: dict[str, list[EntityValue]] = defaultdict(list)
         for raw in values:
             if not isinstance(raw, Mapping):
@@ -201,23 +208,231 @@ class _SeedWorldFacts:
         values = self._values.get(entity_id, ())
         return [item for item in values if kind is None or item.kind == kind]
 
-    def apply_world_commands(self, commands: Sequence[Mapping[str, Any]]) -> tuple[bool, str]:
-        """Apply a causal batch to this isolated projection with atomic semantics."""
+    def get_gameplay_effect_state(self) -> dict[str, Any]:
+        return copy.deepcopy(self._gameplay_effect_state)
 
-        inventory_before = {key: [InventoryItem(**asdict(item)) for item in values] for key, values in self._inventory.items()}
-        values_before = {key: [EntityValue(**asdict(item)) for item in values] for key, values in self._values.items()}
-        entities_before = {key: Entity(**asdict(item)) for key, item in self._entities.items()}
-        ongoing_before = [OngoingEvent(**asdict(item)) for item in self._ongoing]
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "entities": {key: Entity(**asdict(item)) for key, item in self._entities.items()},
+            "entity_ids": set(self._entity_ids),
+            "inventory": {
+                key: [InventoryItem(**asdict(item)) for item in values]
+                for key, values in self._inventory.items()
+            },
+            "values": {
+                key: [EntityValue(**asdict(item)) for item in values]
+                for key, values in self._values.items()
+            },
+            "relations": copy.deepcopy(self._relations),
+            "ongoing": [OngoingEvent(**asdict(item)) for item in self._ongoing],
+            "gameplay_effect_state": copy.deepcopy(self._gameplay_effect_state),
+        }
+
+    def restore(self, snapshot: Mapping[str, Any]) -> None:
+        self._entities = {
+            key: Entity(**asdict(item)) if isinstance(item, Entity) else Entity(**dict(item))
+            for key, item in snapshot["entities"].items()
+        }
+        self._entity_ids = set(snapshot["entity_ids"])
+        self._inventory = defaultdict(list, {
+            key: [InventoryItem(**asdict(item)) if isinstance(item, InventoryItem) else InventoryItem(**dict(item)) for item in values]
+            for key, values in snapshot["inventory"].items()
+        })
+        self._values = defaultdict(list, {
+            key: [EntityValue(**asdict(item)) if isinstance(item, EntityValue) else EntityValue(**dict(item)) for item in values]
+            for key, values in snapshot["values"].items()
+        })
+        self._relations = copy.deepcopy(snapshot["relations"])
+        self._ongoing = [
+            OngoingEvent(**asdict(item)) if isinstance(item, OngoingEvent) else OngoingEvent(**dict(item))
+            for item in snapshot["ongoing"]
+        ]
+        self._gameplay_effect_state = copy.deepcopy(snapshot["gameplay_effect_state"])
+
+    @staticmethod
+    def _finite_number(value: Any, code: str) -> float:
+        if isinstance(value, bool):
+            raise CausalEventError(code)
         try:
-            for command in commands:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise CausalEventError(code) from exc
+        if not math.isfinite(number):
+            raise CausalEventError(code)
+        return number
+
+    def _init_default_resources(self, entity_id: str) -> None:
+        for definition in self._resources.values():
+            if definition.kind == "asset":
+                self._inventory[entity_id].append(InventoryItem(
+                    entity_id=entity_id,
+                    category=definition.name,
+                    item_name=definition.name,
+                    quantity=float(definition.default_quantity),
+                    description=definition.unit,
+                    anchor_rate=float(definition.anchor_rate or 1.0),
+                ))
+            else:
+                self._values[entity_id].append(EntityValue(
+                    entity_id=entity_id,
+                    name=definition.name,
+                    kind=definition.kind,
+                    value=float(definition.default_quantity),
+                    description=definition.unit,
+                ))
+
+    def _apply_relationship(self, payload: Mapping[str, Any]) -> None:
+        operation = str(payload.get("operation", "upsert"))
+        parent_id = str(payload.get("parent_id", ""))
+        child_id = str(payload.get("child_id", ""))
+        rel_type = str(payload.get("rel_type", ""))
+        if parent_id not in self._entity_ids or child_id not in self._entity_ids:
+            raise CausalEventError("entity_not_found")
+        definition = self.relationship_catalog.get(rel_type)
+        if definition is None:
+            raise CausalEventError("relationship_type_not_found")
+        if definition.direction == "undirected" and child_id < parent_id:
+            parent_id, child_id = child_id, parent_id
+        if operation == "remove":
+            self._relations = [
+                item for item in self._relations
+                if not (
+                    item.get("parent_id") == parent_id
+                    and item.get("child_id") == child_id
+                    and item.get("rel_type") == rel_type
+                )
+            ]
+            return
+        if operation != "upsert":
+            raise CausalEventError("relationship_operation_invalid")
+        relation_payload = dict(payload)
+        relation_payload.pop("operation", None)
+        relation_payload["parent_id"] = parent_id
+        relation_payload["child_id"] = child_id
+        relation = self.relationship_catalog.normalize_relation(relation_payload, "command.payload")
+        self._relations = [
+            item for item in self._relations
+            if not (
+                item.get("parent_id") == relation["parent_id"]
+                and item.get("child_id") == relation["child_id"]
+                and item.get("rel_type") == relation["rel_type"]
+            )
+        ]
+        self._relations.append(relation)
+
+    def apply_world_commands(
+        self, commands: Sequence[Mapping[str, Any]], *, sim_time: float = 0.0,
+        event_id: str = "dry-run",
+    ) -> tuple[bool, str]:
+        """Apply one immutable causal batch to the isolated projection atomically."""
+
+        before = self.snapshot()
+        try:
+            for index, command in enumerate(commands):
+                command_type = str(command.get("command_type", ""))
                 entity_id = str(command.get("entity_id", ""))
+                payload = command.get("payload", {})
+                if not isinstance(payload, Mapping):
+                    raise CausalEventError("causal_plan_invalid")
+
+                if command_type == "create_entity":
+                    if not entity_id or entity_id in self._entity_ids:
+                        raise CausalEventError("entity_exists" if entity_id else "entity_invalid")
+                    entity_type = str(payload.get("entity_type", "")).strip()
+                    name = str(payload.get("name", "")).strip()
+                    metadata = payload.get("metadata", {})
+                    if not entity_type or not name or not isinstance(metadata, Mapping):
+                        raise CausalEventError("entity_invalid")
+                    self._entities[entity_id] = Entity(
+                        id=entity_id,
+                        type=entity_type,
+                        name=name,
+                        description=str(payload.get("description", "")),
+                        current_status=str(payload.get("current_status", "")),
+                        updated_at=float(sim_time),
+                        metadata=copy.deepcopy(dict(metadata)),
+                        version=0,
+                    )
+                    self._entity_ids.add(entity_id)
+                    self._init_default_resources(entity_id)
+                    continue
+
+                if command_type in {
+                    "set_agent_enabled", "modify_membership", "create_issue",
+                    "reveal_information", "advance_objective", "unlock_action", "switch_phase",
+                }:
+                    self._gameplay_effect_state, _ = reduce_gameplay_effect_state(
+                        self._gameplay_effect_state,
+                        command_type=command_type,
+                        payload=payload,
+                        sim_time=float(sim_time),
+                        command_id=f"causal:{event_id}:{index}",
+                    )
+                    continue
+
+                if command_type == "modify_relationship":
+                    self._apply_relationship(payload)
+                    continue
+
                 if entity_id not in self._entity_ids:
                     raise CausalEventError("entity_not_found")
-                command_type = str(command.get("command_type", ""))
-                payload = command.get("payload", {})
-                if command_type == "update_status":
-                    self._entities[entity_id].current_status = str(payload.get("new_status", ""))
+
+                if command_type == "move_entity":
+                    metadata = copy.deepcopy(self._entities[entity_id].metadata)
+                    changed = False
+                    for key in ("x", "y"):
+                        if key in payload:
+                            metadata[key] = self._finite_number(payload[key], "location_invalid")
+                            changed = True
+                    for key in ("region", "location_id"):
+                        if key in payload:
+                            metadata[key] = str(payload[key])
+                            changed = True
+                    if not changed:
+                        raise CausalEventError("location_invalid")
+                    entity = self._entities[entity_id]
+                    entity.metadata = metadata
+                    entity.updated_at = float(sim_time)
+                    entity.version += 1
                     continue
+
+                if command_type == "transform_entity":
+                    entity = self._entities[entity_id]
+                    metadata_patch = payload.get("metadata_patch", {})
+                    if metadata_patch is not None and not isinstance(metadata_patch, Mapping):
+                        raise CausalEventError("metadata_invalid")
+                    next_type = str(payload.get("new_type", entity.type))
+                    next_name = str(payload.get("new_name", entity.name))
+                    if not next_type or not next_name:
+                        raise CausalEventError("entity_invalid")
+                    entity.type = next_type
+                    entity.name = next_name
+                    entity.description = str(payload.get("new_description", entity.description))
+                    entity.current_status = str(payload.get("new_status", entity.current_status))
+                    entity.metadata.update(copy.deepcopy(dict(metadata_patch or {})))
+                    entity.updated_at = float(sim_time)
+                    entity.version += 1
+                    continue
+
+                if command_type == "remove_entity":
+                    del self._entities[entity_id]
+                    self._entity_ids.remove(entity_id)
+                    self._inventory.pop(entity_id, None)
+                    self._values.pop(entity_id, None)
+                    self._relations = [
+                        item for item in self._relations
+                        if item.get("parent_id") != entity_id and item.get("child_id") != entity_id
+                    ]
+                    self._ongoing = [item for item in self._ongoing if item.entity_id != entity_id]
+                    continue
+
+                if command_type == "update_status":
+                    entity = self._entities[entity_id]
+                    entity.current_status = str(payload.get("new_status", ""))
+                    entity.updated_at = float(sim_time)
+                    entity.version += 1
+                    continue
+
                 if command_type == "create_event":
                     self._ongoing.append(OngoingEvent(
                         event_id=str(payload.get("event_id", "")),
@@ -230,12 +445,15 @@ class _SeedWorldFacts:
                         source_action_id=str(payload.get("source_action_id", "")),
                     ))
                     continue
+
+                if command_type not in {"adjust_resource", "set_resource"}:
+                    raise CausalEventError("unsupported_command")
                 resource_name = str(payload.get("resource_name", ""))
                 definition = self._resources.get(resource_name)
                 if definition is None:
                     raise CausalEventError("resource_not_found")
                 key = "quantity" if command_type == "set_resource" else "quantity_delta"
-                number = float(payload.get(key))
+                number = self._finite_number(payload.get(key), "resource_quantity_invalid")
                 if definition.kind == "asset":
                     items = self._inventory[entity_id]
                     item = next((candidate for candidate in items if candidate.item_name == resource_name), None)
@@ -265,11 +483,8 @@ class _SeedWorldFacts:
                         items.append(EntityValue(entity_id=entity_id, name=resource_name, kind=definition.kind, value=next_value))
                     else:
                         item.value = next_value
-        except (CausalEventError, TypeError, ValueError, OverflowError) as exc:
-            self._inventory = defaultdict(list, inventory_before)
-            self._values = defaultdict(list, values_before)
-            self._entities = entities_before
-            self._ongoing = ongoing_before
+        except Exception as exc:
+            self.restore(before)
             return False, str(exc) or "causal_effect_rejected"
         return True, ""
 
@@ -664,11 +879,27 @@ def dry_run_causal_rules(
 
     engine = CausalEventEngine([asdict(rule) for rule in rules])
     facts = _SeedWorldFacts(content)
+    action_catalog = ActionCatalog()
+    action_catalog.configure(_list_field(content, "actions"), generation=0)
     actor_manager = ActorManager()
     actor_manager.configure(_list_field(content, "actors"), generation=0, preserve_state=False)
+    issue_manager = IssueManager()
+    issue_manager.configure(
+        _list_field(content, "issue_types"), generation=0,
+        action_ids=[item.get("action_id", "") for item in _list_field(content, "actions") if isinstance(item, Mapping)],
+    )
     objective_manager = ObjectiveManager()
     objective_manager.configure(
         _list_field(content, "objectives"), _list_field(content, "endings"), generation=0,
+    )
+    gameplay_runtime = GameplayEffectRuntime()
+    gameplay_runtime.refresh(facts)
+    gameplay_runtime.sync_managers(
+        actor_manager=actor_manager,
+        issue_manager=issue_manager,
+        objective_manager=objective_manager,
+        action_catalog=action_catalog,
+        sim_time=generated_at,
     )
     seed_history = tuple({
         "event_id": str(item.get("event_id", f"seed-{index}")),
@@ -684,7 +915,47 @@ def dry_run_causal_rules(
             objective_manager=objective_manager,
             event_history=seed_history,
             sim_time=at,
+            knowledge_provider=gameplay_runtime,
+            issue_manager=issue_manager,
+            action_catalog=action_catalog,
         )
+
+    def apply_effect_batch(event: EventObject, at: float) -> tuple[bool, str]:
+        facts_before = facts.snapshot()
+        actor_before = actor_manager.snapshot()
+        issue_before = issue_manager.snapshot()
+        objective_before = objective_manager.snapshot()
+        action_before = action_catalog.snapshot()
+        ok, error = facts.apply_world_commands(
+            event.world_commands, sim_time=at, event_id=event.event_id,
+        )
+        if not ok:
+            return ok, error
+        try:
+            gameplay_runtime.refresh(facts)
+            gameplay_runtime.sync_managers(
+                actor_manager=actor_manager,
+                issue_manager=issue_manager,
+                objective_manager=objective_manager,
+                action_catalog=action_catalog,
+                sim_time=at,
+            )
+        except Exception as exc:
+            facts.restore(facts_before)
+            actor_manager.restore(actor_before)
+            issue_manager.restore(issue_before, sim_time=at)
+            objective_manager.restore(objective_before, sim_time=at)
+            action_catalog.restore(action_before, sim_time=at)
+            gameplay_runtime.refresh(facts)
+            gameplay_runtime.sync_managers(
+                actor_manager=actor_manager,
+                issue_manager=issue_manager,
+                objective_manager=objective_manager,
+                action_catalog=action_catalog,
+                sim_time=at,
+            )
+            return False, str(exc) or "causal_effect_projection_rejected"
+        return True, ""
 
     nodes = [_event_payload(source)]
     edges: list[dict[str, Any]] = []
@@ -707,7 +978,7 @@ def dry_run_causal_rules(
             payload_value = event.initial_payload if isinstance(event.initial_payload, Mapping) else {}
             parent_id = str(payload_value.get("causal_parent_event_id", ""))
             rule_id = str(payload_value.get("causal_rule_id", ""))
-            effect_ok, effect_error = facts.apply_world_commands(event.world_commands)
+            effect_ok, effect_error = apply_effect_batch(event, next_due)
             if event.event_id not in node_ids:
                 node = _event_payload(event)
                 node["world_effect_status"] = "applied" if event.world_commands and effect_ok else "none" if not event.world_commands else "rejected"

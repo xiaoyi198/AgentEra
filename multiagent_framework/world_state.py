@@ -30,6 +30,10 @@ from .relationship_contract import (
     RelationshipCatalog,
     RelationshipContractError,
 )
+from .gameplay_effect_runtime import (
+    empty_gameplay_effect_state, normalize_gameplay_effect_state,
+    reduce_gameplay_effect_state,
+)
 
 
 # ── 资源代币定义 ──
@@ -313,6 +317,18 @@ class WorldState:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_entity ON ongoing_events(entity_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_endtime ON ongoing_events(end_time)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS gameplay_effect_state (
+                    state_key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL DEFAULT '{}',
+                    version INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL DEFAULT 0
+                )
+            """)
+            conn.execute(
+                "INSERT OR IGNORE INTO gameplay_effect_state(state_key,value_json,version,updated_at) VALUES('runtime',?,0,0)",
+                (json.dumps(empty_gameplay_effect_state(), ensure_ascii=False, sort_keys=True),),
+            )
 
             for token in RESOURCE_TOKENS:
                 conn.execute(
@@ -681,7 +697,13 @@ class WorldState:
                     effect_index = int(metadata.get("effect_index", 0))
                 except (TypeError, ValueError):
                     effect_index = 0
-                if side == "credit":
+                # v0.29+ records the authored effect index on both transfer
+                # commands. Older snapshots recorded the command index, so the
+                # credit entry must still be paired with its preceding debit.
+                if (
+                    side == "credit"
+                    and metadata.get("effect_type") != "transfer_anchored_value"
+                ):
                     effect_index -= 1
                 transfer_id = f"legacy:{event_id}:{effect_index}"
             group = transfer_groups.setdefault(
@@ -821,10 +843,156 @@ class WorldState:
             WorldCommandType.UPDATE_EVENT: self._reduce_update_event,
             WorldCommandType.DELETE_EVENT: self._reduce_delete_event,
             WorldCommandType.APPLY_MATURED_EVENT: self._reduce_apply_matured_event,
+            WorldCommandType.CREATE_ENTITY: self._reduce_create_entity,
+            WorldCommandType.MOVE_ENTITY: self._reduce_move_entity,
+            WorldCommandType.TRANSFORM_ENTITY: self._reduce_transform_entity,
+            WorldCommandType.REMOVE_ENTITY: self._reduce_remove_entity,
+            WorldCommandType.MODIFY_RELATIONSHIP: self._reduce_modify_relationship,
+            WorldCommandType.SET_AGENT_ENABLED: self._reduce_gameplay_effect,
+            WorldCommandType.MODIFY_MEMBERSHIP: self._reduce_gameplay_effect,
+            WorldCommandType.CREATE_ISSUE: self._reduce_gameplay_effect,
+            WorldCommandType.REVEAL_INFORMATION: self._reduce_gameplay_effect,
+            WorldCommandType.ADVANCE_OBJECTIVE: self._reduce_gameplay_effect,
+            WorldCommandType.UNLOCK_ACTION: self._reduce_gameplay_effect,
+            WorldCommandType.SWITCH_PHASE: self._reduce_gameplay_effect,
         }.get(command.command_type)
         if reducer is None:
             raise WorldCommandError("unsupported_command", f"unsupported command: {command.command_type}")
         return reducer(conn, command)
+
+    @staticmethod
+    def _entity_metadata(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            value = json.loads(row["metadata"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    def _reduce_create_entity(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        if conn.execute("SELECT 1 FROM entities WHERE id=?", (command.entity_id,)).fetchone() is not None:
+            raise WorldCommandError("entity_exists", f"entity already exists: {command.entity_id}", {"entity_id": command.entity_id})
+        entity_type = str(command.payload.get("entity_type", "")).strip()
+        name = str(command.payload.get("name", "")).strip()
+        metadata = command.payload.get("metadata", {})
+        if not command.entity_id or not entity_type or not name or not isinstance(metadata, dict):
+            raise WorldCommandError("entity_invalid", "entity payload is invalid", {"entity_id": command.entity_id})
+        entity = Entity(
+            id=command.entity_id, type=entity_type, name=name,
+            description=str(command.payload.get("description", "")),
+            current_status=str(command.payload.get("current_status", "")),
+            updated_at=float(command.sim_time), metadata=dict(metadata), version=0,
+        )
+        self._upsert_entity_conn(conn, entity, preserve_version=True)
+        self._init_default_resources_conn(conn, entity.id, entity.type)
+        return {"entity_id": entity.id, "entity_type": entity.type, "name": entity.name, "version": 0}
+
+    def _reduce_move_entity(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        row = self._require_entity(conn, command.entity_id)
+        self._check_version(command.expected_version, int(row["version"] or 0), target="entity", details={"entity_id": command.entity_id})
+        metadata = self._entity_metadata(row)
+        changed = False
+        for key in ("x", "y"):
+            if key in command.payload:
+                metadata[key] = self._finite_number(command.payload[key], key)
+                changed = True
+        for key in ("region", "location_id"):
+            if key in command.payload:
+                metadata[key] = str(command.payload[key])
+                changed = True
+        if not changed:
+            raise WorldCommandError("location_invalid", "move_entity requires a location field")
+        conn.execute(
+            "UPDATE entities SET metadata=?,updated_at=?,version=version+1 WHERE id=?",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), float(command.sim_time), command.entity_id),
+        )
+        return {"entity_id": command.entity_id, "metadata": metadata, "version": int(row["version"] or 0) + 1}
+
+    def _reduce_transform_entity(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        row = self._require_entity(conn, command.entity_id)
+        self._check_version(command.expected_version, int(row["version"] or 0), target="entity", details={"entity_id": command.entity_id})
+        metadata = self._entity_metadata(row)
+        patch = command.payload.get("metadata_patch", {})
+        if patch is not None and not isinstance(patch, dict):
+            raise WorldCommandError("metadata_invalid", "metadata_patch must be an object")
+        metadata.update(dict(patch or {}))
+        values = {
+            "type": str(command.payload.get("new_type", row["type"])),
+            "name": str(command.payload.get("new_name", row["name"])),
+            "description": str(command.payload.get("new_description", row["description"] or "")),
+            "current_status": str(command.payload.get("new_status", row["current_status"] or "")),
+        }
+        if not values["type"] or not values["name"]:
+            raise WorldCommandError("entity_invalid", "transformed entity requires type and name")
+        conn.execute(
+            """UPDATE entities SET type=?,name=?,description=?,current_status=?,metadata=?,updated_at=?,version=version+1 WHERE id=?""",
+            (values["type"], values["name"], values["description"], values["current_status"],
+             json.dumps(metadata, ensure_ascii=False, sort_keys=True), float(command.sim_time), command.entity_id),
+        )
+        return {"entity_id": command.entity_id, **values, "metadata": metadata, "version": int(row["version"] or 0) + 1}
+
+    def _reduce_remove_entity(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        row = self._require_entity(conn, command.entity_id)
+        self._check_version(command.expected_version, int(row["version"] or 0), target="entity", details={"entity_id": command.entity_id})
+        conn.execute("DELETE FROM inventory WHERE entity_id=?", (command.entity_id,))
+        conn.execute("DELETE FROM entity_values WHERE entity_id=?", (command.entity_id,))
+        conn.execute("DELETE FROM entity_relations WHERE parent_id=? OR child_id=?", (command.entity_id, command.entity_id))
+        conn.execute("DELETE FROM ongoing_events WHERE entity_id=?", (command.entity_id,))
+        conn.execute("DELETE FROM entities WHERE id=?", (command.entity_id,))
+        return {"entity_id": command.entity_id, "removed": True, "previous_type": str(row["type"]), "previous_name": str(row["name"])}
+
+    def _reduce_modify_relationship(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        payload = dict(command.payload)
+        operation = str(payload.pop("operation", "upsert"))
+        parent_id = str(payload.get("parent_id", ""))
+        child_id = str(payload.get("child_id", ""))
+        rel_type = str(payload.get("rel_type", ""))
+        self._require_entity(conn, parent_id)
+        self._require_entity(conn, child_id)
+        if operation == "remove":
+            definition = self.relationship_catalog.get(rel_type)
+            if definition is None:
+                raise WorldCommandError("relationship_type_not_found", f"unknown relationship type: {rel_type}")
+            if definition.direction == "undirected" and child_id < parent_id:
+                parent_id, child_id = child_id, parent_id
+            cur = conn.execute("DELETE FROM entity_relations WHERE parent_id=? AND child_id=? AND rel_type=?", (parent_id, child_id, rel_type))
+            return {"parent_id": parent_id, "child_id": child_id, "rel_type": rel_type, "removed": cur.rowcount > 0}
+        if operation != "upsert":
+            raise WorldCommandError("relationship_operation_invalid", "relationship operation is invalid")
+        try:
+            relation = self.relationship_catalog.normalize_relation(payload, "command.payload")
+        except RelationshipContractError as exc:
+            raise WorldCommandError(exc.code, str(exc), {"path": exc.path}) from exc
+        self._write_relation_conn(conn, relation)
+        return {**relation, "operation": "upsert"}
+
+    @staticmethod
+    def _load_gameplay_effect_state_conn(conn: sqlite3.Connection) -> tuple[dict[str, Any], int]:
+        row = conn.execute("SELECT value_json,version FROM gameplay_effect_state WHERE state_key='runtime'").fetchone()
+        if row is None:
+            return empty_gameplay_effect_state(), 0
+        try:
+            value = json.loads(row["value_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            value = {}
+        return normalize_gameplay_effect_state(value), int(row["version"] or 0)
+
+    def _reduce_gameplay_effect(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
+        state, version = self._load_gameplay_effect_state_conn(conn)
+        next_state, result = reduce_gameplay_effect_state(
+            state, command_type=command.command_type.value, payload=command.payload,
+            sim_time=float(command.sim_time), command_id=command.command_id,
+        )
+        conn.execute(
+            """INSERT INTO gameplay_effect_state(state_key,value_json,version,updated_at) VALUES('runtime',?,?,?)
+               ON CONFLICT(state_key) DO UPDATE SET value_json=excluded.value_json,version=excluded.version,updated_at=excluded.updated_at""",
+            (json.dumps(next_state, ensure_ascii=False, sort_keys=True), version + 1, float(command.sim_time)),
+        )
+        return {**result, "state_version": version + 1}
+
+    def get_gameplay_effect_state(self) -> dict[str, Any]:
+        with closing(self._conn()) as conn:
+            state, _ = self._load_gameplay_effect_state_conn(conn)
+        return state
 
     def _reduce_update_status(self, conn: sqlite3.Connection, command: WorldCommand) -> dict[str, Any]:
         row = self._require_entity(conn, command.entity_id)
@@ -1867,7 +2035,8 @@ class WorldState:
                 conn.execute("BEGIN IMMEDIATE")
                 for table in (
                     "ongoing_events", "entity_relations", "relationship_type_catalog",
-                    "inventory", "entity_values", "inventory_ledger", "world_commands", "entities",
+                    "inventory", "entity_values", "inventory_ledger", "world_commands",
+                    "gameplay_effect_state", "entities",
                 ):
                     conn.execute(f"DELETE FROM {table}")
                 if catalog:
@@ -1878,6 +2047,19 @@ class WorldState:
                     relationship_catalog=relationship_catalog,
                 )
                 self._persist_relationship_catalog_conn(conn, relationship_catalog)
+                gameplay_state = normalize_gameplay_effect_state(
+                    data.get("gameplay_effect_state")
+                )
+                conn.execute(
+                    """INSERT INTO gameplay_effect_state
+                       (state_key,value_json,version,updated_at)
+                       VALUES ('runtime',?,?,?)""",
+                    (
+                        json.dumps(gameplay_state, ensure_ascii=False, sort_keys=True),
+                        int(data.get("gameplay_effect_state_version", 0) or 0),
+                        float(data.get("gameplay_effect_state_updated_at", 0.0) or 0.0),
+                    ),
+                )
                 for row in data.get("inventory_ledger", []):
                     conn.execute(
                         """INSERT INTO inventory_ledger
@@ -1923,12 +2105,16 @@ class WorldState:
             ledger_rows = conn.execute(
                 "SELECT * FROM inventory_ledger ORDER BY created_at,sequence"
             ).fetchall()
+            gameplay_row = conn.execute(
+                """SELECT value_json,version,updated_at
+                   FROM gameplay_effect_state WHERE state_key='runtime'"""
+            ).fetchone()
         entities = [self._row_to_entity(row) for row in entity_rows]
         inventory = [self._row_to_item(row) for row in inv_rows]
         values = [self._row_to_value(row) for row in value_rows]
         catalog = [self._row_to_resource_definition(row) for row in catalog_rows]
         return {
-            "schema_version": "2.1",
+            "schema_version": "2.2",
             "relationship_types": self.relationship_catalog.definitions(),
             "entities": [{
                 "id": e.id, "type": e.type, "name": e.name,
@@ -1960,6 +2146,11 @@ class WorldState:
                 "source_action_id": e.source_action_id,
             } for e in (self._row_to_event(row) for row in event_rows)],
             "inventory_ledger": [self._ledger_row_to_dict(row) for row in ledger_rows],
+            "gameplay_effect_state": normalize_gameplay_effect_state(
+                json.loads(gameplay_row["value_json"] or "{}") if gameplay_row else None
+            ),
+            "gameplay_effect_state_version": int(gameplay_row["version"] or 0) if gameplay_row else 0,
+            "gameplay_effect_state_updated_at": float(gameplay_row["updated_at"] or 0.0) if gameplay_row else 0.0,
         }
 
     @staticmethod

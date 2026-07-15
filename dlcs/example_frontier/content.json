@@ -1286,7 +1286,7 @@
     {
       "group_id": "frontier_stabilization_ready",
       "name": "边境稳定化条件",
-      "description": "演示前序世界效果可被后续实体状态与持续事件条件观察，并结合目标公开状态和锚定库存聚合。",
+      "description": "演示前序世界效果可被实体状态、持续事件、阶段、目标公开状态和锚定库存聚合条件观察。",
       "conditions": [
         {
           "kind": "entity_state",
@@ -1301,6 +1301,12 @@
           "field": "exists",
           "operator": "eq",
           "value": true
+        },
+        {
+          "kind": "phase",
+          "field": "phase_id",
+          "operator": "eq",
+          "value": "frontier_response"
         },
         {
           "kind": "objective_progress",
@@ -1371,7 +1377,8 @@
         {
           "effect_type": "update_status",
           "entity_id": "边境哨站",
-          "new_status": "应急动员"
+          "new_status": "应急动员",
+          "reason": "巡逻报告确认需要启动边境应急响应"
         },
         {
           "effect_type": "create_ongoing_event",
@@ -1380,8 +1387,106 @@
           "description": "守军与补给官协同执行边境支援。",
           "duration_days": 3,
           "expected_result": {
-            "status": "持续巡防"
-          }
+            "new_status": "持续巡防"
+          },
+          "reason": "记录跨回合持续的支援行动"
+        },
+        {
+          "effect_type": "create_entity",
+          "entity_id": "frontier_relief_command",
+          "entity_type": "organization",
+          "name": "边境支援指挥组",
+          "description": "应急响应期间临时成立的支援组织。",
+          "current_status": "active",
+          "metadata": {
+            "tags": [
+              "frontier",
+              "temporary-command"
+            ]
+          },
+          "resources": {
+            "边境银券": 10
+          },
+          "reason": "为应急响应建立可继续引用的临时组织实体"
+        },
+        {
+          "effect_type": "modify_relationship",
+          "operation": "upsert",
+          "parent_id": "frontier_garrison",
+          "child_id": "frontier_relief_command",
+          "rel_type": "command",
+          "strength": 85,
+          "visibility": "public",
+          "starts_in_days": 0,
+          "values": {},
+          "note": "守军统一指挥临时支援组织。",
+          "metadata": {
+            "source": "causal_effect"
+          },
+          "reason": "建立守军与临时支援组织的指挥关系"
+        },
+        {
+          "effect_type": "modify_membership",
+          "operation": "upsert",
+          "actor_id": "frontier_quartermaster",
+          "organization_id": "frontier_relief_command",
+          "role": "quartermaster",
+          "status": "active",
+          "metadata": {
+            "temporary": true
+          },
+          "reason": "将补给官编入临时支援组织"
+        },
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "frontier_security_report",
+          "source": {
+            "kind": "agent",
+            "id": "哨站守备官",
+            "entity_id": "边境哨站"
+          },
+          "title": "边境应急响应待决",
+          "summary": "守备官请求确认巡逻与支援方案。",
+          "details": {
+            "phase": "response",
+            "organization_id": "frontier_relief_command"
+          },
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "哨站守备官"
+            }
+          ],
+          "urgency": "high",
+          "deadline_days": 2,
+          "metadata": {
+            "generated_by": "causal_effect"
+          },
+          "reason": "把巡逻警情投影为玩家可处理的 Issue"
+        },
+        {
+          "effect_type": "reveal_information",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_relief_authorized",
+          "value": {
+            "authorized": true,
+            "organization_id": "frontier_relief_command"
+          },
+          "source": "哨站守备官",
+          "confidence": 0.95,
+          "metadata": {
+            "phase": "response"
+          },
+          "reason": "向玩家知识状态公开支援授权结果"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_response",
+          "metadata": {
+            "chapter": 1,
+            "label": "边境应急响应"
+          },
+          "reason": "巡逻报告已进入应急响应流程"
         }
       ]
     },
@@ -1408,7 +1513,31 @@
         {
           "effect_type": "update_status",
           "entity_id": "边境哨站",
-          "new_status": "持续巡防"
+          "new_status": "持续巡防",
+          "reason": "应急响应已进入稳定化"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_frontier",
+          "mode": "adjust",
+          "amount": 20,
+          "status": "active",
+          "reason": "应急响应进入稳定化并推进边境目标"
+        },
+        {
+          "effect_type": "unlock_action",
+          "action_id": "frontier_patrol",
+          "scope_id": "边境哨站",
+          "reason": "稳定化阶段开放强化巡逻"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_stabilization",
+          "metadata": {
+            "chapter": 2,
+            "label": "边境稳定化"
+          },
+          "reason": "响应链完成并进入稳定化阶段"
         }
       ]
     }
