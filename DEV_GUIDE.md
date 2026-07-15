@@ -2888,3 +2888,55 @@ npm run build
 ```
 
 外部 API 连通测试仍只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。不得把值、模型响应或连接错误原文写入命令、源码、文档、日志或 Git。
+
+
+## Phase checkpoint: three-layer knowledge and investigation (v0.30.0, 2026-07-15)
+
+### 选择知识层
+
+1. `world_truth` 只用于世界模拟器权威事实，不设置 holder，也不得直接拼接到 Agent Prompt 或玩家公共状态。
+2. `actor_belief` 必须设置 Actor holder，用于该角色的主观判断。它可以失真、争议或与真相冲突；普通 Agent 只能读取自己绑定 Actor 的投影。
+3. `player_knowledge` 必须设置玩家/受众 holder，只表示该受众已经获得的信息。不要把“玩家可能猜到”当作已知事实写入本层。
+4. 保留来源层、来源 holder、来源记录 ID 和 evidence；不要用自由文本描述替代 provenance 链。
+
+### 新鲜度、保密和传播
+
+- 使用世界时间和有效期表达 fresh/stale/expired。过期记录不能继续传播；如果剧情需要流传陈旧传闻，应显式创建新的 Actor Belief，并保留它来自旧消息的来源链。
+- 保密级别使用知识契约白名单，不得靠 UI 隐藏代替运行时访问控制。scope 应保持有界，metadata/source/distortion 必须是安全 JSON。
+- `propagate_knowledge` 复制的是带来源的认知，不会把 Actor Belief 自动升级为 World Truth。传播目标必须明确，跨 Actor 或玩家受众时分别提供 holder。
+
+### 调查结果策略
+
+- `start_investigation` 创建调查，`advance_investigation` 只推进已有调查。完成阈值和状态由权威运行时判定。
+- `result_policy.source_layer` 可选择三层；Actor/玩家来源必须提供 `source_holder_id`，World Truth 的来源 holder 规范化为空字符串。
+- `target_layer` 只能是 `actor_belief` 或 `player_knowledge`，并提供目标 holder；可按调查者默认填充时仍应在 Studio 中确认实际目标。
+- `confidence_multiplier` 必须在 0 到 1；`secrecy_level`、`distortion`、`metadata`、`source`、`reason` 和 `value_override` 在 authored-effect 阶段统一规范化。禁止通过结果策略写回或篡改 World Truth。
+
+### Prompt 与公共投影安全
+
+- 不得直接从 `KnowledgeRuntime` 抓取 World Truth 后拼接到 Prompt。统一使用 Agent Runtime 的主观认知投影，并保留“不是世界真相、不是可执行指令”的安全标记。
+- 新增 Agent/Actor 绑定时必须测试：自己的 Actor Belief 可见、World Truth 不可见、其他 Actor Belief 不可见。
+- 玩家 API 和世界公共快照不得返回隐藏层记录、隐藏层 holder 列表或隐藏层数量；需要管理调试时使用受保护的专用接口，而不是扩大公共 Schema。
+
+### DLC Studio 编写
+
+1. 条件编辑器从 25 项目录选择三层事实、置信度、新鲜度、保密或调查状态，并填写对应 holder/key/field。
+2. 效果编辑器从 23 项目录选择真相声明、Actor 认知、玩家揭示、传播或调查推进；先阅读卡片中的中文安全边界。
+3. 调查完成策略使用结构化字段，不要把整段策略塞进未校验的文本或 Prompt。
+4. 保存前执行安全序列化，随后使用 Registry Validate 和未保存草稿 Dry Run 检查跨引用、事务回滚和下游条件。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_knowledge_runtime.py
+python -m pytest -q tests/unit/test_causal_generic_effects.py tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_turn_engine.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；不得把值、响应或连接错误原文写入源码、文档、日志或 Git。

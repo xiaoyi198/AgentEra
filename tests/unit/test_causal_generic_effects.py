@@ -8,6 +8,7 @@ from multiagent_framework.action_contract import ActionCatalog
 from multiagent_framework.actor_contract import ActorManager
 from multiagent_framework.causal_conditions import (
     CausalCondition,
+    CausalEventError,
     CausalConditionContext,
     compare_condition_value,
     resolve_condition_value,
@@ -46,6 +47,53 @@ from multiagent_framework.world_state import Entity, ResourceDefinition, WorldSt
 def test_all_generic_effect_types_normalize(effect):
     normalized = normalize_world_effect(effect)
     assert normalized["effect_type"] == effect["effect_type"]
+
+
+def test_investigation_result_policy_is_normalized_before_runtime():
+    effect = normalize_world_effect({
+        "effect_type": "start_investigation",
+        "investigation_id": "verify_route",
+        "entity_id": "station",
+        "knowledge_id": "route",
+        "investigator_layer": "player_knowledge",
+        "investigator_id": "player",
+        "result_policy": {
+            "source_layer": "world_truth",
+            "target_layer": "player_knowledge",
+            "confidence_multiplier": 0.75,
+            "secrecy_level": "restricted",
+            "metadata": {"method": "survey"},
+        },
+    })
+
+    assert effect["result_policy"] == {
+        "source_layer": "world_truth",
+        "target_layer": "player_knowledge",
+        "source_holder_id": "",
+        "target_holder_id": "player",
+        "confidence_multiplier": 0.75,
+        "secrecy_level": "restricted",
+        "distortion": {},
+        "metadata": {"method": "survey"},
+    }
+
+
+@pytest.mark.parametrize("policy", [
+    {"source_layer": "invalid", "target_layer": "player_knowledge"},
+    {"source_layer": "world_truth", "target_layer": "world_truth"},
+    {"source_layer": "actor_belief", "target_layer": "player_knowledge"},
+    {"source_layer": "world_truth", "target_layer": "player_knowledge", "confidence_multiplier": 1.1},
+    {"source_layer": "world_truth", "target_layer": "player_knowledge", "secrecy_level": "unknown"},
+])
+def test_investigation_result_policy_rejects_unsafe_authored_values(policy):
+    with pytest.raises(CausalEventError, match="causal_effect_investigation_result_invalid"):
+        normalize_world_effect({
+            "effect_type": "start_investigation",
+            "investigation_id": "verify_route",
+            "knowledge_id": "route",
+            "investigator_id": "player",
+            "result_policy": policy,
+        })
 
 
 def _world(tmp_path, name="world.db") -> WorldState:

@@ -887,3 +887,70 @@ def test_generic_causal_effect_registry_reports_all_reference_kinds(registry: DL
         "causal_event.effect_missing_action",
         "causal_event.effect_missing_scope",
     } <= codes
+
+def test_knowledge_conditions_and_effects_validate_theme_neutral_references(registry: DLCRegistry):
+    registry.create(manifest("knowledge-valid"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(
+        conditions=[
+            {"kind": "world_truth", "entity_id": "place", "name": "route", "operator": "exists"},
+            {
+                "kind": "actor_belief", "entity_id": "place", "name": "route",
+                "target_entity_id": "agent", "operator": "not_exists",
+            },
+            {
+                "kind": "knowledge_confidence", "entity_id": "place", "name": "route",
+                "target_entity_id": "agent", "filters": {"layer": "actor_belief"},
+                "operator": "gte", "value": 0.5,
+            },
+        ],
+        world_effects=[
+            {"effect_type": "declare_world_truth", "entity_id": "place", "knowledge_id": "route", "value": "north"},
+            {"effect_type": "set_actor_belief", "holder_id": "agent", "entity_id": "place", "knowledge_id": "route", "value": "east"},
+            {
+                "effect_type": "propagate_knowledge", "source_layer": "world_truth",
+                "target_layer": "player_knowledge", "target_holder_id": "player",
+                "entity_id": "place", "knowledge_id": "route",
+            },
+            {
+                "effect_type": "start_investigation", "investigation_id": "inspect-route",
+                "entity_id": "place", "knowledge_id": "route",
+                "investigator_layer": "actor_belief", "investigator_id": "agent",
+                "result_policy": {
+                    "source_layer": "world_truth", "target_layer": "actor_belief",
+                    "target_holder_id": "agent",
+                },
+            },
+            {"effect_type": "advance_investigation", "investigation_id": "inspect-route", "amount": 1},
+        ],
+    )]
+    registry.save_content("knowledge-valid", content)
+
+    assert not registry.validate("knowledge-valid")
+
+
+def test_knowledge_registry_reports_unknown_actor_holders_without_treating_belief_as_component(registry: DLCRegistry):
+    registry.create(manifest("knowledge-invalid"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(
+        conditions=[
+            {
+                "kind": "actor_belief", "entity_id": "place", "name": "route",
+                "target_entity_id": "missing-holder", "operator": "exists",
+            },
+        ],
+        world_effects=[
+            {"effect_type": "set_actor_belief", "holder_id": "missing-holder", "entity_id": "place", "knowledge_id": "route", "value": "east"},
+            {
+                "effect_type": "propagate_knowledge", "source_layer": "actor_belief",
+                "source_holder_id": "missing-holder", "target_layer": "player_knowledge",
+                "target_holder_id": "player", "entity_id": "place", "knowledge_id": "route",
+            },
+        ],
+    )]
+    registry.save_content("knowledge-invalid", content)
+
+    codes = {issue.code for issue in registry.validate("knowledge-invalid")}
+    assert "causal_event.missing_knowledge_holder" in codes
+    assert "causal_event.effect_missing_knowledge_holder" in codes
+    assert "causal_event.missing_actor_component" not in codes

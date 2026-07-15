@@ -453,13 +453,16 @@ function actorComponentNames(actor, kind) {
   return []
 }
 
+const ACTOR_COMPONENT_CONDITION_KINDS = new Set(['actor_attribute', 'actor_state', 'actor_trait', 'actor_membership'])
+
 function conditionNameLabel(kind) {
   return {
     anchored_inventory: 'Asset 资源', metric: 'Metric 指标', parameter: 'Parameter 参数',
     entity_tag: '标签', actor_attribute: 'Attribute 名称', actor_state: 'State 名称',
     actor_trait: 'Trait ID', actor_membership: 'Organization ID', relationship: '关系类型',
     ongoing_event: '事件类型（可选）', event_history: '事件类型（可选）',
-    player_knowledge: '知识键',
+    world_truth: '?? ID', actor_belief: '?? ID', player_knowledge: '?? ID',
+    knowledge_confidence: '?? ID', knowledge_freshness: '?? ID', knowledge_secrecy: '?? ID',
   }[kind] || '名称'
 }
 
@@ -496,6 +499,7 @@ function CausalConditionBuilder({ value, entities, resources, actors, agents, re
       const componentNames = actorComponentNames(selectedActor, condition.kind)
       const needsValue = !['exists', 'not_exists'].includes(condition.operator)
       const aggregateSource = condition.field || 'entity_count'
+      const knowledgeLayer = condition._knowledge_layer || 'player_knowledge'
       const aggregateResources = ['anchored_inventory', 'metric', 'parameter'].includes(aggregateSource) ? resourcesForCondition(resources, aggregateSource) : []
       const nameOptions = aggregateSource === 'relation'
         ? relationshipTypes.map(item => ({ key: item.relationship_type_id, label: item.display_name || item.relationship_type_id }))
@@ -520,7 +524,7 @@ function CausalConditionBuilder({ value, entities, resources, actors, agents, re
           {condition.kind === 'entity_tag' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>标签<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="frontier" /><small>实际值为“实体是否含此标签”的布尔值，通常与“等于 true”搭配。</small></label></>}
           {condition.kind === 'entity_state' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>读取字段<input value="current_status" disabled /><small>实体状态固定读取 current_status。</small></label></>}
 
-          {condition.kind.startsWith('actor_') && <>
+          {ACTOR_COMPONENT_CONDITION_KINDS.has(condition.kind) && <>
             <label>Actor<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">-- 请选择 --</option>{actorOptions.map(actor => <option key={actor.actor_id} value={actor.actor_id}>{actor.display_name || actor.actor_id}（{actor.actor_id}{actor._projected_agent ? ' · Agent 兼容投影' : ''}）</option>)}</select><small>优先使用显式 Actor；未定义同名 Actor 的 Agent 会作为兼容选项出现。</small></label>
             <label>{conditionNameLabel(condition.kind)}<input list={`causal-actor-components-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder={condition.kind === 'actor_membership' ? 'organization_id' : '组件名称'} /><datalist id={`causal-actor-components-${index}`}>{componentNames.map(name => <option key={name} value={name} />)}</datalist><small>列表来自当前 Actor 定义，也允许输入之后准备新增的组件 ID。</small></label>
             {condition.kind === 'actor_membership' && <label>成员关系字段（可选）<input list="causal-membership-fields" value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="留空表示判断成员关系存在" /><datalist id="causal-membership-fields"><option value="role" /><option value="status" /><option value="title" /><option value="weight" /></datalist><small>留空时实际值为 true；填写后读取该 Membership 对象中的字段。</small></label>}
@@ -561,11 +565,31 @@ function CausalConditionBuilder({ value, entities, resources, actors, agents, re
             {aggregateSource !== 'entity_count' && <label>{aggregateSource === 'actor_attribute' ? 'Attribute 名称' : aggregateSource === 'relation' ? '关系类型（可选）' : aggregateSource === 'ongoing_event' ? '事件类型（可选）' : '资源 / 数值名称'}{nameOptions.length ? <select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 全部 / 请选择 --</option>{nameOptions.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select> : <input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="名称" />}<small>资源与 Actor Attribute 必填；关系和持续事件可留空统计全部。</small></label>}
           </>}
 
-          {condition.kind === 'player_knowledge' && <>
+          {['world_truth', 'actor_belief', 'player_knowledge'].includes(condition.kind) && <>
             <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
-            <label>知识键<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="known_secret_route" /><small>由游戏的知识 Provider 定义，DLC 不得假设该键一定存在。</small></label>
-            <label>知识字段（可选）<input value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="confidence" /></label>
-            <div className="dlc-condition-warning">隐私边界：这里只读取玩家已经知道的信息；没有知识 Provider 时条件按缺失处理，不会回退读取世界真相。</div>
+            <label>知识 ID<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="route_status" /><small>知识 ID 对应同一实体下的 knowledge_id；关联实体可留空。</small></label>
+            {condition.kind === 'actor_belief' && <label>Actor / Agent holder<input list={`causal-knowledge-holder-${index}`} value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="observer" /><datalist id={`causal-knowledge-holder-${index}`}>{actorOptions.map(item => <option key={item.actor_id} value={item.actor_id} />)}</datalist><small>必须指定持有该认知的 holder；只会读取这个 Actor 的主观认知。</small></label>}
+            {condition.kind === 'player_knowledge' && <label>玩家 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player" /><small>默认使用 player；可为多玩家场景指定其他 holder。</small></label>}
+            <label>读取字段（可选）<input value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="默认读取 value；也可填写 confidence / metadata.xxx" /></label>
+            {condition.kind === 'world_truth' ? <div className="dlc-condition-warning">世界真相仅供权威规则求值，绝不能直接写入 Agent 提示词或公共玩家投影。</div>
+              : condition.kind === 'actor_belief' ? <div className="dlc-condition-warning">这里读取 Actor 自己的主观认知；它可能错误、失真或过期，并且必须指定 holder。</div>
+                : <div className="dlc-condition-warning">这里只读取玩家已经获得的信息，不会泄露世界真相或其他 Actor 的认知。</div>}
+          </>}
+
+          {['knowledge_confidence', 'knowledge_freshness', 'knowledge_secrecy'].includes(condition.kind) && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>知识 ID<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="route_status" /></label>
+            <label>知识层<select value={knowledgeLayer} onChange={event => update(index, '_knowledge_layer', event.target.value)}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select><small>序列化为 filters.layer；用于选择要比较哪一层记录。</small></label>
+            {knowledgeLayer === 'actor_belief' && <label>Actor / Agent holder<input list={`causal-meta-holder-${index}`} value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="observer" /><datalist id={`causal-meta-holder-${index}`}>{actorOptions.map(item => <option key={item.actor_id} value={item.actor_id} />)}</datalist><small>Actor 认知层必填。</small></label>}
+            {knowledgeLayer === 'player_knowledge' && <label>玩家 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player" /></label>}
+            <div className="dlc-condition-anchor">{condition.kind === 'knowledge_confidence' ? '目标值填写 0～1 的数字。' : condition.kind === 'knowledge_freshness' ? '目标值填写 fresh / stale / expired。' : '目标值填写 public / restricted / confidential / secret / top_secret。'}</div>
+          </>}
+
+          {condition.kind === 'investigation' && <>
+            <label>调查 ID<input value={condition.entity_id || condition.name} onChange={event => updateMany(index, { entity_id: event.target.value, name: '' })} placeholder="verify_route_status" /><small>填写 start_investigation 创建的唯一 ID。</small></label>
+            <label>调查者 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player 或 Actor ID" /><small>用于限定具体调查者；留空只按调查 ID 查询。</small></label>
+            <label>调查字段<select value={condition.field || 'status'} onChange={event => update(index, 'field', event.target.value)}><option value="status">status / 状态</option><option value="progress">progress / 当前进度</option><option value="required_progress">required_progress / 所需进度</option></select></label>
+            <div className="dlc-condition-anchor">状态可比较 active、paused、completed、cancelled；进度字段请使用数值操作符。</div>
           </>}
 
           {condition.kind === 'phase' && <>
@@ -603,6 +627,27 @@ function JsonEffectField({ label, value, onChange, rows = 5, help = '必须是�
   return <label className="dlc-world-effect-wide">{label}<textarea className="dlc-json-field" rows={rows} spellCheck="false" value={value || ''} onChange={event => onChange(event.target.value)} /><small>{help}</small></label>
 }
 
+function KnowledgeRecordEffectFields({ effect, onField }) {
+  const type = effect.effect_type
+  return <>
+    <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => onField('entity_id', next)} help="用于区分同名知识所属对象；不绑定具体实体时可留空。" />
+    <label>知识 ID<input value={effect.knowledge_id || ''} onChange={event => onField('knowledge_id', event.target.value)} placeholder="route_status" /><small>知识 ID 是稳定标识；同一实体下应保持 knowledge_id 唯一。</small></label>
+    {type === 'set_actor_belief' && <EffectReferenceInput label="Actor / Agent holder ID" value={effect.holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => onField('holder_id', next)} help="必须指定持有该认知的 holder 或 Agent 映射。" />}
+    {type === 'reveal_information' && <EffectReferenceInput label="玩家 holder ID" value={effect.holder_id || 'player'} listId="dlc-effect-knowledge-holder-catalog" onChange={next => onField('holder_id', next)} help="默认 player；多玩家场景可填写其他 holder。" />}
+    <label>知识来源<input value={effect.source || 'causal_event'} onChange={event => onField('source', event.target.value)} placeholder="causal_event" /><small>记录信息从何而来，便于追踪来源链。</small></label>
+    <label>置信度<input type="number" min="0" max="1" step="0.01" value={effect.confidence ?? 1} onChange={event => onField('confidence', event.target.value)} /><small>0～1；传播后会与置信度倍率相乘。</small></label>
+    <label>变陈旧天数（可选）<input type="number" min="0" max="36500" step="any" value={effect.stale_after_days ?? ''} onChange={event => onField('stale_after_days', event.target.value)} /><small>到期后标记为 stale，但仍可被规则读取。</small></label>
+    <label>完全过期天数（可选）<input type="number" min="0" max="36500" step="any" value={effect.expires_in_days ?? ''} onChange={event => onField('expires_in_days', event.target.value)} /><small>过期后禁止继续传播该知识。</small></label>
+    <label>保密级别<select value={effect.secrecy_level || 'public'} onChange={event => onField('secrecy_level', event.target.value)}><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+    <label>知识状态<select value={effect.status || 'active'} onChange={event => onField('status', event.target.value)}><option value="active">active / 有效</option><option value="disputed">disputed / 有争议</option><option value="retracted">retracted / 已撤回</option></select></label>
+    <JsonEffectField label="知识值 JSON" value={effect._value_text} onChange={next => onField('_value_text', next)} help="可填写对象、数组、数字、布尔、文本或 null；文本必须使用 JSON 双引号。" />
+    <JsonEffectField label="可见作用域 JSON 数组" value={effect._visibility_scopes_text} onChange={next => onField('_visibility_scopes_text', next)} help='填写 holder ID 数组，例如 ["player", "observer"]；空数组表示不额外限定。' />
+    <JsonEffectField label="失真 JSON" value={effect._distortion_text} onChange={next => onField('_distortion_text', next)} help='记录遗漏、偏差或改写，例如 {"omitted":["origin"]}。' />
+    <JsonEffectField label="知识 Metadata JSON" value={effect._metadata_text} onChange={next => onField('_metadata_text', next)} />
+    <div className="dlc-condition-warning">{type === 'declare_world_truth' ? '世界真相是隐藏权威层，绝不能直接注入 Agent。' : type === 'set_actor_belief' ? 'Actor 认知不等于事实，并且只对指定 holder 可见。' : '玩家知识只写入指定 holder，不会自动揭露隐藏层。'}</div>
+  </>
+}
+
 function CausalWorldEffectBuilder({ value, entities, resources, agents, actors, relationshipTypes, issueTypes, objectives, actions, onChange }) {
   const effects = Array.isArray(value) ? value : []
   const catalogs = { entities, resources, agents, actors, relationshipTypes, issueTypes, objectives, actions }
@@ -610,6 +655,8 @@ function CausalWorldEffectBuilder({ value, entities, resources, agents, actors, 
   const entityCatalog = [...new Set([...(entities || []).map(item => item.id), ...createdEntityIds].filter(Boolean))]
   const actorCatalog = (actors || []).map(item => item.actor_id || item.id).filter(Boolean)
   const agentCatalog = (agents || []).map(item => item.id || item.agent_id).filter(Boolean)
+  const knowledgeHolderCatalog = [...new Set(['player', ...actorCatalog, ...agentCatalog])]
+  const investigationCatalog = [...new Set(effects.filter(item => item.effect_type === 'start_investigation').map(item => String(item.investigation_id || '').trim()).filter(Boolean))]
   const scopeCatalog = [...new Set([...entityCatalog, ...actorCatalog, ...agentCatalog])]
   const effectDefinition = effect => WORLD_EFFECT_TYPES.find(item => item.key === effect.effect_type) || WORLD_EFFECT_TYPES[0]
   const update = (index, name, nextValue) => {
@@ -638,6 +685,8 @@ function CausalWorldEffectBuilder({ value, entities, resources, agents, actors, 
     <datalist id="dlc-effect-agent-catalog">{agentCatalog.map(id => <option key={id} value={id} />)}</datalist>
     <datalist id="dlc-effect-actor-catalog">{actorCatalog.map(id => <option key={id} value={id} />)}</datalist>
     <datalist id="dlc-effect-scope-catalog">{scopeCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-knowledge-holder-catalog">{knowledgeHolderCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-investigation-catalog">{investigationCatalog.map(id => <option key={id} value={id} />)}</datalist>
     <datalist id="dlc-effect-relationship-catalog">{(relationshipTypes || []).map(item => <option key={item.relationship_type_id} value={item.relationship_type_id} />)}</datalist>
     <datalist id="dlc-effect-issue-catalog">{(issueTypes || []).map(item => <option key={item.issue_type_id} value={item.issue_type_id} />)}</datalist>
     <datalist id="dlc-effect-objective-catalog">{(objectives || []).map(item => <option key={item.objective_id} value={item.objective_id} />)}</datalist>
@@ -760,13 +809,57 @@ function CausalWorldEffectBuilder({ value, entities, resources, agents, actors, 
           <JsonEffectField label="Issue Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
         </div>}
 
-        {effect.effect_type === 'reveal_information' && <div className="dlc-world-effect-grid">
+        {['declare_world_truth', 'set_actor_belief', 'reveal_information'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
+          <KnowledgeRecordEffectFields effect={effect} onField={(name, next) => update(index, name, next)} />
+        </div>}
+
+        {effect.effect_type === 'propagate_knowledge' && <div className="dlc-world-effect-grid">
+          <label>来源层<select value={effect.source_layer || 'world_truth'} onChange={event => changeMany(index, { source_layer: event.target.value, source_holder_id: event.target.value === 'world_truth' ? '' : effect.source_holder_id })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+          <label>目标层<select value={effect.target_layer || 'actor_belief'} onChange={event => changeMany(index, { target_layer: event.target.value, target_holder_id: event.target.value === 'world_truth' ? '' : effect.target_holder_id || (event.target.value === 'player_knowledge' ? 'player' : '') })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
           <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
-          <label>知识 ID<input value={effect.knowledge_id || ''} onChange={event => update(index, 'knowledge_id', event.target.value)} placeholder="secret_route" /><small>后续 player_knowledge 条件使用这个稳定 ID。</small></label>
-          <label>知识来源<input value={effect.source || 'causal_event'} onChange={event => update(index, 'source', event.target.value)} /></label>
-          <label>置信度<input type="number" min="0" max="1" step="0.01" value={effect.confidence ?? 1} onChange={event => update(index, 'confidence', event.target.value)} /><small>0–1。</small></label>
-          <JsonEffectField label="知识值 JSON" value={effect._value_text} onChange={next => update(index, '_value_text', next)} help="允许任意 JSON 值：对象、数组、字符串、数字、布尔值或 null。字符串需要包含双引号。" />
-          <JsonEffectField label="知识 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          <label>知识 ID<input value={effect.knowledge_id || ''} onChange={event => update(index, 'knowledge_id', event.target.value)} placeholder="route_status" /></label>
+          {effect.source_layer !== 'world_truth' && <EffectReferenceInput label="来源 holder ID" value={effect.source_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'source_holder_id', next)} help="来源为 Actor 或玩家层时必填。" />}
+          {effect.target_layer !== 'world_truth' && <EffectReferenceInput label="目标 holder ID" value={effect.target_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'target_holder_id', next)} help="目标为 Actor 或玩家层时必填。" />}
+          <label>置信度倍率<input type="number" min="0" max="1" step="0.01" value={effect.confidence_multiplier ?? 1} onChange={event => update(index, 'confidence_multiplier', event.target.value)} /><small>0～1；目标置信度 = 来源置信度 × 倍率。</small></label>
+          <label>传播来源<input value={effect.source || 'knowledge_propagation'} onChange={event => update(index, 'source', event.target.value)} /></label>
+          <label>覆盖保密级别（可选）<select value={effect.secrecy_level || ''} onChange={event => update(index, 'secrecy_level', event.target.value)}><option value="">继承来源</option><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+          <label className="dlc-world-effect-wide"><span><input type="checkbox" checked={Boolean(effect._use_value_override)} onChange={event => update(index, '_use_value_override', event.target.checked)} /> 覆盖传播后的知识值</span><small>关闭时复制来源 value；开启后使用下方 JSON。</small></label>
+          {effect._use_value_override && <JsonEffectField label="覆盖知识值 JSON" value={effect._value_override_text} onChange={next => update(index, '_value_override_text', next)} help="只覆盖 value；来源链、provenance 与其余元数据仍会保留。" />}
+          <JsonEffectField label="传播失真 JSON" value={effect._distortion_text} onChange={next => update(index, '_distortion_text', next)} />
+          <JsonEffectField label="传播 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          <div className="dlc-condition-warning">传播会保留来源链并应用置信度倍率；已过期知识不能传播，非世界真相层必须指定 holder。</div>
+        </div>}
+
+        {effect.effect_type === 'start_investigation' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="调查 ID" value={effect.investigation_id} listId="dlc-effect-investigation-catalog" onChange={next => update(index, 'investigation_id', next)} help="规则内和后续规则都通过这个唯一 investigation ID 引用。" />
+          <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>待核验知识 ID<input value={effect.knowledge_id || ''} onChange={event => update(index, 'knowledge_id', event.target.value)} placeholder="route_status" /></label>
+          <label>调查者层<select value={effect.investigator_layer || 'player_knowledge'} onChange={event => changeMany(index, { investigator_layer: event.target.value, investigator_id: event.target.value === 'player_knowledge' ? effect.investigator_id || 'player' : effect.investigator_id === 'player' ? '' : effect.investigator_id, _result_target_layer: event.target.value, _result_target_holder_id: event.target.value === 'player_knowledge' ? 'player' : '' })}><option value="player_knowledge">player_knowledge / 玩家</option><option value="actor_belief">actor_belief / Actor</option></select></label>
+          <EffectReferenceInput label="调查者 ID" value={effect.investigator_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'investigator_id', next)} help="玩家通常填写 player；Actor 调查填写 Actor / Agent holder。" />
+          <label>调查所需进度<input type="number" min="0" max="1000000" step="any" value={effect.required_progress ?? 1} onChange={event => update(index, 'required_progress', event.target.value)} /><small>必须大于 0。</small></label>
+          <JsonEffectField label="初始证据 JSON 数组" value={effect._evidence_text} onChange={next => update(index, '_evidence_text', next)} help="最多 64 项，可填写线索、证词或结构化发现。" />
+          <JsonEffectField label="调查 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          <label className="dlc-world-effect-wide"><span><input type="checkbox" checked={Boolean(effect._use_result_policy)} onChange={event => update(index, '_use_result_policy', event.target.checked)} /> 调查完成后自动投影知识</span><small>启用后，完成调查时按下方策略把来源记录写入目标层。</small></label>
+          {effect._use_result_policy && <>
+            <label>结果来源层<select value={effect._result_source_layer || 'world_truth'} onChange={event => changeMany(index, { _result_source_layer: event.target.value, _result_source_holder_id: event.target.value === 'world_truth' ? '' : effect._result_source_holder_id })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+            <label>结果目标层<select value={effect._result_target_layer || effect.investigator_layer || 'player_knowledge'} onChange={event => update(index, '_result_target_layer', event.target.value)}><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+            {effect._result_source_layer !== 'world_truth' && <EffectReferenceInput label="来源 holder ID" value={effect._result_source_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, '_result_source_holder_id', next)} />}
+            <EffectReferenceInput label="结果目标 holder ID" value={effect._result_target_holder_id || effect.investigator_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, '_result_target_holder_id', next)} />
+            <label>结果置信度倍率<input type="number" min="0" max="1" step="0.01" value={effect._result_confidence_multiplier ?? 1} onChange={event => update(index, '_result_confidence_multiplier', event.target.value)} /></label>
+            <label>结果来源说明（可选）<input value={effect._result_source || ''} onChange={event => update(index, '_result_source', event.target.value)} placeholder="默认生成 investigation:ID" /></label>
+            <label>覆盖结果保密级别<select value={effect._result_secrecy_level || ''} onChange={event => update(index, '_result_secrecy_level', event.target.value)}><option value="">继承来源</option><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+            <JsonEffectField label="结果失真 JSON" value={effect._result_distortion_text} onChange={next => update(index, '_result_distortion_text', next)} />
+            <JsonEffectField label="结果策略扩展 JSON" value={effect._result_policy_text} onChange={next => update(index, '_result_policy_text', next)} help="可填 metadata、reason 或 value_override；可视化字段会覆盖同名扩展字段。" />
+          </>}
+          <div className="dlc-condition-warning">调查记录本身不会向 Agent 泄露世界真相；只有完成后的结果策略才会写入指定认知层。</div>
+        </div>}
+
+        {effect.effect_type === 'advance_investigation' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="调查 ID" value={effect.investigation_id} listId="dlc-effect-investigation-catalog" onChange={next => update(index, 'investigation_id', next)} />
+          <label>推进模式<select value={effect.mode || 'adjust'} onChange={event => changeMany(index, event.target.value === 'adjust' ? { mode: 'adjust', amount: effect.amount ?? effect.progress ?? 1 } : { mode: 'set', progress: effect.progress ?? effect.amount ?? 0 })}><option value="adjust">adjust / 增量</option><option value="set">set / 直接设定</option></select></label>
+          <label>{effect.mode === 'set' ? '目标进度' : '进度增量'}<input type="number" min="0" max="1000000" step="any" value={effect.mode === 'set' ? effect.progress ?? 0 : effect.amount ?? 1} onChange={event => update(index, effect.mode === 'set' ? 'progress' : 'amount', event.target.value)} /><small>必须大于等于 0；达到 required_progress 时自动完成。</small></label>
+          <label>调查状态（可选）<select value={effect.status || ''} onChange={event => update(index, 'status', event.target.value)}><option value="">由进度自动决定</option><option value="active">active / 进行中</option><option value="paused">paused / 暂停</option><option value="completed">completed / 完成</option><option value="cancelled">cancelled / 取消</option></select></label>
+          <JsonEffectField label="追加证据 JSON 数组" value={effect._evidence_text} onChange={next => update(index, '_evidence_text', next)} help="新增证据会追加，最多保留 64 项。" />
         </div>}
 
         {effect.effect_type === 'advance_objective' && <div className="dlc-world-effect-grid">

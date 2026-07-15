@@ -1516,3 +1516,21 @@ This checkpoint completes P1.4:
 The v0.29.0 local gate passed 620 Python tests, with 2 external-API environment-gated tests skipped because `AGENTERA_TEST_*` credentials were not injected; the focused causal/runtime suite passed 120 tests. Frontend verification passed 46 tests, ESLint and the Vite production build. Python compile, `git diff --check` and zero-issue `example_frontier` Registry validation also passed. Studio visual QA verified both saved effect chains and the 18-option catalog, plus a 390px single-column layout without document-level horizontal overflow. No external API request was attempted.
 
 The persistent gameplay-framework goal remains **active**. P1.4 is complete; P1.5 should next implement explicit world-truth, Actor-belief and player-knowledge layers with provenance, confidence, freshness, secrecy, distortion and investigation. P1.6 and P2 remain open.
+
+
+## Phase checkpoint: three-layer knowledge and investigation (v0.30.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.5:
+
+- added explicit World Truth, Actor Belief, and Player Knowledge authorities with provenance, confidence, freshness/expiry, five secrecy levels, scope, distortion, status, evidence, and safe metadata;
+- integrated propagation and investigation into World Commands, causal effects, causal conditions, Registry validation, static analysis, Dry Run, transactions, snapshots, reload, rollback, and recovery;
+- constrained investigation result policies to safe source/target layers, explicit holder semantics, bounded confidence multipliers, and validated secrecy/distortion/value overrides;
+- isolated Agent prompts to the bound Actor's subjective beliefs and removed hidden-layer contents and counts from public player projections;
+- expanded the DLC Studio catalogs to 25 conditions and 23 effects with detailed Chinese guidance, safe serialization, and investigation policy editing;
+- upgraded `example_frontier` to v1.9.0 with an end-to-end truth, distorted belief, propagation, investigation, verification, and third-phase gate example; synchronized AgentEra to v0.30.0.
+
+The persistent gameplay-framework goal remains **active**. P1.5 is complete. P1.6 (DLC-derived indicators and aggregate formulas) and all P2 long-term gameplay work remain open.
+
+The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.

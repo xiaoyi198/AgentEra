@@ -5,9 +5,11 @@ from collections.abc import Mapping
 import copy
 from typing import Any
 
+from .knowledge_contract import empty_knowledge_state, normalize_knowledge_state
+from .knowledge_runtime import KNOWLEDGE_COMMAND_TYPES, KnowledgeRuntime, reduce_knowledge_state
 from .world_commands import WorldCommandError
 
-_SCHEMA_VERSION = "1.0"
+_SCHEMA_VERSION = "2.0"
 _MAX_BUCKET = 10_000
 
 
@@ -18,7 +20,8 @@ def empty_gameplay_effect_state() -> dict[str, Any]:
         "actors": {},
         "issues": {},
         "issue_order": [],
-        "knowledge": {},
+        "knowledge": {},  # legacy v1 player-knowledge mirror, read only during migration
+        "knowledge_runtime": empty_knowledge_state(),
         "objectives": {},
         "action_unlocks": {},
         "phase": {},
@@ -39,6 +42,12 @@ def normalize_gameplay_effect_state(value: Any) -> dict[str, Any]:
     phase = value.get("phase", {})
     if isinstance(phase, Mapping):
         state["phase"] = copy.deepcopy(dict(phase))
+    state["knowledge_runtime"] = normalize_knowledge_state(
+        value.get("knowledge_runtime"), legacy_knowledge=value.get("knowledge", {}),
+    )
+    # New writes only target knowledge_runtime. Keeping this empty avoids exposing or
+    # persisting a second authoritative player-knowledge bucket.
+    state["knowledge"] = {}
     return state
 
 
@@ -121,24 +130,14 @@ def reduce_gameplay_effect_state(
             next_state["issue_order"] = next_state["issue_order"][-_MAX_BUCKET:]
         return next_state, {"issue_id": issue_id, "queued": previous is None}
 
-    if command_type == "reveal_information":
-        knowledge_id = str(data.get("knowledge_id", "")).strip()
-        entity_id = str(data.get("entity_id", "")).strip()
-        if not knowledge_id:
-            raise WorldCommandError("knowledge_id_required", "knowledge_id is required")
-        key = f"{entity_id}:{knowledge_id}"
-        row = _versioned(next_state["knowledge"].get(key), {
-            "entity_id": entity_id,
-            "knowledge_id": knowledge_id,
-            "value": copy.deepcopy(data.get("value")),
-            "source": str(data.get("source", "causal_event")),
-            "confidence": float(data.get("confidence", 1.0)),
-            "revealed_at": float(data.get("revealed_at", sim_time)),
-            "metadata": copy.deepcopy(dict(data.get("metadata", {}))),
-            "reason": str(data.get("reason", "")),
-        }, sim_time=sim_time, command_id=command_id)
-        next_state["knowledge"][key] = row
-        return next_state, copy.deepcopy(row)
+    if command_type in KNOWLEDGE_COMMAND_TYPES:
+        knowledge_state, result = reduce_knowledge_state(
+            next_state.get("knowledge_runtime"),
+            command_type=command_type, payload=data,
+            sim_time=sim_time, command_id=command_id,
+        )
+        next_state["knowledge_runtime"] = knowledge_state
+        return next_state, result
 
     if command_type == "advance_objective":
         objective_id = str(data.get("objective_id", "")).strip()
@@ -190,10 +189,12 @@ class GameplayEffectRuntime:
 
     def __init__(self) -> None:
         self._state = empty_gameplay_effect_state()
+        self.knowledge = KnowledgeRuntime(self._state["knowledge_runtime"])
 
     def refresh(self, world_state: Any) -> dict[str, Any]:
         getter = getattr(world_state, "get_gameplay_effect_state", None)
         self._state = normalize_gameplay_effect_state(getter() if callable(getter) else None)
+        self.knowledge.refresh(self._state.get("knowledge_runtime"))
         return copy.deepcopy(self._state)
 
     def sync_managers(
@@ -220,14 +221,28 @@ class GameplayEffectRuntime:
         row = self._state.get("agents", {}).get(str(agent_id))
         return bool(row.get("enabled", True)) if isinstance(row, Mapping) else True
 
-    def get_player_knowledge(self, entity_id: str, name: str, *, field: str = "", sim_time: float = 0.0) -> Any:
-        _ = float(sim_time)
-        row = self._state.get("knowledge", {}).get(f"{str(entity_id)}:{str(name)}")
-        if not isinstance(row, Mapping):
-            return None
-        if field:
-            return copy.deepcopy(row.get(field))
-        return copy.deepcopy(row.get("value"))
+    def get_player_knowledge(
+        self, entity_id: str, name: str, *, field: str = "",
+        sim_time: float = 0.0, holder_id: str = "player",
+    ) -> Any:
+        return self.knowledge.get_player_knowledge(
+            entity_id, name, field=field, sim_time=sim_time, holder_id=holder_id,
+        )
+
+    def get_actor_belief(
+        self, holder_id: str, entity_id: str, name: str, *, field: str = "",
+        sim_time: float = 0.0,
+    ) -> Any:
+        return self.knowledge.get_actor_belief(
+            holder_id, entity_id, name, field=field, sim_time=sim_time,
+        )
+
+    def get_world_truth(
+        self, entity_id: str, name: str, *, field: str = "", sim_time: float = 0.0,
+    ) -> Any:
+        return self.knowledge.get_world_truth(
+            entity_id, name, field=field, sim_time=sim_time,
+        )
 
     def resolve_condition(self, condition: Any, context: Any) -> Any:
         if getattr(condition, "kind", "") == "phase":
@@ -246,22 +261,34 @@ class GameplayEffectRuntime:
                     current = current.get(part)
                 return copy.deepcopy(current)
             return copy.deepcopy(phase.get(field))
-        return self.get_player_knowledge(
-            str(getattr(condition, "entity_id", "")), str(getattr(condition, "name", "")),
-            field=str(getattr(condition, "field", "")), sim_time=float(getattr(context, "sim_time", 0.0)),
+        return self.knowledge.resolve_condition(condition, context)
+
+    def actor_knowledge_context(
+        self, holder_ids: list[str] | tuple[str, ...], *, sim_time: float,
+        max_records: int = 24, max_chars: int = 6000,
+    ) -> str:
+        return self.knowledge.format_actor_context(
+            holder_ids, sim_time=sim_time, max_records=max_records, max_chars=max_chars,
         )
 
-    def public_state(self) -> dict[str, Any]:
+    def public_state(
+        self, *, player_holder_id: str = "player", sim_time: float = 0.0,
+    ) -> dict[str, Any]:
+        player = self.knowledge.player_projection(
+            holder_id=player_holder_id, sim_time=sim_time,
+        )
         return {
             "schema_version": _SCHEMA_VERSION,
             "phase": copy.deepcopy(self._state.get("phase", {})),
             "agents": copy.deepcopy(self._state.get("agents", {})),
-            "knowledge": copy.deepcopy(list(self._state.get("knowledge", {}).values())),
+            "knowledge": player["knowledge"],
+            "investigations": player["investigations"],
             "objectives": copy.deepcopy(self._state.get("objectives", {})),
             "action_unlocks": copy.deepcopy(self._state.get("action_unlocks", {})),
             "counts": {
                 "actors": len(self._state.get("actors", {})),
                 "issues": len(self._state.get("issues", {})),
-                "knowledge": len(self._state.get("knowledge", {})),
+                "knowledge": len(player["knowledge"]),
+                "investigations": len(player["investigations"]),
             },
         }

@@ -359,7 +359,9 @@ class _SeedWorldFacts:
 
                 if command_type in {
                     "set_agent_enabled", "modify_membership", "create_issue",
-                    "reveal_information", "advance_objective", "unlock_action", "switch_phase",
+                    "set_world_truth", "set_actor_belief", "reveal_information",
+                    "propagate_knowledge", "start_investigation", "advance_investigation",
+                    "advance_objective", "unlock_action", "switch_phase",
                 }:
                     self._gameplay_effect_state, _ = reduce_gameplay_effect_state(
                         self._gameplay_effect_state,
@@ -660,21 +662,62 @@ def analyze_causal_rules(content: Mapping[str, Any]) -> dict[str, Any]:
             if target not in agent_ids:
                 issue("error", "causal_analysis.missing_agent", f"Rule {rule.rule_id!r} targets unknown Agent {target!r}.", rule_ids=[rule.rule_id])
         for condition in rule.conditions:
-            if condition.entity_id not in entity_ids:
+            entity_required_kinds = {
+                "anchored_inventory", "metric", "parameter",
+                "entity_field", "entity_tag", "entity_state",
+            }
+            entity_optional_kinds = {
+                "ongoing_event", "world_truth", "actor_belief", "player_knowledge",
+                "knowledge_confidence", "knowledge_freshness", "knowledge_secrecy",
+            }
+            if condition.kind in entity_required_kinds and condition.entity_id not in entity_ids:
                 issue("error", "causal_analysis.missing_entity", f"Rule {rule.rule_id!r} references unknown entity {condition.entity_id!r}.", rule_ids=[rule.rule_id])
-            resource = resource_map.get(condition.name)
-            expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
-            if resource is None:
-                issue("error", "causal_analysis.missing_resource", f"Rule {rule.rule_id!r} references unknown resource {condition.name!r}.", rule_ids=[rule.rule_id])
-            elif str(resource.get("kind", "")) != expected_kind:
-                issue("error", "causal_analysis.resource_kind", f"Rule {rule.rule_id!r} requires {condition.name!r} to have kind {expected_kind!r}.", rule_ids=[rule.rule_id])
+            elif condition.kind in entity_optional_kinds and condition.entity_id and condition.entity_id not in entity_ids:
+                issue("error", "causal_analysis.missing_entity", f"Rule {rule.rule_id!r} references unknown entity {condition.entity_id!r}.", rule_ids=[rule.rule_id])
+            if condition.kind == "relationship":
+                for endpoint in (condition.entity_id, condition.target_entity_id):
+                    if endpoint not in entity_ids:
+                        issue("error", "causal_analysis.missing_entity", f"Rule {rule.rule_id!r} references unknown relationship endpoint {endpoint!r}.", rule_ids=[rule.rule_id])
+            if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                resource = resource_map.get(condition.name)
+                expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                if resource is None:
+                    issue("error", "causal_analysis.missing_resource", f"Rule {rule.rule_id!r} references unknown resource {condition.name!r}.", rule_ids=[rule.rule_id])
+                elif str(resource.get("kind", "")) != expected_kind:
+                    issue("error", "causal_analysis.resource_kind", f"Rule {rule.rule_id!r} requires {condition.name!r} to have kind {expected_kind!r}.", rule_ids=[rule.rule_id])
+        available_effect_entities = set(entity_ids)
         for effect in rule.world_effects:
             effect_type = str(effect.get("effect_type", ""))
-            entity_fields = ("from_entity_id", "to_entity_id") if effect_type == "transfer_anchored_value" else ("entity_id",)
-            for field_name in entity_fields:
+            entity_fields: tuple[str, ...] = ()
+            optional_entity_fields: tuple[str, ...] = ()
+            if effect_type == "transfer_anchored_value":
+                entity_fields = ("from_entity_id", "to_entity_id")
+            elif effect_type in {
+                "adjust_resource", "set_resource", "update_status", "create_ongoing_event",
+                "move_entity", "transform_entity", "remove_entity",
+            }:
+                entity_fields = ("entity_id",)
+            elif effect_type == "modify_relationship":
+                entity_fields = ("parent_id", "child_id")
+            elif effect_type == "modify_membership":
+                entity_fields = ("organization_id",)
+            elif effect_type in {
+                "declare_world_truth", "set_actor_belief", "reveal_information",
+                "propagate_knowledge", "start_investigation",
+            }:
+                optional_entity_fields = ("entity_id",)
+            for field_name in (*entity_fields, *optional_entity_fields):
                 entity_id = str(effect.get(field_name, ""))
-                if entity_id not in entity_ids:
+                if field_name in optional_entity_fields and not entity_id:
+                    continue
+                if entity_id not in available_effect_entities:
                     issue("error", "causal_analysis.effect_missing_entity", f"Rule {rule.rule_id!r} world effect references unknown entity {entity_id!r}.", rule_ids=[rule.rule_id])
+            if effect_type == "create_entity":
+                created_id = str(effect.get("entity_id", ""))
+                if created_id:
+                    available_effect_entities.add(created_id)
+            elif effect_type == "remove_entity":
+                available_effect_entities.discard(str(effect.get("entity_id", "")))
             resource_fields: tuple[str, ...] = ()
             if effect_type in {"adjust_resource", "set_resource"}:
                 resource_fields = ("resource_name",)

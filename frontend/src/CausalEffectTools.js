@@ -12,8 +12,13 @@ export const WORLD_EFFECT_TYPES = [
   { key: 'disable_agent', label: '停用 Agent', group: 'Agent 与 Actor', description: '阻止指定 Agent 接收和执行后续任务。' },
   { key: 'modify_relationship', label: '修改实体关系', group: '关系与职位', description: '新增、更新或删除一条有类型的实体关系。' },
   { key: 'modify_membership', label: '修改组织成员身份', group: '关系与职位', description: '新增、更新或删除 Actor 的组织成员身份。' },
-  { key: 'create_issue', label: '创建 Issue', group: 'Issue 与知识', description: '创建可进入 Case/决策流程的结构化 Issue。' },
-  { key: 'reveal_information', label: '揭示信息', group: 'Issue 与知识', description: '向玩家知识状态写入一个可带置信度的 JSON 值。' },
+  { key: 'create_issue', label: '创建 Issue', group: 'Issue 与知识', description: '按已启用的 Case/事务类型创建结构化 Issue。' },
+  { key: 'declare_world_truth', label: '声明世界真相', group: 'Issue 与知识', description: '写入权威世界事实；该隐藏层绝不能直接注入 Agent 提示词。' },
+  { key: 'set_actor_belief', label: '设置 Actor 认知', group: 'Issue 与知识', description: '写入指定 Actor / Agent holder 的主观认知，可与真相不同、失真或过期。' },
+  { key: 'reveal_information', label: '向玩家揭示信息', group: 'Issue 与知识', description: '向指定玩家 holder 写入可见知识，不会自动暴露其他 Actor 认知。' },
+  { key: 'propagate_knowledge', label: '传播知识', group: 'Issue 与知识', description: '在三层知识之间传播记录，并保留来源、置信度、失真与保密元数据。' },
+  { key: 'start_investigation', label: '启动调查', group: 'Issue 与知识', description: '为玩家或 Actor 启动核验流程，可在完成后按结果策略投影知识。' },
+  { key: 'advance_investigation', label: '推进调查', group: 'Issue 与知识', description: '增量推进或直接设定调查进度，并可追加证据和更新状态。' },
   { key: 'advance_objective', label: '推进目标', group: '目标、行动和阶段', description: '增量调整或直接设定 Objective 进度，并可更新状态。' },
   { key: 'unlock_action', label: '解锁行动', group: '目标、行动和阶段', description: '全局或针对实体、Actor、Agent 的作用域解锁行动。' },
   { key: 'switch_phase', label: '切换世界阶段', group: '目标、行动和阶段', description: '切换玩法阶段，并保存阶段 Metadata。' },
@@ -22,6 +27,11 @@ export const WORLD_EFFECT_TYPES = [
 const VALID_TYPES = new Set(WORLD_EFFECT_TYPES.map(item => item.key))
 const ASCII_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const UNICODE_ID = /^[^/\\]{1,128}$/u
+const KNOWLEDGE_LAYERS = new Set(['world_truth', 'actor_belief', 'player_knowledge'])
+const HOLDER_LAYERS = new Set(['actor_belief', 'player_knowledge'])
+const SECRECY_LEVELS = new Set(['public', 'restricted', 'confidential', 'secret', 'top_secret'])
+const KNOWLEDGE_STATUSES = new Set(['active', 'disputed', 'retracted'])
+const INVESTIGATION_STATUSES = new Set(['active', 'paused', 'completed', 'cancelled'])
 
 function firstId(items, keys) {
   for (const item of items || []) {
@@ -106,6 +116,15 @@ function addReason(result, effect) {
   return result
 }
 
+function knowledgeRecordDefaults(holderId) {
+  return {
+    entity_id: '', knowledge_id: '', holder_id: holderId, value: true,
+    source: 'causal_event', confidence: 1, stale_after_days: '', expires_in_days: '',
+    secrecy_level: 'public', visibility_scopes: [], distortion: {}, status: 'active', metadata: {},
+    _value_text: 'true', _visibility_scopes_text: '[]', _distortion_text: '{}', _metadata_text: '{}', reason: '',
+  }
+}
+
 export function defaultWorldEffect(effectType = 'adjust_resource', catalogs = {}) {
   const type = VALID_TYPES.has(effectType) ? effectType : 'adjust_resource'
   const entityId = firstId(catalogs.entities, ['id', 'entity_id'])
@@ -133,7 +152,12 @@ export function defaultWorldEffect(effectType = 'adjust_resource', catalogs = {}
     modify_relationship: { operation: 'upsert', parent_id: entityId, child_id: entityId, rel_type: relationshipType, strength: 100, visibility: 'public', starts_in_days: 0, duration_days: '', values: {}, note: '', metadata: {}, _values_text: '{}', _metadata_text: '{}', reason: '' },
     modify_membership: { operation: 'upsert', actor_id: actorId, organization_id: entityId, role: 'member', status: 'active', metadata: {}, _metadata_text: '{}', reason: '' },
     create_issue: { issue_type_id: issueType, source: { kind: 'system', id: 'causal_event' }, title: '', summary: '', details: {}, evidence: [], urgency: 'normal', deadline_days: '', metadata: {}, _source_text: '{\n  "kind": "system",\n  "id": "causal_event"\n}', _details_text: '{}', _evidence_text: '[]', _metadata_text: '{}', reason: '' },
-    reveal_information: { entity_id: '', knowledge_id: '', value: true, source: 'causal_event', confidence: 1, metadata: {}, _value_text: 'true', _metadata_text: '{}', reason: '' },
+    declare_world_truth: knowledgeRecordDefaults(''),
+    set_actor_belief: knowledgeRecordDefaults(actorId),
+    reveal_information: knowledgeRecordDefaults('player'),
+    propagate_knowledge: { source_layer: 'world_truth', target_layer: 'actor_belief', entity_id: '', knowledge_id: '', source_holder_id: '', target_holder_id: actorId, confidence_multiplier: 1, source: 'knowledge_propagation', value_override: true, secrecy_level: '', distortion: {}, metadata: {}, _use_value_override: false, _value_override_text: 'true', _distortion_text: '{}', _metadata_text: '{}', reason: '' },
+    start_investigation: { investigation_id: '', entity_id: '', knowledge_id: '', investigator_layer: 'player_knowledge', investigator_id: 'player', required_progress: 1, evidence: [], result_policy: {}, metadata: {}, _evidence_text: '[]', _use_result_policy: false, _result_source_layer: 'world_truth', _result_target_layer: 'player_knowledge', _result_source_holder_id: '', _result_target_holder_id: 'player', _result_confidence_multiplier: 1, _result_source: '', _result_secrecy_level: '', _result_distortion_text: '{}', _result_policy_text: '{}', _metadata_text: '{}', reason: '' },
+    advance_investigation: { investigation_id: '', mode: 'adjust', amount: 1, evidence: [], status: '', _evidence_text: '[]', reason: '' },
     advance_objective: { objective_id: objectiveId, mode: 'adjust', amount: 1, status: '', reason: '' },
     unlock_action: { action_id: actionId, scope_id: '', reason: '' },
     switch_phase: { phase_id: '', metadata: {}, _metadata_text: '{}', reason: '' },
@@ -161,15 +185,85 @@ export function normalizeWorldEffectForEditor(value = {}) {
     result._evidence_text = JSON.stringify(Array.isArray(value.evidence) ? value.evidence : [], null, 2)
     result._metadata_text = objectText(value.metadata)
   }
-  if (type === 'reveal_information') {
+  if (['declare_world_truth', 'set_actor_belief', 'reveal_information'].includes(type)) {
     result._value_text = valueText(value.value)
+    result._visibility_scopes_text = JSON.stringify(Array.isArray(value.visibility_scopes) ? value.visibility_scopes : [], null, 2)
+    result._distortion_text = objectText(value.distortion)
     result._metadata_text = objectText(value.metadata)
   }
+  if (type === 'propagate_knowledge') {
+    result._use_value_override = Object.prototype.hasOwnProperty.call(value, 'value_override')
+    result._value_override_text = valueText(value.value_override)
+    result._distortion_text = objectText(value.distortion)
+    result._metadata_text = objectText(value.metadata)
+  }
+  if (type === 'start_investigation') {
+    const policy = value.result_policy && typeof value.result_policy === 'object' && !Array.isArray(value.result_policy) ? value.result_policy : {}
+    result._evidence_text = JSON.stringify(Array.isArray(value.evidence) ? value.evidence : [], null, 2)
+    result._use_result_policy = Object.keys(policy).length > 0
+    result._result_source_layer = String(policy.source_layer || 'world_truth')
+    result._result_target_layer = String(policy.target_layer || value.investigator_layer || 'player_knowledge')
+    result._result_source_holder_id = String(policy.source_holder_id || '')
+    result._result_target_holder_id = String(policy.target_holder_id || value.investigator_id || 'player')
+    result._result_confidence_multiplier = policy.confidence_multiplier ?? 1
+    result._result_source = String(policy.source || '')
+    result._result_secrecy_level = String(policy.secrecy_level || '')
+    result._result_distortion_text = objectText(policy.distortion)
+    const policyExtras = { ...policy }
+    for (const key of ['source_layer', 'target_layer', 'source_holder_id', 'target_holder_id', 'confidence_multiplier', 'source', 'secrecy_level', 'distortion']) delete policyExtras[key]
+    result._result_policy_text = objectText(policyExtras)
+    result._metadata_text = objectText(value.metadata)
+  }
+  if (type === 'advance_investigation') result._evidence_text = JSON.stringify(Array.isArray(value.evidence) ? value.evidence : [], null, 2)
   return result
 }
 
 export function normalizeWorldEffectsForEditor(values) {
   return (Array.isArray(values) ? values : []).map(normalizeWorldEffectForEditor)
+}
+
+function knowledgeLayer(value, label, { holderOnly = false } = {}) {
+  const layer = String(value || '').trim()
+  if (!KNOWLEDGE_LAYERS.has(layer) || (holderOnly && !HOLDER_LAYERS.has(layer))) throw new Error(`${label}无效。`)
+  return layer
+}
+
+function secrecyLevel(value, { optional = false } = {}) {
+  const secrecy = String(value ?? '').trim()
+  if (!secrecy && optional) return ''
+  if (!SECRECY_LEVELS.has(secrecy)) throw new Error('知识保密级别无效。')
+  return secrecy
+}
+
+function knowledgeStatus(value) {
+  const status = String(value || 'active').trim()
+  if (!KNOWLEDGE_STATUSES.has(status)) throw new Error('知识状态无效。')
+  return status
+}
+
+function serializeKnowledgeRecord(effect, type) {
+  const visibilityScopes = parseArray(effect._visibility_scopes_text ?? JSON.stringify(effect.visibility_scopes || []), '可见作用域')
+  for (const scope of visibilityScopes) identifier(scope, '可见作用域 ID')
+  const result = {
+    effect_type: type,
+    entity_id: identifier(effect.entity_id, '关联实体 ID', false),
+    knowledge_id: identifier(effect.knowledge_id, '知识 ID'),
+    value: parseValue(effect._value_text ?? valueText(effect.value), '知识值'),
+    source: requiredText(effect.source || 'causal_event', '知识来源', 256),
+    confidence: finiteNumber(effect.confidence ?? 1, '置信度', { min: 0, max: 1 }),
+    secrecy_level: secrecyLevel(effect.secrecy_level || 'public'),
+    visibility_scopes: visibilityScopes,
+    distortion: parseObject(effect._distortion_text ?? objectText(effect.distortion), '失真信息'),
+    status: knowledgeStatus(effect.status),
+    metadata: parseObject(effect._metadata_text ?? objectText(effect.metadata), '知识 Metadata'),
+  }
+  if (type === 'set_actor_belief') result.holder_id = identifier(effect.holder_id, 'Actor / Agent holder ID')
+  if (type === 'reveal_information') result.holder_id = identifier(effect.holder_id || 'player', '玩家 holder ID')
+  for (const [key, label] of [['stale_after_days', '变陈旧天数'], ['expires_in_days', '过期天数']]) {
+    const duration = optionalNumber(effect[key], label, { min: 0, max: 36500 })
+    if (duration !== undefined) result[key] = duration
+  }
+  return result
 }
 
 export function serializeWorldEffect(effect = {}) {
@@ -250,8 +344,66 @@ export function serializeWorldEffect(effect = {}) {
     result = { effect_type: type, issue_type_id: identifier(effect.issue_type_id, 'Issue 类型 ID'), source: parseObject(effect._source_text ?? objectText(effect.source), 'Issue 来源'), title: optionalText(effect.title, 'Issue 标题', 512), summary: optionalText(effect.summary, 'Issue 摘要', 12000), details: parseObject(effect._details_text ?? objectText(effect.details), 'Issue 详情'), evidence: parseArray(effect._evidence_text ?? JSON.stringify(effect.evidence || []), 'Issue 证据'), urgency: requiredText(effect.urgency || 'normal', '紧迫度', 32), metadata: parseObject(effect._metadata_text ?? objectText(effect.metadata), 'Issue Metadata') }
     const deadline = optionalNumber(effect.deadline_days, '处理期限', { min: 0, max: 3650 })
     if (deadline !== undefined) result.deadline_days = deadline
-  } else if (type === 'reveal_information') {
-    result = { effect_type: type, entity_id: identifier(effect.entity_id, '关联实体 ID', false), knowledge_id: identifier(effect.knowledge_id, '知识 ID'), value: parseValue(effect._value_text ?? valueText(effect.value), '知识值'), source: requiredText(effect.source || 'causal_event', '知识来源', 256), confidence: finiteNumber(effect.confidence ?? 1, '置信度', { min: 0, max: 1 }), metadata: parseObject(effect._metadata_text ?? objectText(effect.metadata), '知识 Metadata') }
+  } else if (['declare_world_truth', 'set_actor_belief', 'reveal_information'].includes(type)) {
+    result = serializeKnowledgeRecord(effect, type)
+  } else if (type === 'propagate_knowledge') {
+    const sourceLayer = knowledgeLayer(effect.source_layer, '来源知识层')
+    const targetLayer = knowledgeLayer(effect.target_layer, '目标知识层')
+    result = {
+      effect_type: type, source_layer: sourceLayer, target_layer: targetLayer,
+      entity_id: identifier(effect.entity_id, '关联实体 ID', false), knowledge_id: identifier(effect.knowledge_id, '知识 ID'),
+      source_holder_id: identifier(effect.source_holder_id, '来源 holder ID', sourceLayer !== 'world_truth'),
+      target_holder_id: identifier(effect.target_holder_id, '目标 holder ID', targetLayer !== 'world_truth'),
+      confidence_multiplier: finiteNumber(effect.confidence_multiplier ?? 1, '置信度倍率', { min: 0, max: 1 }),
+      source: requiredText(effect.source || 'knowledge_propagation', '传播来源', 256),
+      distortion: parseObject(effect._distortion_text ?? objectText(effect.distortion), '传播失真'),
+      metadata: parseObject(effect._metadata_text ?? objectText(effect.metadata), '传播 Metadata'),
+    }
+    if (effect._use_value_override ?? Object.prototype.hasOwnProperty.call(effect, 'value_override')) result.value_override = parseValue(effect._value_override_text ?? valueText(effect.value_override), '覆盖知识值')
+    const secrecy = secrecyLevel(effect.secrecy_level, { optional: true })
+    if (secrecy) result.secrecy_level = secrecy
+  } else if (type === 'start_investigation') {
+    const investigatorLayer = knowledgeLayer(effect.investigator_layer || 'player_knowledge', '调查者知识层', { holderOnly: true })
+    let resultPolicy = parseObject(effect._result_policy_text ?? objectText(effect.result_policy), '调查完成结果策略')
+    const useResultPolicy = effect._use_result_policy ?? Boolean(effect.result_policy && typeof effect.result_policy === 'object' && Object.keys(effect.result_policy).length)
+    if (useResultPolicy) {
+      const sourceLayer = knowledgeLayer(effect._result_source_layer || 'world_truth', '结果来源层')
+      const targetLayer = knowledgeLayer(effect._result_target_layer || investigatorLayer, '结果目标层', { holderOnly: true })
+      resultPolicy = {
+        ...resultPolicy,
+        source_layer: sourceLayer,
+        target_layer: targetLayer,
+        source_holder_id: identifier(effect._result_source_holder_id, '来源 holder ID', sourceLayer !== 'world_truth'),
+        target_holder_id: identifier(effect._result_target_holder_id || effect.investigator_id, '结果目标 holder ID'),
+        confidence_multiplier: finiteNumber(effect._result_confidence_multiplier ?? 1, '结果置信度倍率', { min: 0, max: 1 }),
+        distortion: parseObject(effect._result_distortion_text ?? '{}', '调查结果失真'),
+      }
+      const policySource = optionalText(effect._result_source, '结果来源', 256)
+      if (policySource) resultPolicy.source = policySource
+      const policySecrecy = secrecyLevel(effect._result_secrecy_level, { optional: true })
+      if (policySecrecy) resultPolicy.secrecy_level = policySecrecy
+    }
+    result = {
+      effect_type: type, investigation_id: identifier(effect.investigation_id, '调查 ID'),
+      entity_id: identifier(effect.entity_id, '关联实体 ID', false), knowledge_id: identifier(effect.knowledge_id, '知识 ID'),
+      investigator_layer: investigatorLayer, investigator_id: identifier(effect.investigator_id || (investigatorLayer === 'player_knowledge' ? 'player' : ''), '调查者 ID'),
+      required_progress: finiteNumber(effect.required_progress ?? 1, '所需调查进度', { min: 0, max: 1000000, strictMin: true }),
+      evidence: parseArray(effect._evidence_text ?? JSON.stringify(effect.evidence || []), '调查证据'),
+      result_policy: resultPolicy,
+      metadata: parseObject(effect._metadata_text ?? objectText(effect.metadata), '调查 Metadata'),
+    }
+  } else if (type === 'advance_investigation') {
+    const mode = String(effect.mode || 'adjust').trim().toLowerCase()
+    if (!['adjust', 'set'].includes(mode)) throw new Error('调查推进模式只能是 adjust 或 set。')
+    const key = mode === 'adjust' ? 'amount' : 'progress'
+    result = {
+      effect_type: type, investigation_id: identifier(effect.investigation_id, '调查 ID'), mode,
+      [key]: finiteNumber(effect[key], mode === 'adjust' ? '调查进度增量' : '调查目标进度', { min: 0, max: 1000000 }),
+      evidence: parseArray(effect._evidence_text ?? JSON.stringify(effect.evidence || []), '调查证据'),
+    }
+    const status = String(effect.status || '').trim()
+    if (status && !INVESTIGATION_STATUSES.has(status)) throw new Error('调查状态无效。')
+    if (status) result.status = status
   } else if (type === 'advance_objective') {
     const mode = String(effect.mode || 'adjust').trim().toLowerCase()
     if (!['adjust', 'set'].includes(mode)) throw new Error('目标推进模式只能是 adjust 或 set。')

@@ -682,7 +682,7 @@ class Orchestrator:
         return self.gameplay_effect_runtime.agent_enabled(agent_id)
 
     def gameplay_effects_public_state(self) -> dict[str, Any]:
-        return self.gameplay_effect_runtime.public_state()
+        return self.gameplay_effect_runtime.public_state(sim_time=self._sim_time)
 
     @property
     def sim_time(self) -> float:
@@ -713,6 +713,7 @@ class Orchestrator:
             court=self.court,
             sim_time_provider=lambda: self._sim_time,
             seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+            knowledge_provider=self.gameplay_effect_runtime,
         )
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
@@ -746,6 +747,7 @@ class Orchestrator:
                 court=self.court,
                 sim_time_provider=lambda: self._sim_time,
                 seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+                knowledge_provider=self.gameplay_effect_runtime,
             )
             prepared[agent_id] = agent
 

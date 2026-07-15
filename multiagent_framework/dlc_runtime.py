@@ -340,6 +340,7 @@ class AgentFactory:
                 agent_id=official.id,
                 agent_type=official.agent_type,
                 display_name=official.name,
+                actor_id=str(sources.get(official.id, {}).get("actor_id") or official.id),
                 system_prompt=prompts.build_agent_prompt(
                     official, actor_values.get(official.id)
                 ),

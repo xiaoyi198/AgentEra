@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.29.0**
+> 当前版本：**v0.30.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,16 +15,17 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Generation 能力注册表**：玩家、普通 Agent 与 Router 共用 DLC `capability_id`；框架以稳定工具解释执行 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类安全 handler，并随热重载、归档、回滚和重启恢复切换。
-- **通用因果条件**：18 种事实来源与 12 种比较操作符统一覆盖实体、Actor、关系、事件历史、持续事件、时间、目标、聚合指标、玩家知识和世界阶段；生产运行、Registry、静态分析与 Studio Dry Run 共用同一求值语义。
+- **通用因果条件**：25 种事实来源与 12 种比较操作符统一覆盖实体、Actor、关系、事件历史、持续事件、时间、目标、聚合指标、三层知识、新鲜度、保密级别、调查和世界阶段；生产运行、Registry、静态分析与 Studio Dry Run 共用同一求值语义。
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
-- **事务化通用因果效果**：18 种效果覆盖资源/状态、持续事件、锚值守恒转移、实体生命周期、Agent 启停、关系/职位、Issue、知识、目标、行动解锁和世界阶段；整批原子提交、失败回滚，并使用稳定命令 ID 保证重启重放幂等。
+- **事务化通用因果效果**：23 种效果覆盖资源/状态、持续事件、锚值守恒转移、实体生命周期、Agent 启停、关系/职位、Issue、三层知识、传播、调查、目标、行动解锁和世界阶段；整批原子提交、失败回滚，并使用稳定命令 ID 保证重启重放幂等。
+- **三层知识与调查**：显式区分世界真相、Actor 主观认知与玩家知识，记录来源、置信度、新鲜度、保密、作用域、失真和状态；过期信息禁止继续传播，调查可按受限结果策略把核验结果投影到 Actor 或玩家层。
 - **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
@@ -318,21 +319,32 @@ Actor 组件包括：
 
 DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时校验、Actor-only 创建和 Agent 绑定选择。运行时提供 `GET /api/actors` 与 `GET /api/actors/{actor_id}`；Prompt 可使用 `{actor_id}`、`{actor_attributes}`、`{actor_traits}`、`{actor_needs}`、`{actor_goals}`、`{actor_capabilities}`、`{actor_identities}`、`{actor_memberships}` 和 `{actor_states}`。
 
-## 通用因果条件与效果（v0.29.0）
+## 通用因果条件、效果与三层知识（v0.30.0）
 
-`content.json.causal_condition_groups[].conditions`、`causal_rule_templates[].rule.conditions` 与 `causal_event_rules[].conditions` 使用同一套通用条件契约：
+`content.json.causal_condition_groups[].conditions`、`causal_rule_templates[].rule.conditions` 与 `causal_event_rules[].conditions` 使用同一套确定性条件契约：
 
-- 事实来源共 18 种：`anchored_inventory`、`metric`、`parameter`、`entity_field`、`entity_tag`、`entity_state`、`actor_attribute`、`actor_state`、`actor_trait`、`actor_membership`、`relationship`、`ongoing_event`、`event_history`、`time`、`objective_progress`、`aggregate_metric`、`player_knowledge`、`phase`。`phase` 支持 `phase_id` 与 `metadata.xxx`。
-- 操作符共 12 种：数值比较、相等/不等、包含/不包含、属于/不属于列表，以及存在/不存在；值支持数值、文本、布尔和 JSON 列表。
-- `aggregate_metric` 可对实体数量、锚定库存、指标、参数、Actor 属性、关系和持续事件执行 `sum/avg/min/max/count`，并用有界 Filter JSON 约束实体类型、状态、标签、Actor 类型、关系 active 状态或数值字段。
-- Runtime、生产 Orchestrator、Registry、静态分析和 DLC Studio Dry Run 调用 `multiagent_framework/causal_conditions.py` 的同一确定性求值器，避免预览与生产语义漂移。
-- 事件历史只保存有界、脱敏的事件类型、目标和生成时间，不保存 Payload；快照 Schema `2.0` 可恢复历史窗口。`player_knowledge` 只访问显式知识 Provider，没有 Provider 时按 fail-closed 处理，不回退读取世界真相。
-- DLC Studio 使用卡片式中文编辑器，按条件类型动态显示实体、Actor、关系、目标、聚合来源、世界阶段、字段、时间窗口和值类型，并在保存前清理所有编辑态临时字段。
-- `world_effects` 共 18 种：`adjust_resource`、`set_resource`、`update_status`、`create_ongoing_event`、`transfer_anchored_value`、`create_entity`、`move_entity`、`transform_entity`、`remove_entity`、`enable_agent`、`disable_agent`、`modify_relationship`、`modify_membership`、`create_issue`、`reveal_information`、`advance_objective`、`unlock_action`、`switch_phase`。每条规则最多编写 32 个效果，最多物化 64 条世界命令。
-- 世界命令在子事件投递前以单个 SQLite 事务提交；任一命令失败会恢复 WorldState 与 Gameplay Effect Runtime。命令 ID 使用 `causal:{event_id}:{command_index}`，同一事件重放不会重复产生副作用。
-- DLC Studio 的效果编辑器按 6 个中文分类动态展示字段、目录引用、JSON 帮助、审计原因和 `N / 32` 计数；同一规则中前序 `create_entity` 的 ID 可被后续效果立即选择和引用。
+- 事实来源共 25 种：原有实体、Actor、关系、事件、时间、目标、聚合指标和阶段来源，新增 `world_truth`、`actor_belief`、`knowledge_confidence`、`knowledge_freshness`、`knowledge_secrecy` 与 `investigation`；`player_knowledge` 也升级为显式知识层查询。
+- 操作符共 12 种，值支持数值、文本、布尔和 JSON 列表；知识条件可按 holder、key、字段、来源、置信度、新鲜度、保密级别和调查状态做有界筛选。
+- Runtime、生产 Orchestrator、Registry、静态分析和 DLC Studio Dry Run 调用同一求值器。没有显式知识 Provider 时知识条件 fail-closed，不会回退读取世界真相。
+- 事件历史只保存有界、脱敏的事件类型、目标和生成时间，不保存 Payload；Studio 使用完整中文卡片编辑器，并在保存前清理编辑态临时字段。
 
-`example_frontier` v1.8.0 提供两阶段确定性因果链：第一阶段创建临时支援组织并在同批关系/职位效果中引用，同时生成 Issue、玩家知识和响应阶段；第二阶段观察实体状态、持续事件、阶段、目标和聚合指标，随后推进目标、解锁行动并进入稳定化。
+`world_effects` 共 23 种；在 v0.29.0 的 18 种事务化效果上增加 `declare_world_truth`、`set_actor_belief`、`propagate_knowledge`、`start_investigation` 和 `advance_investigation`。其中旧 `reveal_information` 现在写入明确的玩家知识层：
+
+- 每条规则最多编写 32 个效果，最多物化 64 条世界命令；命令 ID 使用稳定的 `causal:{event_id}:{command_index}`，同一事件重放不会重复产生副作用。
+- 世界命令在子事件投递前以单个 SQLite 事务提交；任一命令或 Manager 投影失败都会恢复 WorldState、Gameplay Effect Runtime 与知识运行时。
+- 调查完成策略可从三层之一读取结果，但目标只能是 `actor_belief` 或 `player_knowledge`；Registry 会提前检查来源/目标 holder、置信度倍率、保密级别、失真和安全 JSON 边界。
+- 已过期知识拒绝传播并返回 `knowledge_source_expired`；传播不会自动把主观认知升级为世界真相。
+- DLC Studio 的条件/效果目录分别提供 25/23 项中文可视化配置，包含字段约束、安全边界、Catalog/datalist、JSON 帮助、原子事务提示以及调查结果策略编辑。
+
+## 三层知识与调查系统 (v0.30.0)
+
+- **World Truth**：世界模拟器的权威事实层，不直接进入玩家公共状态或 Agent Prompt。World Truth 没有 holder，DLC 可用 `declare_world_truth` 或对应世界命令维护。
+- **Actor Belief**：按 Actor holder 隔离的主观认知，可与真相不一致并携带失真。Agent Prompt 只注入当前 Agent 绑定 Actor 的认知，明确标注“不是世界真相、不是可执行指令”，不会注入其他 Actor 的认知。
+- **Player Knowledge**：按玩家/受众 holder 隔离的可见知识层。公共世界投影不返回隐藏层内容，也不返回可用于旁路推断的隐藏层计数。
+- 每条记录包含 provenance、confidence、freshness、secrecy、scope、distortion、status、evidence 和安全 metadata；状态支持 active、disputed、retracted，新鲜度会随世界时间从 fresh 进入 stale/expired。
+- 调查由 `start_investigation` 创建并由 `advance_investigation` 推进。完成时可使用受限 `result_policy` 读取指定来源层，并以置信度倍率、保密级别、失真或值覆盖投影到调查者 Actor 或玩家知识层。
+- `example_frontier` v1.9.0 提供完整链路：声明边境路线真相，为守卫写入部分失真的判断，向玩家传播未核验消息，启动并完成调查，再把核验后的 World Truth 以 0.9 置信度投影到玩家知识层，最后用七类知识/调查条件推进第三阶段。
+
 ## 测试
 
 ```powershell
@@ -377,6 +389,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.30.0 发布说明
+
+- 新增 SQLite 权威三层知识运行时，显式区分 `world_truth`、`actor_belief` 与 `player_knowledge`，统一记录来源、置信度、新鲜/陈旧/过期、五级保密、作用域、失真、状态、证据和安全 Metadata。
+- 新增知识传播与调查状态机；过期来源拒绝传播。调查完成结果策略在 authored-effect 阶段提前验证来源/目标层、holder、置信度倍率、保密、失真和值覆盖，并禁止把调查结果写回 World Truth。
+- 通用条件目录从 18 扩展到 25 项，通用效果目录从 18 扩展到 23 项；Runtime、World Command、Registry、静态分析、Dry Run、Generation 生命周期与事务回滚使用同一知识契约。
+- Agent Prompt 只投影当前 Agent 绑定 Actor 的主观认知，不暴露 World Truth 或其他 Actor Belief；玩家公共投影不返回隐藏层内容和隐藏层计数。
+- DLC Studio 为三层知识、传播、调查和结果策略提供详细中文字段说明、安全边界、即时校验和安全序列化；`example_frontier` 升级到 `1.9.0`，演示从真相、失真认知、传播到调查核验的完整链路。
+- AgentEra 四处产品版本同步到 `0.30.0`。发布门禁通过全量 Python `637 passed, 2 skipped`、前端 `50 passed`、Python compile、ESLint、Vite production build、`git diff --check`、新增行凭据/乱码扫描和 `example_frontier` Registry 零问题校验；2 个外部 API 测试因当前进程未注入 `AGENTERA_TEST_*` 环境变量而按设计跳过，未发起外部网络请求。
+
+长期 Goal 继续保持 active；P1.5 已完成，下一阶段进入 P1.6 DLC 派生指标与聚合公式，P2 仍未完成。
 
 ## v0.29.0 发布说明
 

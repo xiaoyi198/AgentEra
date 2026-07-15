@@ -27,7 +27,9 @@ WORLD_EFFECT_TYPES = frozenset({
     "create_ongoing_event", "transfer_anchored_value",
     "create_entity", "move_entity", "transform_entity", "remove_entity",
     "enable_agent", "disable_agent", "modify_relationship",
-    "modify_membership", "create_issue", "reveal_information",
+    "modify_membership", "create_issue", "declare_world_truth",
+    "set_actor_belief", "reveal_information", "propagate_knowledge",
+    "start_investigation", "advance_investigation",
     "advance_objective", "unlock_action", "switch_phase",
 })
 
@@ -35,8 +37,9 @@ MATERIALIZED_COMMAND_TYPES = frozenset({
     "adjust_resource", "set_resource", "update_status", "create_event",
     "create_entity", "move_entity", "transform_entity", "remove_entity",
     "set_agent_enabled", "modify_relationship", "modify_membership",
-    "create_issue", "reveal_information", "advance_objective",
-    "unlock_action", "switch_phase",
+    "create_issue", "set_world_truth", "set_actor_belief",
+    "reveal_information", "propagate_knowledge", "start_investigation",
+    "advance_investigation", "advance_objective", "unlock_action", "switch_phase",
 })
 
 
@@ -98,6 +101,49 @@ def _object(value: Any, code: str) -> dict[str, Any]:
     result = _safe_json(value, code)
     assert isinstance(result, dict)
     return result
+
+
+def _normalize_investigation_result_policy(
+    value: Any, *, investigator_layer: str, investigator_id: str,
+) -> dict[str, Any]:
+    code = "causal_effect_investigation_result_invalid"
+    policy = _object(value, code)
+    if not policy:
+        return {}
+    source_layer = str(policy.get("source_layer", "") or "").strip()
+    target_layer = str(policy.get("target_layer", investigator_layer) or investigator_layer).strip()
+    if source_layer not in {"world_truth", "actor_belief", "player_knowledge"}:
+        raise CausalEventError(code)
+    if target_layer not in {"actor_belief", "player_knowledge"}:
+        raise CausalEventError(code)
+    normalized = dict(policy)
+    normalized["source_layer"] = source_layer
+    normalized["target_layer"] = target_layer
+    normalized["source_holder_id"] = _identifier(
+        policy.get("source_holder_id", ""), code, required=source_layer != "world_truth",
+    )
+    normalized["target_holder_id"] = _identifier(
+        policy.get("target_holder_id", investigator_id), code,
+    )
+    multiplier = _finite(policy.get("confidence_multiplier", 1.0), code)
+    if multiplier < 0 or multiplier > 1:
+        raise CausalEventError(code)
+    normalized["confidence_multiplier"] = multiplier
+    normalized["distortion"] = _object(policy.get("distortion", {}), code)
+    if policy.get("source") is not None:
+        normalized["source"] = _text(policy.get("source"), code, limit=256)
+    if policy.get("secrecy_level") is not None:
+        secrecy = str(policy.get("secrecy_level") or "")
+        if secrecy not in {"public", "restricted", "confidential", "secret", "top_secret"}:
+            raise CausalEventError(code)
+        normalized["secrecy_level"] = secrecy
+    if policy.get("metadata") is not None:
+        normalized["metadata"] = _object(policy.get("metadata"), code)
+    if policy.get("reason") is not None:
+        normalized["reason"] = _text(policy.get("reason"), code, required=False, limit=2000)
+    if "value_override" in policy:
+        normalized["value_override"] = _safe_json(policy.get("value_override"), code)
+    return normalized
 
 
 def _normalize_expected_result(value: Any) -> dict[str, Any]:
@@ -293,19 +339,123 @@ def normalize_world_effect(value: Mapping[str, Any]) -> dict[str, Any]:
             if deadline_value < 0 or deadline_value > 3650:
                 raise CausalEventError("causal_effect_issue_deadline_invalid")
             result["deadline_days"] = deadline_value
-    elif effect_type == "reveal_information":
+    elif effect_type in {"declare_world_truth", "set_actor_belief", "reveal_information"}:
         confidence = _finite(value.get("confidence", 1.0), "causal_effect_knowledge_confidence_invalid")
         if not 0 <= confidence <= 1:
             raise CausalEventError("causal_effect_knowledge_confidence_invalid")
+        secrecy = str(value.get("secrecy_level", "public") or "public")
+        if secrecy not in {"public", "restricted", "confidential", "secret", "top_secret"}:
+            raise CausalEventError("causal_effect_knowledge_secrecy_invalid")
+        status = str(value.get("status", "active") or "active")
+        if status not in {"active", "disputed", "retracted"}:
+            raise CausalEventError("causal_effect_knowledge_status_invalid")
+        visibility = _safe_json(value.get("visibility_scopes", []), "causal_effect_knowledge_visibility_invalid")
+        if not isinstance(visibility, list) or len(visibility) > 64:
+            raise CausalEventError("causal_effect_knowledge_visibility_invalid")
         result = {
             "effect_type": effect_type,
-            "entity_id": _identifier(value.get("entity_id", ""), "causal_effect_entity_invalid", required=False),
+            "entity_id": _identifier(value.get("entity_id", value.get("subject_entity_id", "")), "causal_effect_entity_invalid", required=False),
             "knowledge_id": _identifier(value.get("knowledge_id", value.get("name")), "causal_effect_knowledge_invalid"),
             "value": _safe_json(value.get("value", True), "causal_effect_knowledge_value_invalid"),
             "source": _text(value.get("source", "causal_event"), "causal_effect_knowledge_source_invalid", limit=256),
             "confidence": confidence,
+            "secrecy_level": secrecy,
+            "visibility_scopes": visibility,
+            "distortion": _object(value.get("distortion", {}), "causal_effect_knowledge_distortion_invalid"),
+            "status": status,
             "metadata": _object(value.get("metadata", {}), "causal_effect_metadata_invalid"),
         }
+        if effect_type == "set_actor_belief":
+            result["holder_id"] = _identifier(value.get("holder_id", value.get("actor_id")), "causal_effect_knowledge_holder_invalid")
+        elif effect_type == "reveal_information":
+            result["holder_id"] = _identifier(value.get("holder_id", "player"), "causal_effect_knowledge_holder_invalid")
+        for field_name in ("stale_after_days", "expires_in_days"):
+            if value.get(field_name) is not None:
+                duration = _finite(value.get(field_name), "causal_effect_knowledge_freshness_invalid")
+                if duration < 0 or duration > 36500:
+                    raise CausalEventError("causal_effect_knowledge_freshness_invalid")
+                result[field_name] = duration
+    elif effect_type == "propagate_knowledge":
+        source_layer = str(value.get("source_layer", "") or "")
+        target_layer = str(value.get("target_layer", "") or "")
+        layers = {"world_truth", "actor_belief", "player_knowledge"}
+        if source_layer not in layers or target_layer not in layers:
+            raise CausalEventError("causal_effect_knowledge_layer_invalid")
+        multiplier = _finite(value.get("confidence_multiplier", 1.0), "causal_effect_knowledge_confidence_invalid")
+        if not 0 <= multiplier <= 1:
+            raise CausalEventError("causal_effect_knowledge_confidence_invalid")
+        result = {
+            "effect_type": effect_type,
+            "source_layer": source_layer,
+            "target_layer": target_layer,
+            "entity_id": _identifier(value.get("entity_id", value.get("subject_entity_id", "")), "causal_effect_entity_invalid", required=False),
+            "knowledge_id": _identifier(value.get("knowledge_id"), "causal_effect_knowledge_invalid"),
+            "source_holder_id": _identifier(value.get("source_holder_id", ""), "causal_effect_knowledge_holder_invalid", required=source_layer != "world_truth"),
+            "target_holder_id": _identifier(value.get("target_holder_id", ""), "causal_effect_knowledge_holder_invalid", required=target_layer != "world_truth"),
+            "confidence_multiplier": multiplier,
+            "source": _text(value.get("source", "knowledge_propagation"), "causal_effect_knowledge_source_invalid", limit=256),
+            "distortion": _object(value.get("distortion", {}), "causal_effect_knowledge_distortion_invalid"),
+            "metadata": _object(value.get("metadata", {}), "causal_effect_metadata_invalid"),
+        }
+        if "value_override" in value:
+            result["value_override"] = _safe_json(value.get("value_override"), "causal_effect_knowledge_value_invalid")
+        if value.get("secrecy_level") is not None:
+            secrecy = str(value.get("secrecy_level"))
+            if secrecy not in {"public", "restricted", "confidential", "secret", "top_secret"}:
+                raise CausalEventError("causal_effect_knowledge_secrecy_invalid")
+            result["secrecy_level"] = secrecy
+    elif effect_type == "start_investigation":
+        investigator_layer = str(value.get("investigator_layer", "player_knowledge") or "player_knowledge")
+        if investigator_layer not in {"actor_belief", "player_knowledge"}:
+            raise CausalEventError("causal_effect_investigator_layer_invalid")
+        required_progress = _finite(value.get("required_progress", 1.0), "causal_effect_investigation_progress_invalid")
+        if required_progress <= 0 or required_progress > 1_000_000:
+            raise CausalEventError("causal_effect_investigation_progress_invalid")
+        evidence = _safe_json(value.get("evidence", []), "causal_effect_investigation_evidence_invalid")
+        if not isinstance(evidence, list) or len(evidence) > 64:
+            raise CausalEventError("causal_effect_investigation_evidence_invalid")
+        investigator_id = _identifier(
+            value.get("investigator_id", "player"), "causal_effect_investigator_invalid",
+        )
+        result = {
+            "effect_type": effect_type,
+            "investigation_id": _identifier(value.get("investigation_id"), "causal_effect_investigation_id_invalid"),
+            "entity_id": _identifier(value.get("entity_id", value.get("subject_entity_id", "")), "causal_effect_entity_invalid", required=False),
+            "knowledge_id": _identifier(value.get("knowledge_id"), "causal_effect_knowledge_invalid"),
+            "investigator_layer": investigator_layer,
+            "investigator_id": investigator_id,
+            "required_progress": required_progress,
+            "evidence": evidence,
+            "result_policy": _normalize_investigation_result_policy(
+                value.get("result_policy", {}),
+                investigator_layer=investigator_layer,
+                investigator_id=investigator_id,
+            ),
+            "metadata": _object(value.get("metadata", {}), "causal_effect_metadata_invalid"),
+        }
+    elif effect_type == "advance_investigation":
+        mode = str(value.get("mode", "adjust") or "adjust")
+        if mode not in {"adjust", "set"}:
+            raise CausalEventError("causal_effect_investigation_progress_invalid")
+        amount_key = "amount" if mode == "adjust" else "progress"
+        amount = _finite(value.get(amount_key), "causal_effect_investigation_progress_invalid")
+        if amount < 0 or amount > 1_000_000:
+            raise CausalEventError("causal_effect_investigation_progress_invalid")
+        evidence = _safe_json(value.get("evidence", []), "causal_effect_investigation_evidence_invalid")
+        if not isinstance(evidence, list) or len(evidence) > 64:
+            raise CausalEventError("causal_effect_investigation_evidence_invalid")
+        result = {
+            "effect_type": effect_type,
+            "investigation_id": _identifier(value.get("investigation_id"), "causal_effect_investigation_id_invalid"),
+            "mode": mode,
+            amount_key: amount,
+            "evidence": evidence,
+        }
+        if value.get("status") is not None:
+            status = str(value.get("status"))
+            if status not in {"active", "paused", "completed", "cancelled"}:
+                raise CausalEventError("causal_effect_investigation_status_invalid")
+            result["status"] = status
     elif effect_type == "advance_objective":
         mode = str(value.get("mode", "adjust")).strip().lower()
         if mode not in {"adjust", "set"}:
@@ -459,12 +609,21 @@ def materialize_world_commands(
             if effect.get("reason"):
                 payload.setdefault("metadata", {})["reason"] = effect["reason"]
             plans.append({"command_type": "create_issue", "entity_id": payload["issue_id"], "payload": payload})
-        elif effect_type == "reveal_information":
+        elif effect_type in {"declare_world_truth", "set_actor_belief", "reveal_information", "propagate_knowledge", "start_investigation", "advance_investigation"}:
             payload = {key: copy.deepcopy(value) for key, value in effect.items() if key not in {"effect_type", "reason"}}
-            payload["revealed_at"] = due_at
+            if effect_type in {"declare_world_truth", "set_actor_belief", "reveal_information"}:
+                payload["observed_at"] = due_at
             if effect.get("reason"):
                 payload["reason"] = effect["reason"]
-            plans.append({"command_type": "reveal_information", "entity_id": effect.get("entity_id", ""), "payload": payload})
+            command_type = {
+                "declare_world_truth": "set_world_truth",
+                "set_actor_belief": "set_actor_belief",
+                "reveal_information": "reveal_information",
+                "propagate_knowledge": "propagate_knowledge",
+                "start_investigation": "start_investigation",
+                "advance_investigation": "advance_investigation",
+            }[effect_type]
+            plans.append({"command_type": command_type, "entity_id": effect.get("entity_id", effect.get("investigation_id", "")), "payload": payload})
         elif effect_type == "advance_objective":
             plans.append({"command_type": "advance_objective", "entity_id": effect["objective_id"], "payload": {key: value for key, value in effect.items() if key not in {"effect_type", "reason"}} | ({"reason": effect["reason"]} if effect.get("reason") else {})})
         elif effect_type == "unlock_action":

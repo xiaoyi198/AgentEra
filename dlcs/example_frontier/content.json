@@ -1327,6 +1327,80 @@
           "value": 50
         }
       ]
+    },
+    {
+      "group_id": "frontier_intelligence_confirmed",
+      "name": "边境情报核验完成条件",
+      "description": "演示隐藏世界真相、Actor 主观认知、玩家知识元数据、新鲜度、保密级别与调查状态的组合判断。",
+      "conditions": [
+        {
+          "kind": "world_truth",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "actor_belief",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "frontier_guard",
+          "field": "confidence",
+          "operator": "gte",
+          "value": 0.5
+        },
+        {
+          "kind": "player_knowledge",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "knowledge_confidence",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "gte",
+          "value": 0.8,
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_freshness",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "fresh",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_secrecy",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "restricted",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "investigation",
+          "entity_id": "verify_frontier_route",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "completed"
+        }
+      ]
     }
   ],
   "causal_rule_templates": [
@@ -1465,6 +1539,91 @@
           "reason": "把巡逻警情投影为玩家可处理的 Issue"
         },
         {
+          "effect_type": "declare_world_truth",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "value": {
+            "open": false,
+            "risk": "blocked",
+            "cause": "landslide"
+          },
+          "source": "frontier_sensor",
+          "confidence": 1,
+          "stale_after_days": 7,
+          "expires_in_days": 30,
+          "secrecy_level": "restricted",
+          "visibility_scopes": [],
+          "distortion": {},
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "authoritative"
+          },
+          "reason": "记录仅供权威规则使用的真实通路状态"
+        },
+        {
+          "effect_type": "set_actor_belief",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "holder_id": "frontier_guard",
+          "value": {
+            "open": "uncertain",
+            "risk": "moderate"
+          },
+          "source": "distant_observation",
+          "confidence": 0.65,
+          "stale_after_days": 3,
+          "expires_in_days": 10,
+          "secrecy_level": "confidential",
+          "visibility_scopes": [
+            "frontier_guard"
+          ],
+          "distortion": {
+            "omitted": [
+              "cause"
+            ],
+            "bias": "underestimate"
+          },
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "unverified"
+          },
+          "reason": "记录守备 Actor 可能失真的主观判断"
+        },
+        {
+          "effect_type": "start_investigation",
+          "investigation_id": "verify_frontier_route",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "investigator_layer": "player_knowledge",
+          "investigator_id": "player",
+          "required_progress": 2,
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "哨站守备官"
+            }
+          ],
+          "result_policy": {
+            "source_layer": "world_truth",
+            "target_layer": "player_knowledge",
+            "source_holder_id": "",
+            "target_holder_id": "player",
+            "confidence_multiplier": 0.9,
+            "source": "investigation:verify_frontier_route",
+            "secrecy_level": "restricted",
+            "distortion": {},
+            "metadata": {
+              "method": "field_verification"
+            }
+          },
+          "metadata": {
+            "category": "route_verification"
+          },
+          "reason": "启动跨事件的玩家核验流程"
+        },
+        {
           "effect_type": "reveal_information",
           "entity_id": "边境哨站",
           "knowledge_id": "frontier_relief_authorized",
@@ -1511,6 +1670,39 @@
       "conditions": [],
       "world_effects": [
         {
+          "effect_type": "propagate_knowledge",
+          "source_layer": "actor_belief",
+          "target_layer": "player_knowledge",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "source_holder_id": "frontier_guard",
+          "target_holder_id": "player",
+          "confidence_multiplier": 0.6,
+          "source": "field_report",
+          "secrecy_level": "restricted",
+          "distortion": {
+            "label": "unverified"
+          },
+          "metadata": {
+            "verification": "pending"
+          },
+          "reason": "先把守备 Actor 的未核验判断传播给玩家"
+        },
+        {
+          "effect_type": "advance_investigation",
+          "investigation_id": "verify_frontier_route",
+          "mode": "adjust",
+          "amount": 2,
+          "status": "completed",
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "reason": "现场勘察完成并触发权威结果投影"
+        },
+        {
           "effect_type": "update_status",
           "entity_id": "边境哨站",
           "new_status": "持续巡防",
@@ -1538,6 +1730,71 @@
             "label": "边境稳定化"
           },
           "reason": "响应链完成并进入稳定化阶段"
+        }
+      ]
+    },
+    {
+      "rule_id": "frontier_stabilization_to_intelligence_confirmation",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_intelligence_confirmed"
+      ],
+      "source_event_types": [
+        "frontier_stabilization"
+      ],
+      "child_event_type": "frontier_intelligence_confirmed",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "intelligence_confirmed",
+        "summary": "调查完成，玩家获得经核验的边境路线情报。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "frontier_security_report",
+          "source": {
+            "kind": "system",
+            "id": "causal_event",
+            "entity_id": "边境哨站"
+          },
+          "title": "边境路线核验完成",
+          "summary": "现场调查确认路线受阻，需要重新规划支援路径。",
+          "details": {
+            "investigation_id": "verify_frontier_route",
+            "knowledge_id": "frontier_route_status"
+          },
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "urgency": "normal",
+          "metadata": {
+            "generated_by": "knowledge_investigation"
+          },
+          "reason": "把已核验知识转化为玩家可处理事务"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_frontier",
+          "mode": "adjust",
+          "amount": 10,
+          "status": "active",
+          "reason": "完成情报核验并推进边境目标"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_intelligence_confirmed",
+          "metadata": {
+            "chapter": 3,
+            "label": "边境情报核验"
+          },
+          "reason": "三层知识与调查链已完成"
         }
       ]
     }

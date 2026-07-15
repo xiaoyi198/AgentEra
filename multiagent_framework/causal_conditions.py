@@ -1,4 +1,4 @@
-"""Generic, deterministic causal-condition schema and value resolver."""
+﻿"""Generic, deterministic causal-condition schema and value resolver."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ FACT_KINDS = {
     "entity_field", "entity_tag", "entity_state",
     "actor_attribute", "actor_state", "actor_trait", "actor_membership",
     "relationship", "ongoing_event", "event_history", "time",
-    "objective_progress", "aggregate_metric", "player_knowledge", "phase",
+    "objective_progress", "aggregate_metric", "world_truth", "actor_belief",
+    "player_knowledge", "knowledge_confidence", "knowledge_freshness",
+    "knowledge_secrecy", "investigation", "phase",
 }
 AGGREGATES = {"sum", "avg", "min", "max", "count"}
 AGGREGATE_SOURCES = {
@@ -123,6 +125,20 @@ class CausalCondition:
         if self.kind == "relationship" and (not self.entity_id or not self.target_entity_id or not self.name):
             raise CausalEventError("causal_condition_reference_invalid")
         if self.kind == "objective_progress" and not (self.entity_id or self.name):
+            raise CausalEventError("causal_condition_reference_invalid")
+        if self.kind in {"world_truth", "player_knowledge"} and not self.name:
+            raise CausalEventError("causal_condition_reference_invalid")
+        if self.kind == "actor_belief" and (not self.name or not self.target_entity_id):
+            raise CausalEventError("causal_condition_reference_invalid")
+        if self.kind in {"knowledge_confidence", "knowledge_freshness", "knowledge_secrecy"}:
+            if not self.name:
+                raise CausalEventError("causal_condition_reference_invalid")
+            layer = str(self.filters.get("layer", "player_knowledge"))
+            if layer not in {"world_truth", "actor_belief", "player_knowledge"}:
+                raise CausalEventError("causal_condition_filters_invalid")
+            if layer == "actor_belief" and not (self.target_entity_id or self.filters.get("holder_id")):
+                raise CausalEventError("causal_condition_reference_invalid")
+        if self.kind == "investigation" and not (self.entity_id or self.name):
             raise CausalEventError("causal_condition_reference_invalid")
         if self.kind == "aggregate_metric":
             if self.aggregate and self.aggregate not in AGGREGATES:
@@ -327,7 +343,7 @@ def resolve_condition_value(condition: CausalCondition, context: CausalCondition
         if field_name.startswith("metadata."):
             return metadata.get(field_name.split(".", 1)[1], _MISSING) if isinstance(metadata, Mapping) else _MISSING
         return _field(entity, field_name, _MISSING)
-    if condition.kind.startswith("actor_"):
+    if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"}:
         getter = getattr(context.actor_manager, "get", None)
         actor = getter(condition.entity_id) if callable(getter) else None
         if not isinstance(actor, Mapping):

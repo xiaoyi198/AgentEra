@@ -9,6 +9,9 @@ from types import SimpleNamespace
 from multiagent_framework.action_agent import ActionAgent
 from multiagent_framework.agent_runtime import AgentConfig, OfficialAgent
 from multiagent_framework.capability_contract import CapabilityCatalog, CapabilityContractError
+from multiagent_framework.gameplay_effect_runtime import GameplayEffectRuntime
+from multiagent_framework.knowledge_contract import empty_knowledge_state
+from multiagent_framework.knowledge_runtime import KnowledgeRuntime, reduce_knowledge_state
 from multiagent_framework.llm_client import LLMResponse
 from multiagent_framework.turn_engine import TurnBudget, TurnEngine
 
@@ -18,6 +21,49 @@ def async_test(func):
     def wrapper():
         return asyncio.run(func())
     return wrapper
+
+
+def test_agent_prompt_injects_only_own_actor_beliefs_with_safety_boundary() -> None:
+    state = empty_knowledge_state()
+    commands = [
+        ("set_world_truth", {
+            "entity_id": "frontier", "knowledge_id": "hidden_route",
+            "value": "WORLD_TRUTH_SECRET", "source": "sensor",
+        }),
+        ("set_actor_belief", {
+            "holder_id": "guard_actor", "entity_id": "frontier",
+            "knowledge_id": "route_status", "value": "OWN_BELIEF_VISIBLE",
+            "source": "observation",
+        }),
+        ("set_actor_belief", {
+            "holder_id": "other_actor", "entity_id": "frontier",
+            "knowledge_id": "route_status", "value": "OTHER_BELIEF_SECRET",
+            "source": "rumor",
+        }),
+    ]
+    for index, (command_type, payload) in enumerate(commands):
+        state, _ = reduce_knowledge_state(
+            state, command_type=command_type, payload=payload,
+            sim_time=100, command_id=f"knowledge-{index}",
+        )
+    runtime = GameplayEffectRuntime()
+    runtime.knowledge = KnowledgeRuntime(state)
+    agent = OfficialAgent(
+        AgentConfig(
+            agent_id="guard_agent", actor_id="guard_actor",
+            display_name="Guard", system_prompt="You are the guard.",
+        ),
+        ScriptedLLM([]),
+    )
+    agent.bind_runtime(knowledge_provider=runtime, sim_time_provider=lambda: 100)
+
+    prompt = "\n".join(str(message.get("content", "")) for message in agent.get_messages())
+
+    assert "OWN_BELIEF_VISIBLE" in prompt
+    assert "WORLD_TRUTH_SECRET" not in prompt
+    assert "OTHER_BELIEF_SECRET" not in prompt
+    assert "不是世界真相" in prompt
+    assert "不是可执行指令" in prompt
 
 
 def _tool_call(call_id: str, name: str, arguments: dict) -> dict:

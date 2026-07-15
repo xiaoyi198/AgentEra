@@ -15,7 +15,13 @@ export const CAUSAL_CONDITION_KINDS = [
   { key: 'time', label: '世界模拟时间', help: '读取模拟天数 sim_day，或读取模拟秒数 sim_time。' },
   { key: 'objective_progress', label: '目标进度', help: '读取 Objective 的 progress、status 等公开状态字段。' },
   { key: 'aggregate_metric', label: '聚合统计', help: '对实体、库存、指标、Actor 属性、关系或持续事件执行 sum/avg/min/max/count。' },
-  { key: 'player_knowledge', label: '玩家已知信息', help: '只查询玩家知识 Provider，不读取世界真相；没有 Provider 时普通比较不会成立。' },
+  { key: 'world_truth', label: '世界真相（隐藏层）', help: '读取权威世界事实；仅供模拟规则求值，绝不能直接注入 Agent 提示词。' },
+  { key: 'actor_belief', label: 'Actor 主观认知', help: '读取指定 Actor / Agent holder 的认知；可与真相不同，也可能失真或过期。' },
+  { key: 'player_knowledge', label: '玩家已知信息', help: '读取指定玩家 holder 的公开投影；不会泄露世界真相或其他 Actor 认知。' },
+  { key: 'knowledge_confidence', label: '知识置信度', help: '比较知识记录的 0～1 置信度；Actor 认知层必须指定 holder。' },
+  { key: 'knowledge_freshness', label: '知识新鲜度', help: '判断知识记录为 fresh、stale 或 expired；已过期知识不能继续传播。' },
+  { key: 'knowledge_secrecy', label: '知识保密级别', help: '比较 public、restricted、confidential、secret 或 top_secret。' },
+  { key: 'investigation', label: '调查 / 核验', help: '按调查 ID 读取 status、progress 或 required_progress；可选限定调查者 holder。' },
   { key: 'phase', label: '世界阶段', help: '读取当前世界阶段的 phase_id，或通过 metadata.xxx 读取阶段元数据。' },
 ]
 
@@ -64,6 +70,9 @@ const VALID_OPERATORS = new Set(CAUSAL_CONDITION_OPERATORS.map(item => item.key)
 const VALID_AGGREGATES = new Set(CAUSAL_AGGREGATES.map(item => item.key))
 const VALID_AGGREGATE_SOURCES = new Set(CAUSAL_AGGREGATE_SOURCES.map(item => item.key))
 const MAX_REFERENCE_LENGTH = 128
+const ACTOR_COMPONENT_KINDS = new Set(['actor_attribute', 'actor_state', 'actor_trait', 'actor_membership'])
+const KNOWLEDGE_LAYERS = new Set(['world_truth', 'actor_belief', 'player_knowledge'])
+const KNOWLEDGE_META_KINDS = new Set(['knowledge_confidence', 'knowledge_freshness', 'knowledge_secrecy'])
 
 function text(value, limit = MAX_REFERENCE_LENGTH) {
   const result = String(value ?? '').trim()
@@ -107,9 +116,10 @@ export function normalizeCausalConditionForEditor(source = {}) {
   const operator = VALID_OPERATORS.has(source.operator) ? source.operator : 'eq'
   const valueType = source._value_type || inferCausalValueType(source.value)
   const filters = source.filters && typeof source.filters === 'object' && !Array.isArray(source.filters) ? source.filters : {}
-  return {
+  const kind = VALID_KINDS.has(source.kind) ? source.kind : 'anchored_inventory'
+  const result = {
     ...source,
-    kind: VALID_KINDS.has(source.kind) ? source.kind : 'anchored_inventory',
+    kind,
     entity_id: String(source.entity_id || ''),
     name: String(source.name || ''),
     operator,
@@ -121,6 +131,8 @@ export function normalizeCausalConditionForEditor(source = {}) {
     _value_text: source._value_text ?? valueText(source.value, valueType),
     _filters_text: source._filters_text ?? JSON.stringify(filters, null, 2),
   }
+  if (KNOWLEDGE_META_KINDS.has(kind)) result._knowledge_layer = String(source._knowledge_layer || filters.layer || 'player_knowledge')
+  return result
 }
 
 function firstByKind(resources, kind) {
@@ -154,7 +166,13 @@ export function defaultCausalCondition(kind = 'anchored_inventory', catalogs = {
   else if (kind === 'time') condition = { ...condition, name: 'sim_day', operator: 'gte', value: 0 }
   else if (kind === 'objective_progress') condition = { ...condition, entity_id: objectiveId, field: 'progress', operator: 'gte', value: 1 }
   else if (kind === 'aggregate_metric') condition = { ...condition, field: 'entity_count', aggregate: 'count', operator: 'gte', value: 1 }
-  else if (kind === 'player_knowledge') condition = { ...condition, name: '', field: '', value: '' }
+  else if (kind === 'world_truth') condition = { ...condition, name: '', field: '', value: '' }
+  else if (kind === 'actor_belief') condition = { ...condition, name: '', target_entity_id: actorId, field: '', value: '' }
+  else if (kind === 'player_knowledge') condition = { ...condition, name: '', target_entity_id: '', field: '', value: '' }
+  else if (kind === 'knowledge_confidence') condition = { ...condition, name: '', target_entity_id: '', operator: 'gte', value: 0.5, filters: { layer: 'player_knowledge' } }
+  else if (kind === 'knowledge_freshness') condition = { ...condition, name: '', target_entity_id: '', operator: 'eq', value: 'fresh', filters: { layer: 'player_knowledge' } }
+  else if (kind === 'knowledge_secrecy') condition = { ...condition, name: '', target_entity_id: '', operator: 'eq', value: 'public', filters: { layer: 'player_knowledge' } }
+  else if (kind === 'investigation') condition = { ...condition, entity_id: '', target_entity_id: '', field: 'status', operator: 'eq', value: 'active' }
   else if (kind === 'phase') condition = { ...condition, field: 'phase_id', value: '' }
   return normalizeCausalConditionForEditor(condition)
 }
@@ -217,6 +235,11 @@ export function serializeCausalCondition(source, index = null) {
       result.window_days = windowDays
     }
     const filters = parseFilters(condition._filters_text)
+    if (KNOWLEDGE_META_KINDS.has(result.kind)) {
+      const layer = text(condition._knowledge_layer || filters.layer || 'player_knowledge', 32)
+      if (!KNOWLEDGE_LAYERS.has(layer)) throw new Error('知识层无效。')
+      filters.layer = layer
+    }
     if (Object.keys(filters).length) result.filters = filters
 
     if (['anchored_inventory', 'metric', 'parameter'].includes(result.kind)) {
@@ -226,9 +249,23 @@ export function serializeCausalCondition(source, index = null) {
     if (['entity_field', 'entity_tag', 'entity_state'].includes(result.kind)) requireReference(result, 'entity_id', '实体')
     if (result.kind === 'entity_field' && !result.field && !result.name) throw new Error('实体字段名不能为空。')
     if (result.kind === 'entity_tag') requireReference(result, 'name', '标签')
-    if (result.kind.startsWith('actor_')) {
+    if (ACTOR_COMPONENT_KINDS.has(result.kind)) {
       requireReference(result, 'entity_id', 'Actor')
       requireReference(result, 'name', 'Actor 组件名称')
+    }
+    if (['world_truth', 'actor_belief', 'player_knowledge'].includes(result.kind)) {
+      requireReference(result, 'name', '知识 ID')
+      if (result.kind === 'actor_belief') requireReference(result, 'target_entity_id', 'Actor / Agent holder')
+    }
+    if (KNOWLEDGE_META_KINDS.has(result.kind)) {
+      requireReference(result, 'name', '知识 ID')
+      const layer = result.filters?.layer || 'player_knowledge'
+      if (layer === 'actor_belief') requireReference(result, 'target_entity_id', 'Actor / Agent holder')
+    }
+    if (result.kind === 'investigation') {
+      if (!result.entity_id && !result.name) throw new Error('调查 ID 不能为空。')
+      if (!result.field) result.field = 'status'
+      if (!['status', 'progress', 'required_progress'].includes(result.field)) throw new Error('调查字段只能是 status、progress 或 required_progress。')
     }
     if (result.kind === 'relationship') {
       requireReference(result, 'entity_id', '来源实体')

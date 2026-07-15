@@ -2172,3 +2172,30 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 
 - `example_frontier` v1.8.0 demonstrates an atomic response batch that creates `frontier_relief_command`, immediately links it to the garrison and quartermaster, creates an Issue, reveals Knowledge and switches Phase. Its stabilization stage observes the response Phase, advances an Objective, unlocks an Action and switches to chapter two.
 - AgentEra version identity is synchronized at v0.29.0. The persistent gameplay-framework goal remains active: P1.4 is complete; P1.5 must implement three-layer world/Actor/player knowledge, while P1.6 and P2 remain open.
+
+
+## Release architecture note: three-layer knowledge and investigation runtime (v0.30.0)
+
+### Authoritative knowledge model
+
+- `multiagent_framework/knowledge_contract.py` defines the bounded, theme-neutral contract for `world_truth`, `actor_belief`, and `player_knowledge`. Records carry provenance, confidence, freshness/expiry, five secrecy levels, scope, distortion, status, evidence, source metadata, and JSON-safe extension metadata.
+- `multiagent_framework/knowledge_runtime.py` is the SQLite-backed authority for records, propagation, and investigations. World Truth has no holder; Actor Belief and Player Knowledge require an explicit holder. Expired source records fail propagation with `knowledge_source_expired` rather than silently copying stale information.
+- Knowledge state participates in WorldState snapshots, causal transactions, runtime recovery, Generation reload/rollback semantics, and deterministic command replay. The earlier gameplay-effect Knowledge projection remains compatible while delegating explicit layered behavior to the knowledge runtime.
+
+### Commands, causal rules, and investigations
+
+- The World Command bus accepts `set_world_truth`, `set_actor_belief`, `reveal_information`, `propagate_knowledge`, `start_investigation`, and `advance_investigation`. Authored causal effects expose the matching five new generic effects plus the upgraded player revelation effect, bringing the effect catalog to 23.
+- The causal condition catalog now contains 25 fact kinds. Explicit `world_truth`, `actor_belief`, upgraded `player_knowledge`, confidence, freshness, secrecy, and investigation conditions use the same knowledge provider in production, Registry analysis, and unsaved-draft Dry Run.
+- Investigation completion uses a normalized result policy. Sources may be any knowledge layer, but targets are restricted to Actor Belief or Player Knowledge; holder requirements, confidence multipliers, secrecy, distortion, value override, source metadata, and audit reason are validated before command materialization.
+
+### Security projections and authoring surfaces
+
+- Agent prompt assembly resolves the Agent-to-Actor binding and injects only that Actor's bounded belief projection. It never injects World Truth or another Actor's beliefs, and labels the projection as untrusted subjective context rather than instructions.
+- Player/public projections omit hidden layer contents and hidden layer counts, preventing both direct disclosure and trivial count-based inference. Knowledge without an explicit provider remains fail-closed.
+- Registry validation, static analysis, Dry Run, and DLC Studio share the layered contract. The Studio condition/effect editors provide 25/23 Chinese catalog entries, field-level constraints, secrecy/freshness guidance, investigation result-policy editing, safe JSON normalization, and round-trip serialization.
+- `example_frontier` v1.9.0 demonstrates a complete World Truth -> distorted Actor Belief -> unverified Player Knowledge -> investigation -> verified Player Knowledge flow and gates its third phase with layered knowledge and investigation conditions.
+
+### Release state
+
+- The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.
+- P1.5 is complete, while the persistent gameplay-framework goal remains **active**. The next phase is P1.6 DLC-derived metrics and aggregate formulas; P2 remains open.
