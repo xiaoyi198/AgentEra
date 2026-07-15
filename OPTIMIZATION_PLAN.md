@@ -1534,3 +1534,20 @@ This checkpoint completes P1.5:
 The persistent gameplay-framework goal remains **active**. P1.5 is complete. P1.6 (DLC-derived indicators and aggregate formulas) and all P2 long-term gameplay work remain open.
 
 The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.
+
+## Phase checkpoint: DLC derived metrics and aggregate formulas (v0.31.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.6:
+
+- introduced a Generation-bound `DerivedMetricCatalog` with deterministic direct sources, aggregate sources, 17 formula operations, dependency ordering, bounded evaluation and batch-local caching;
+- integrated audience-isolated results into Objective conditions, causal rules, Agent prompt context, safe player API, the main UI and the controlled UI Manifest renderer;
+- made reload, encrypted archive recovery, rollback and restart replace the metric catalog with the same Generation as the rest of the DLC runtime;
+- added detailed Chinese runtime settings for knowledge and derived-metric Prompt record/character budgets;
+- added a complete Chinese DLC Studio formula-tree editor with Catalog suggestions, common filters, dependency/cycle analysis, structural validation, import/export, Keyed Diff, History and Undo/Redo;
+- upgraded `example_frontier` to v1.10.0 with a readiness metric combining entity values, Actor attributes and anchored inventory base value; synchronized AgentEra to v0.31.0.
+
+The v0.31.0 release gate: The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
+
+The persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete. The next phase is **P2.1: DLC calendars, seasons, turn/meeting/task cycles, and automatic pause conditions**. P2 is not complete.

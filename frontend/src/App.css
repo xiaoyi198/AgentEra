@@ -1399,3 +1399,29 @@ body {
   .capability-heading select { max-width: none; }
   .capability-submit { width: 100%; }
 }
+/* Deterministic DLC-derived metric dashboard */
+.derived-metric-panel {
+  grid-column: 1 / -1;
+  border: 1px solid color-mix(in srgb, var(--gold) 36%, transparent);
+  border-left: 4px solid var(--gold);
+  border-radius: 10px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(211, 170, 91, .09), rgba(15, 20, 28, .72));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .16);
+}
+.derived-metric-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.derived-metric-panel h2 { margin: 2px 0 0; font-size: 18px; }
+.derived-metric-eyebrow { color: var(--gold); font-size: 10px; letter-spacing: .12em; }
+.derived-metric-actions { display: flex; align-items: center; gap: 10px; color: var(--text-dim); }
+.derived-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.derived-metric-card { min-width: 0; padding: 12px; border: 1px solid rgba(255, 255, 255, .09); border-radius: 8px; background: rgba(7, 11, 16, .5); }
+.derived-metric-card.error, .derived-metric-card.missing { border-color: rgba(208, 87, 87, .38); }
+.derived-metric-card.disabled { opacity: .62; }
+.derived-metric-card-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.derived-metric-card-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.derived-metric-card-title span { flex: 0 0 auto; color: var(--text-dim); font-size: 10px; }
+.derived-metric-value { margin: 10px 0 5px; color: var(--gold); font-size: 25px; font-variant-numeric: tabular-nums; }
+.derived-metric-value small { margin-left: 5px; color: var(--text-dim); font-size: 11px; }
+.derived-metric-card code { color: var(--text-dim); font-size: 10px; }
+.derived-metric-card p { margin: 8px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+.derived-metric-empty { color: var(--text-dim); padding: 12px 0 4px; }

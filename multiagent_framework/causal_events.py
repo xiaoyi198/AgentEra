@@ -338,6 +338,7 @@ class CausalEventEngine:
             knowledge_provider=provided.knowledge_provider,
             issue_manager=provided.issue_manager,
             action_catalog=provided.action_catalog,
+            derived_metric_provider=provided.derived_metric_provider,
         )
         counts = self._counts_for(chain_id)
         scheduled = 0

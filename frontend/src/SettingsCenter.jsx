@@ -361,7 +361,13 @@ function SettingsCenter({ open, onClose, onSaved }) {
     <section className="settings-card"><h4>结构化长期记忆</h4><div className="settings-form-grid two">
       {['structured_memory_max_records', 'structured_memory_retrieval_limit', 'structured_memory_char_budget'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} onChange={value => setRuntime('agent_defaults', name, value)} />)}
     </div></section>
-    <div className="settings-callout warning">更大的召回条数和字符预算不一定更聪明：无关记忆会稀释任务重点并增加上下文成本。</div>
+    <section className="settings-card"><h4>Agent 可知知识上下文</h4><p>只向 Agent 注入其自身持有的事实、信念和调查结果，不会把世界真相或其他角色的私有知识混入 Prompt。</p><div className="settings-form-grid two">
+      {['knowledge_context_max_records', 'knowledge_context_char_budget'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} onChange={value => setRuntime('agent_defaults', name, value)} />)}
+    </div></section>
+    <section className="settings-card"><h4>只读派生指标上下文</h4><p>把 DLC 公式从权威世界状态计算出的摘要提供给 Agent。仅注入允许 agent 受众读取的指标，不包含公式、元数据或可执行指令。</p><div className="settings-form-grid two">
+      {['derived_metric_context_max_records', 'derived_metric_context_char_budget'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} onChange={value => setRuntime('agent_defaults', name, value)} />)}
+    </div><div className="settings-callout">两个值任一设为 0 都会关闭派生指标 Prompt 注入；推荐先保持默认值，再根据模型上下文窗口和 DLC 指标数量调整。</div></section>
+    <div className="settings-callout warning">更大的召回条数和字符预算不一定更聪明：无关记忆、知识或指标会稀释任务重点并增加上下文成本。</div>
   </div>
 
   const renderSimulation = () => <div className="settings-page"><SectionHeader title="世界模拟" description="调整游戏时间与现实时间换算，以及世界主循环检查频率。" />

@@ -540,3 +540,53 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-modal { width: calc(100vw - 24px); max-width: 430px; padding: 16px; }
   .dlc-toast { top: 82px; width: calc(100vw - 24px); text-align: center; }
 }
+
+/* Derived metric visual formula editor */
+.metric-editor-grid { align-items: start; }
+.metric-editor-form { min-width: 0; }
+.metric-editor-form textarea { resize: vertical; }
+.metric-editor-form fieldset { min-width: 0; }
+.metric-audiences { margin: 14px 0; padding: 14px; border: 1px solid #334158; border-radius: 10px; background: rgba(17, 23, 34, 0.5); }
+.metric-audiences legend { padding: 0 8px; color: #e5edf9; font-weight: 700; }
+.metric-audiences > div { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
+.metric-audiences .dlc-check { width: auto; margin: 0; }
+.metric-formula-section { margin: 18px 0; padding-top: 4px; }
+.metric-formula-section > div:first-child { margin-bottom: 10px; }
+.metric-formula-section h4, .metric-dependency-panel h4 { margin: 0 0 5px; color: #eaf1fb; }
+.metric-formula-node { min-width: 0; margin: 10px 0; padding: 12px; border: 1px solid #394963; border-left: 4px solid #5684bd; border-radius: 10px; background: rgba(18, 25, 38, 0.86); }
+.metric-formula-node.depth-1 { border-left-color: #57a68a; background: rgba(19, 34, 38, 0.76); }
+.metric-formula-node.depth-2 { border-left-color: #c18b55; background: rgba(38, 31, 23, 0.72); }
+.metric-formula-node.depth-3 { border-left-color: #9b77bd; background: rgba(34, 26, 43, 0.72); }
+.metric-formula-node.depth-4 { border-left-color: #ad6673; }
+.metric-node-toolbar { display: grid; grid-template-columns: minmax(100px, auto) minmax(220px, 1fr) auto; gap: 10px; align-items: end; margin-bottom: 10px; }
+.metric-node-toolbar > strong { align-self: center; color: #dce9f9; }
+.metric-node-toolbar label { margin: 0; }
+.metric-node-toolbar button { margin-bottom: 1px; }
+.metric-node-children { margin: 10px 0 0 14px; padding-left: 12px; border-left: 1px dashed #42536d; }
+.metric-node-children.binary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.metric-node-children.binary > .metric-formula-node { margin-top: 0; }
+.metric-weighted-term { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; }
+.metric-weighted-term > label { margin-top: 12px; }
+.metric-source-fields { display: grid; gap: 8px; }
+.metric-note { align-self: end; min-height: 39px; padding: 10px; border: 1px solid #334158; border-radius: 7px; color: #afbdd0; font-size: 12px; line-height: 1.5; }
+.metric-advanced { margin: 10px 0; border: 1px solid #334158; border-radius: 8px; background: rgba(12, 18, 28, 0.54); }
+.metric-advanced > summary { cursor: pointer; padding: 10px 12px; color: #cbd8e9; font-weight: 700; }
+.metric-advanced[open] { padding: 0 12px 12px; }
+.metric-advanced[open] > summary { margin: 0 -12px 10px; border-bottom: 1px solid #334158; }
+.metric-inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.metric-dependency-panel { margin: 14px 0; padding: 13px; border: 1px solid #344158; border-radius: 9px; background: rgba(17, 23, 34, 0.64); }
+.metric-dependency-panel p { margin: 6px 0; color: #bcc9da; overflow-wrap: anywhere; }
+.metric-error, .metric-ok { margin: 8px 0; padding: 9px 11px; border-radius: 7px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.metric-error { border: 1px solid #7c3f49; background: rgba(111, 42, 54, 0.24); color: #ffb6c0; }
+.metric-ok { border: 1px solid #326750; background: rgba(35, 105, 75, 0.22); color: #a9e5c9; }
+
+@media (max-width: 1000px) {
+  .metric-node-children.binary { grid-template-columns: minmax(0, 1fr); }
+  .metric-weighted-term { grid-template-columns: minmax(0, 1fr); }
+  .metric-weighted-term > label { margin-top: 0; }
+}
+@media (max-width: 760px) {
+  .metric-node-toolbar { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .metric-node-children { margin-left: 4px; padding-left: 7px; }
+  .metric-formula-node { padding: 10px; }
+}

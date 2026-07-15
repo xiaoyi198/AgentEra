@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.30.0**
+> 当前版本：**v0.31.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,7 +15,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查、派生指标与 UI Manifest；派生指标提供完整可视化公式树，新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
@@ -26,6 +26,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
 - **事务化通用因果效果**：23 种效果覆盖资源/状态、持续事件、锚值守恒转移、实体生命周期、Agent 启停、关系/职位、Issue、三层知识、传播、调查、目标、行动解锁和世界阶段；整批原子提交、失败回滚，并使用稳定命令 ID 保证重启重放幂等。
 - **三层知识与调查**：显式区分世界真相、Actor 主观认知与玩家知识，记录来源、置信度、新鲜度、保密、作用域、失真和状态；过期信息禁止继续传播，调查可按受限结果策略把核验结果投影到 Actor 或玩家层。
+- **DLC 派生指标**：DLC 可用确定性公式组合实体指标、参数、Actor 属性、关系、持续事件、模拟天数与统一锚定库存价值；Objective、因果规则、Agent Prompt、主界面和安全 API 按受众读取同一 Generation 的结果。
 - **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
@@ -111,7 +112,7 @@ npm run dev -- --host
 - 模型 Profile：配置 Provider、模型 ID、能力标签、并发和重试；Profile 改名会同步更新三级任务路由引用。
 - 任务路由：可视化编辑全局 `task_policies`、DLC `dlc_task_policies` 和 Agent `agent_task_policies`，候选 Profile 顺序即失败回退顺序。
 - Agent 多轮调用：分别控制普通 Agent 与 ActionAgent 的轮数、工具调用数、Token、耗时和无进展终止预算。
-- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度。
+- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度；`knowledge_context_max_records` / `knowledge_context_char_budget` 限制每轮可见知识条数与字符数，`derived_metric_context_max_records` / `derived_metric_context_char_budget` 限制只读派生指标条数与字符数。后两项设为 `0` 可关闭派生指标注入，四项均支持热更新。
 - 世界模拟：控制游戏日与现实秒换算及后台 Tick 间隔；保存后可热更新当前 Orchestrator。
 - 安全与运维：只读展示管理 API、管理令牌、归档加密密钥和告警相关环境变量是否配置，不展示其值。
 - 高级 JSON：只编辑模型文档中的 Provider、Profile 与三级路由五个段；保存前统一经过后端 Schema 校验，并展示 Warning 与变更 Diff。
@@ -271,7 +272,8 @@ DLC 可以声明：
 - 行动耗时规则
 - 通用行动、Issue / Case / DecisionRequest 题型、目标、里程碑、失败条件与结局
 - DLC/Agent 显式模型绑定
-- 因果规则的通用条件（18 种事实来源、12 种操作符、多类型值与 Filter JSON）和事务化通用效果（18 种资源、实体、Agent、关系、Issue、知识、目标、行动与阶段效果）
+- 因果规则的通用条件（25 种事实来源、12 种操作符、多类型值与 Filter JSON）和事务化通用效果（23 种资源、实体、Agent、关系、Issue、知识、目标、行动与阶段效果）
+- 派生指标、聚合公式、受众权限、缺失策略，以及用于 UI、目标、规则和 Agent 的稳定指标 ID
 
 DLC Studio 支持草稿校验、发布、Generation 归档、热重载和回滚。运行时不会因为新版本发布而重算已经承诺的延迟结果。
 
@@ -345,6 +347,19 @@ DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时�
 - 调查由 `start_investigation` 创建并由 `advance_investigation` 推进。完成时可使用受限 `result_policy` 读取指定来源层，并以置信度倍率、保密级别、失真或值覆盖投影到调查者 Actor 或玩家知识层。
 - `example_frontier` v1.9.0 提供完整链路：声明边境路线真相，为守卫写入部分失真的判断，向玩家传播未核验消息，启动并完成调查，再把核验后的 World Truth 以 0.9 置信度投影到玩家知识层，最后用七类知识/调查条件推进第三阶段。
 
+## DLC 派生指标与聚合公式 (v0.31.0)
+
+主 DLC 与依赖 DLC 都可在 `content.json.derived_metrics` 中声明题材无关的只读指标。`DerivedMetricCatalog` 在 Registry 校验时解析依赖图并拒绝缺失引用或循环，在 Generation 发布、热重载、归档恢复和回滚时与其他 DLC 目录原子切换。
+
+- 公式支持 `constant`、`source`、`derived_metric`、`aggregate`、`add`、`subtract`、`multiply`、`divide`、`min`、`max`、`avg`、`sum`、`weighted_sum`、`clamp`、`round`、`coalesce` 共 17 类节点。
+- 直接来源支持统一锚定库存价值、实体指标、实体参数、Actor 属性和模拟天数；聚合来源还支持实体数量、关系边和持续事件，并可执行 `sum/avg/min/max/count`。
+- `audiences` 将同一指标显式授权给 `player`、`ui`、`agent`、`rule`、`objective`。玩家 API 仅返回 `player` 指标；Agent 只接收 `agent` 指标摘要；规则和目标分别要求对应受众，不会跨受众旁路读取。
+- `missing_policy` 可设为 `fail` 或 `zero`。公式有 12 层深度、256 节点、64 子项和有限数值限制；除零、缺失来源、非有限结果与循环均产生稳定错误状态。
+- `GET /api/derived-metrics` 与 `GET /api/derived-metrics/{metric_id}` 返回当前 Generation 的安全结果，不暴露公式、Metadata、底层 Provider 异常或隐藏受众指标。UI Manifest 可添加 `kind: "derived_metrics"` 的 Dashboard Widget。
+- DLC Studio 的“派生指标”页签提供五类受众、缺失策略、全部公式节点、Catalog 引用、常用 Filter、依赖图、循环/缺失检查、有限数值与深度/节点检查，并纳入导入导出、Keyed Diff、历史和撤销/重做。
+
+`example_frontier` v1.10.0 的“边境综合战备度”按 55% 哨站警戒度、25% 守备 Actor 警觉属性和 20% 边境银券统一锚定库存价值计算，供玩家、界面、Agent、因果规则和目标共同读取。
+
 ## 测试
 
 ```powershell
@@ -389,6 +404,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.31.0 发布说明
+
+- 新增 Generation-bound `DerivedMetricCatalog`，DLC 可用 17 类确定性公式节点组合直接世界来源、聚合来源和其他派生指标；Registry 拒绝缺失依赖、循环、超限结构、非有限数值与非法引用。
+- Objective DSL、因果条件、Agent Prompt、主界面和 UI Manifest 共用同一指标目录；`player/ui/agent/rule/objective` 五类受众彼此隔离，Catalog 热切换后既有 Agent 也只读取当前 Generation。
+- 新增安全派生指标 API 和主游戏指标面板；公开接口只暴露 `player` 受众结果，不返回公式、Metadata、隐藏指标或底层异常。
+- DLC Studio 新增完整中文派生指标编辑器，覆盖全部公式树节点、世界来源、聚合方式、Catalog/Filter 辅助、依赖图与循环/缺失/结构检查，并接入导入导出、Diff、History 和撤销/重做。
+- 详细中文设置中心新增知识上下文与派生指标上下文的条数/字符预算；`example_frontier` 升级至 `1.10.0`，用统一锚定库存价值、实体指标和 Actor 属性计算“边境综合战备度”，并接入目标、失败条件、规则和 Dashboard。AgentEra 四处产品版本同步到 `0.31.0`。
+- 发布门禁：全量 Python `665 passed, 2 skipped`、前端 `58 passed`，Python compile、ESLint、Vite production build、`git diff --check`、新增/未跟踪行凭据与乱码扫描、四处版本一致性检查和 `example_frontier` Registry `0 issues` 均通过；2 个外部 API 测试因当前进程未注入 `AGENTERA_TEST_*` 环境变量而按设计跳过，未发起外部网络请求。
+
+长期 Goal 继续保持 active；P0 与 P1.1-P1.6 已完成，下一阶段进入 P2.1 DLC 日历、季节、回合/会议/任务周期和自动暂停条件。P2 尚未完成。
 
 ## v0.30.0 发布说明
 

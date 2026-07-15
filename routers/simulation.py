@@ -298,6 +298,32 @@ async def get_issue_types():
     return state.orchestrator.issues_public_state()
 
 
+@router.get("/derived-metrics")
+async def get_derived_metrics():
+    """Return only player-visible deterministic projections for the active Generation."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "generation": 0, "evaluated_at": 0.0,
+            "metric_count": 0, "metrics": [],
+        }
+    return state.orchestrator.derived_metrics_public_state()
+
+
+@router.get("/derived-metrics/{metric_id}")
+async def get_derived_metric(metric_id: str):
+    """Return one player-visible metric; hidden IDs are indistinguishable from missing IDs."""
+    if not state.orchestrator:
+        raise HTTPException(
+            status_code=503, detail={"code": "derived_metric.orchestrator_unavailable"},
+        )
+    result = state.orchestrator.derived_metric_public_state(metric_id)
+    if result.get("status") in {"hidden", "missing"} and result.get("error_code") in {
+        "", "derived_metric.not_found",
+    }:
+        raise HTTPException(status_code=404, detail={"code": "derived_metric.not_found"})
+    return result
+
+
 @router.get("/objectives")
 async def get_objectives():
     if not state.orchestrator:

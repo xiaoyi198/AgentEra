@@ -36,6 +36,10 @@ from .objective_contract import (
     normalize_ending_document, normalize_objective_document,
     validate_objective_definitions,
 )
+from .derived_metrics import (
+    DerivedMetricCatalog, DerivedMetricContractError,
+    normalize_derived_metric_document,
+)
 from .ui_manifest import validate_ui_manifest_document
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
@@ -407,7 +411,7 @@ class DLCRegistry:
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
             "relationship_types", "actors", "agents", "initial_events", "ongoing_events", "random_events",
-            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "derived_metrics", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -424,6 +428,7 @@ class DLCRegistry:
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
             normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
+            normalized["derived_metrics"] = normalize_derived_metric_document(normalized.get("derived_metrics", []))
             normalized["objectives"] = normalize_objective_document(normalized.get("objectives", []))
             normalized["endings"] = normalize_ending_document(normalized.get("endings", []))
         except TypeError as exc:
@@ -676,6 +681,42 @@ class DLCRegistry:
         objective_ids = {str(item.get("objective_id", "")) for item in content["objectives"] if item.get("objective_id")}
         relationship_type_ids = RelationshipCatalog(content["relationship_types"]).ids
         resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
+        derived_metric_catalog: DerivedMetricCatalog | None = None
+        try:
+            derived_metric_catalog = DerivedMetricCatalog(content["derived_metrics"])
+        except DerivedMetricContractError as exc:
+            add(exc.code, exc.code, exc.path or "derived_metrics")
+        derived_metric_ids = {
+            str(item.get("metric_id", item.get("id", "")))
+            for item in content["derived_metrics"]
+            if isinstance(item, dict) and item.get("metric_id", item.get("id"))
+        }
+        if derived_metric_catalog is not None:
+            for definition in (
+                derived_metric_catalog.get(metric_id)
+                for metric_id in sorted(derived_metric_ids)
+            ):
+                if definition is None:
+                    continue
+                for reference_index, reference in enumerate(definition.references):
+                    reference_path = f"derived_metrics.{definition.metric_id}.formula.references[{reference_index}]"
+                    source = reference.get("source", "")
+                    entity_id = reference.get("entity_id", "")
+                    name = reference.get("name", "")
+                    if source in {"entity_count", "anchored_inventory", "metric", "parameter", "ongoing_event"}:
+                        if entity_id and entity_id not in entity_ids:
+                            add("derived_metric.missing_entity", f"Unknown derived-metric entity: {entity_id}", reference_path + ".entity_id")
+                    if source == "actor_attribute" and entity_id and entity_id not in actor_ids:
+                        add("derived_metric.missing_actor", f"Unknown derived-metric actor: {entity_id}", reference_path + ".entity_id")
+                    if source in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(name)
+                        expected_kind = "asset" if source == "anchored_inventory" else source
+                        if resource is None:
+                            add("derived_metric.missing_resource", f"Unknown derived-metric resource: {name}", reference_path + ".name")
+                        elif resource.get("kind") != expected_kind:
+                            add("derived_metric.invalid_resource_kind", f"Derived metric requires resource kind {expected_kind}", reference_path + ".source")
+                    if source == "relation" and name and name not in relationship_type_ids:
+                        add("derived_metric.missing_relationship_type", f"Unknown derived-metric relationship type: {name}", reference_path + ".name")
         for gameplay_issue in validate_gameplay_document(
             content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
         ):
@@ -714,7 +755,8 @@ class DLCRegistry:
         for objective_issue in validate_objective_definitions(
             content["objectives"], content["endings"], entity_ids=entity_ids,
             resources=action_resources, action_ids=action_ids,
-            issue_type_ids=issue_type_ids, gameplay=gameplay_contract,
+            issue_type_ids=issue_type_ids, derived_metric_ids=derived_metric_ids,
+            gameplay=gameplay_contract,
         ):
             add(objective_issue.code, objective_issue.message, objective_issue.path, objective_issue.severity)
         for ui_issue in validate_ui_manifest_document(content["ui_manifest"]):
@@ -910,6 +952,10 @@ class DLCRegistry:
                     objective_id = condition.entity_id or condition.name
                     if objective_id not in objective_ids:
                         add("causal_event.missing_objective", f"Unknown objective: {objective_id}", f"{condition_path}.entity_id")
+                if condition.kind == "derived_metric":
+                    metric_id = condition.name or condition.entity_id
+                    if metric_id not in derived_metric_ids:
+                        add("causal_event.missing_derived_metric", f"Unknown derived metric: {metric_id}", f"{condition_path}.name")
                 if condition.kind == "aggregate_metric":
                     if condition.entity_id and condition.entity_id not in entity_ids and condition.field != "actor_attribute":
                         add("causal_event.missing_entity", f"Unknown aggregate entity: {condition.entity_id}", f"{condition_path}.entity_id")
@@ -1282,6 +1328,7 @@ class DLCRegistry:
                 ("actor", own_actor_ids, {str(item.get("actor_id", item.get("id", ""))) for item in other_actors}),
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
+                ("derived_metric", derived_metric_ids, {str(item.get("metric_id", "")) for item in other_content["derived_metrics"]}),
                 ("capability", own_capability_ids, other_capability_ids),
                 (
                     "relationship_type",

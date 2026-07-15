@@ -43,6 +43,7 @@ const base = {
   actions: [],
   capabilities: [],
   issue_types: [],
+  derived_metrics: [],
   objectives: [],
   endings: [],
   personas: {},
@@ -615,4 +616,40 @@ test('UI manifest participates in import export diff and history', () => {
   const committed = commitContentHistory(initial, changed)
   assert.equal(committed.present.ui_manifest.title, 'Frontier Operations')
   assert.deepEqual(undoContentHistory(committed).present.ui_manifest, {})
+})
+
+test('derived metrics normalize export diff and history by metric_id', () => {
+  const source = { ...base }
+  delete source.derived_metrics
+  assert.deepEqual(normalizeImportedContent(source).derived_metrics, [])
+  assert.throws(() => normalizeImportedContent({ ...base, derived_metrics: {} }), /derived_metrics must be an array/)
+
+  const metric = {
+    metric_id: 'frontier_readiness',
+    display_name: 'Frontier readiness',
+    audiences: ['player', 'ui', 'agent', 'rule', 'objective'],
+    missing_policy: 'fail',
+    formula: {
+      op: 'weighted_sum',
+      terms: [
+        { weight: 0.7, value: { source: 'metric', entity_id: 'city', name: 'security' } },
+        { weight: 0.3, value: { source: 'anchored_inventory', entity_id: 'city', name: 'silver' } },
+      ],
+    },
+  }
+  const exported = createContentExport({ id: 'frontier' }, { ...base, derived_metrics: [metric] })
+  assert.deepEqual(normalizeImportedContent(exported).derived_metrics, [metric])
+
+  const changedMetric = { ...metric, formula: { op: 'round', precision: 1, value: metric.formula } }
+  const changed = { ...base, derived_metrics: [changedMetric, { ...metric, metric_id: 'supply' }] }
+  const diff = summarizeContentDiff({ ...base, derived_metrics: [metric] }, changed)
+  assert.deepEqual(diff.entries.filter(item => item.section === 'derived_metrics'), [
+    { section: 'derived_metrics', key: 'frontier_readiness', type: 'changed' },
+    { section: 'derived_metrics', key: 'supply', type: 'added' },
+  ])
+
+  const history = commitContentHistory(createContentHistory({ ...base, derived_metrics: [metric] }), changed)
+  assert.equal(history.present.derived_metrics[0].formula.op, 'round')
+  assert.deepEqual(undoContentHistory(history).present.derived_metrics, [metric])
+  assert.equal(redoContentHistory(undoContentHistory(history)).present.derived_metrics[0].formula.op, 'round')
 })

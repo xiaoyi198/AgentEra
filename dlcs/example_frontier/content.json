@@ -523,11 +523,78 @@
       "enabled": true
     }
   ],
+  "derived_metrics": [
+    {
+      "metric_id": "frontier_readiness",
+      "display_name": "边境综合战备度",
+      "description": "将哨站警戒度、守备 Actor 警觉属性与统一锚定库存价值组合为 0~100 的确定性战备指标。",
+      "unit": "%",
+      "precision": 1,
+      "minimum": 0,
+      "maximum": 100,
+      "audiences": [
+        "player",
+        "ui",
+        "agent",
+        "rule",
+        "objective"
+      ],
+      "missing_policy": "fail",
+      "formula": {
+        "op": "round",
+        "precision": 1,
+        "value": {
+          "op": "clamp",
+          "min": 0,
+          "max": 100,
+          "value": {
+            "op": "weighted_sum",
+            "terms": [
+              {
+                "weight": 0.55,
+                "value": {
+                  "source": "metric",
+                  "entity_id": "边境哨站",
+                  "name": "警戒度"
+                }
+              },
+              {
+                "weight": 0.25,
+                "value": {
+                  "source": "actor_attribute",
+                  "entity_id": "frontier_guard",
+                  "name": "vigilance"
+                }
+              },
+              {
+                "weight": 0.2,
+                "value": {
+                  "op": "clamp",
+                  "min": 0,
+                  "max": 100,
+                  "value": {
+                    "source": "anchored_inventory",
+                    "entity_id": "边境哨站",
+                    "name": "边境银券"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "enabled": true,
+      "metadata": {
+        "example": "P1.6",
+        "formula_role": "readiness_projection"
+      }
+    }
+  ],
   "objectives": [
     {
       "objective_id": "secure_frontier",
       "display_name": "稳固边境防线",
-      "description": "保留足够的统一锚定资产，持续组织巡逻，并在期限前将哨站警戒度提升到安全线。",
+      "description": "保留足够的统一锚定资产，持续组织巡逻，并在期限前将边境综合战备度提升到安全线。",
       "category": "primary",
       "required": true,
       "milestone_mode": "ordered",
@@ -561,10 +628,9 @@
         }
       ],
       "completion": {
-        "kind": "metric",
-        "label": "警戒度达到安全线",
-        "entity_id": "边境哨站",
-        "name": "警戒度",
+        "kind": "derived_metric",
+        "label": "综合战备度达到安全线",
+        "name": "frontier_readiness",
         "operator": "gte",
         "value": 85
       },
@@ -574,7 +640,7 @@
     {
       "objective_id": "frontier_deadline_failed",
       "display_name": "边境防线逾期失守",
-      "description": "第 15 天到来时警戒度仍低于安全线，将触发失败结局。",
+      "description": "第 15 天到来时综合战备度仍低于安全线，将触发失败结局。",
       "category": "failure",
       "required": false,
       "milestone_mode": "independent",
@@ -590,10 +656,9 @@
             "value": 15
           },
           {
-            "kind": "metric",
-            "label": "警戒度低于安全线",
-            "entity_id": "边境哨站",
-            "name": "警戒度",
+            "kind": "derived_metric",
+            "label": "综合战备度低于安全线",
+            "name": "frontier_readiness",
             "operator": "lt",
             "value": 85
           }
@@ -753,6 +818,13 @@
           "kind": "objectives",
           "region": "top",
           "order": 0,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_readiness",
+          "kind": "derived_metrics",
+          "region": "top",
+          "order": 5,
           "visible": true
         },
         {
@@ -1218,8 +1290,14 @@
     {
       "group_id": "frontier_response_readiness",
       "name": "边境应急响应就绪条件",
-      "description": "演示实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
+      "description": "演示派生指标、实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
       "conditions": [
+        {
+          "kind": "derived_metric",
+          "name": "frontier_readiness",
+          "operator": "gte",
+          "value": 70
+        },
         {
           "kind": "entity_tag",
           "entity_id": "边境哨站",

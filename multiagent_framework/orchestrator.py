@@ -27,6 +27,7 @@ from .gameplay_effect_runtime import GameplayEffectRuntime
 from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
 from .objective_contract import ObjectiveManager
+from .derived_metrics import DerivedMetricCatalog, DerivedMetricEvaluationContext
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -104,6 +105,10 @@ class Orchestrator:
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
         self.objective_manager = ObjectiveManager()
+        self.derived_metric_catalog = DerivedMetricCatalog()
+        self.objective_manager.set_derived_metric_provider(
+            self.derived_metric_catalog, actor_manager=self.actor_manager,
+        )
         # Objective transitions can be produced by API/action calls between ticks.
         # Buffer them so the next TickResult/WebSocket frame cannot lose them.
         self._pending_objective_transitions: deque[dict[str, Any]] = deque(maxlen=2000)
@@ -414,6 +419,42 @@ class Orchestrator:
     def issues_public_state(self) -> dict[str, Any]:
         return self.issue_manager.public_state(sim_time=self._sim_time)
 
+    def configure_derived_metric_catalog(
+        self, definitions: list[dict[str, Any]], *, generation: int = 0,
+    ) -> None:
+        """Publish one immutable derived-metric catalog for rules, objectives and UI."""
+
+        candidate = DerivedMetricCatalog(definitions, generation=generation)
+        self.derived_metric_catalog = candidate
+        self.objective_manager.set_derived_metric_provider(
+            candidate, actor_manager=self.actor_manager,
+        )
+        for agent in self.agents.values():
+            setter = getattr(agent, "set_derived_metric_provider", None)
+            if callable(setter):
+                setter(candidate, actor_manager=self.actor_manager)
+
+    def derived_metrics_public_state(self) -> dict[str, Any]:
+        return self.derived_metric_catalog.public_state(
+            DerivedMetricEvaluationContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                sim_time=self._sim_time,
+            )
+        )
+
+    def derived_metric_public_state(self, metric_id: str) -> dict[str, Any]:
+        """Evaluate one player-visible metric without exposing its formula or metadata."""
+        return self.derived_metric_catalog.evaluate(
+            metric_id,
+            DerivedMetricEvaluationContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                sim_time=self._sim_time,
+            ),
+            audience="player",
+        )
+
     def configure_objective_catalog(
         self, objectives: list[dict[str, Any]], endings: list[dict[str, Any]], *,
         generation: int = 0, gameplay: GameplayContract | None = None,
@@ -714,6 +755,8 @@ class Orchestrator:
             sim_time_provider=lambda: self._sim_time,
             seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
             knowledge_provider=self.gameplay_effect_runtime,
+            actor_manager=self.actor_manager,
+            derived_metric_provider=self.derived_metric_catalog,
         )
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
@@ -748,6 +791,8 @@ class Orchestrator:
                 sim_time_provider=lambda: self._sim_time,
                 seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
                 knowledge_provider=self.gameplay_effect_runtime,
+            actor_manager=self.actor_manager,
+            derived_metric_provider=self.derived_metric_catalog,
             )
             prepared[agent_id] = agent
 
@@ -849,6 +894,7 @@ class Orchestrator:
                 world_state=self.world_state,
                 actor_manager=self.actor_manager,
                 objective_manager=self.objective_manager,
+                derived_metric_provider=self.derived_metric_catalog,
                 knowledge_provider=self.player_knowledge_provider,
                 issue_manager=self.issue_manager,
                 action_catalog=self.action_catalog,

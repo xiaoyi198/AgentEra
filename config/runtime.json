@@ -1,4 +1,4 @@
-﻿{
+{
   "simulation": {
     "seconds_per_day": 120.0,
     "tick_interval": 0.25
@@ -14,7 +14,11 @@
     "no_progress_rounds": 2,
     "structured_memory_max_records": 500,
     "structured_memory_retrieval_limit": 8,
-    "structured_memory_char_budget": 2400
+    "structured_memory_char_budget": 2400,
+    "knowledge_context_max_records": 24,
+    "knowledge_context_char_budget": 6000,
+    "derived_metric_context_max_records": 16,
+    "derived_metric_context_char_budget": 4000
   },
   "action_agent": {
     "max_rounds": 10,

@@ -6,6 +6,7 @@ import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
 import UIManifestEditor from './UIManifestEditor.jsx'
 import ActorEditor from './ActorEditor.jsx'
 import RelationshipTypeEditor from './RelationshipTypeEditor.jsx'
+import DerivedMetricEditor from './DerivedMetricEditor.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -432,6 +433,7 @@ export default function DLCStudio() {
     actions: content.actions?.length || 0,
     capabilities: content.capabilities?.length || 0,
     issue_types: content.issue_types?.length || 0,
+    derived_metrics: content.derived_metrics?.length || 0,
     objectives: content.objectives?.length || 0,
     endings: content.endings?.length || 0,
     personas: Object.keys(content.personas || {}).length,
@@ -620,6 +622,7 @@ export default function DLCStudio() {
     { key: 'actions', label: `\u884c\u52a8 ${counts.actions}` },
     { key: 'capabilities', label: `\u80fd\u529b ${counts.capabilities}` },
     { key: 'issue_types', label: `Issue \u7c7b\u578b ${counts.issue_types}` },
+    { key: 'derived_metrics', label: `\u6d3e\u751f\u6307\u6807 ${counts.derived_metrics}` },
     { key: 'objectives', label: `\u76ee\u6807 ${counts.objectives}` },
     { key: 'endings', label: `\u7ed3\u5c40 ${counts.endings}` },
     { key: 'personas', label: `Persona ${counts.personas}` },
@@ -660,6 +663,7 @@ export default function DLCStudio() {
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
                 : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'derived_metrics' ? <DerivedMetricEditor key={`derived_metrics:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} actors={content.actors || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'objectives' ? <ObjectiveEditor key={`objectives:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />

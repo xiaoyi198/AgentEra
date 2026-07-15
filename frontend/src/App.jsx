@@ -5,8 +5,10 @@ import WorldStateView from './WorldStateView'
 import RelationsView from './RelationsView'
 import SettingsCenter from './SettingsCenter'
 import ObjectivePanel from './ObjectivePanel'
+import DerivedMetricPanel from './DerivedMetricPanel'
 import CapabilityPanel from './CapabilityPanel'
 import { normalizeCapabilityResponse } from './CapabilityTools.js'
+import { normalizeDerivedMetricResponse } from './DerivedMetricTools.js'
 import { normalizeUIManifestResponse, visibleNavigation, visibleWidgets } from './UIManifestTools.js'
 import './App.css'
 
@@ -189,8 +191,10 @@ function App() {
     configured: false, sandbox: true, generation: 0, status: 'sandbox',
     objectives: [], endings: [], current_ending: null, recent_transitions: [],
   })
+  const [derivedMetricState, setDerivedMetricState] = useState(() => normalizeDerivedMetricResponse(null))
   const [uiManifest, setUIManifest] = useState(() => normalizeUIManifestResponse(null))
   const objectiveRefreshAt = useRef(0)
+  const derivedMetricRefreshAt = useRef(0)
 
   const refreshObjectives = useCallback(async () => {
     try {
@@ -218,6 +222,15 @@ function App() {
     } catch { /* capability registry remains empty while backend is unavailable */ }
   }, [])
 
+  const refreshDerivedMetrics = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/derived-metrics`)
+      if (!response.ok) return
+      setDerivedMetricState(normalizeDerivedMetricResponse(await response.json()))
+      derivedMetricRefreshAt.current = Date.now()
+    } catch { /* keep the last generation-bound safe projection */ }
+  }, [])
+
 
   // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
   useEffect(() => {
@@ -228,6 +241,7 @@ function App() {
     setInTransit(data.in_transit || [])
     setTokenUsage(data.token_usage || {})
     if (data.objective_transitions?.length > 0 || Date.now() - objectiveRefreshAt.current > 5000) refreshObjectives()
+    if (Date.now() - derivedMetricRefreshAt.current > 5000) refreshDerivedMetrics()
     if (data.new_issues?.length > 0) {
       setIssues(prev => {
         const existingIds = new Set(prev.map(item => item.issue_id))
@@ -242,7 +256,7 @@ function App() {
         return fresh.length > 0 ? [...fresh, ...prev] : prev
       })
     }
-  }, [lastMessage, refreshObjectives])
+  }, [lastMessage, refreshDerivedMetrics, refreshObjectives])
 
   // Issue / Case / DecisionRequest 是题材无关的玩家事项权威状态。
   useEffect(() => {
@@ -269,6 +283,12 @@ function App() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetches an external generation-bound registry snapshot.
     refreshCapabilities()
   }, [objectiveState.generation, refreshCapabilities])
+
+  useEffect(() => {
+    const initial = window.setTimeout(refreshDerivedMetrics, 0)
+    const timer = window.setInterval(refreshDerivedMetrics, 5000)
+    return () => { window.clearTimeout(initial); window.clearInterval(timer) }
+  }, [objectiveState.generation, refreshDerivedMetrics])
 
   useEffect(() => {
     let active = true
@@ -335,6 +355,7 @@ function App() {
       refreshObjectives()
       refreshUIManifest()
       refreshCapabilities()
+      refreshDerivedMetrics()
       Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
         .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
         .catch(() => {})
@@ -407,11 +428,14 @@ function App() {
     if (widget.kind === 'objectives') {
       return <ObjectivePanel key={widget.widget_id} state={objectiveState} onRefresh={refreshObjectives} />
     }
+    if (widget.kind === 'derived_metrics') {
+      return <DerivedMetricPanel key={widget.widget_id} state={derivedMetricState} onRefresh={refreshDerivedMetrics} title={terms.metrics || '派生指标'} />
+    }
     if (widget.kind === 'issue_list') {
       return (
         <aside key={widget.widget_id} className="panel memorial-list">
           <h2>{terms.issue_plural} ({pendingIssueCount})</h2>
-          {visibleIssues.length === 0 && <div className="empty">\u5f53\u524d\u6ca1\u6709\u5f85\u5904\u7406\u7684{terms.issue}...</div>}
+          {visibleIssues.length === 0 && <div className="empty">当前没有待处理的{terms.issue}...</div>}
           {visibleIssues.map(item => (
             <div
               key={item.issue_id}
@@ -443,21 +467,21 @@ function App() {
               {detailFields.has('created_at') && <div className="field"><label>{terms.created_at}</label><span>{timeStrFull(selectedIssue.created_at || 0)}</span></div>}
               {detailFields.has('external_id') && <div className="field"><label>External ID</label><span>{selectedIssue.external_id || '-'}</span></div>}
               {detailFields.has('deadline') && selectedIssue.deadline_at != null && <div className="field"><label>{terms.deadline}</label><span>{timeStrFull(selectedIssue.deadline_at)}</span></div>}
-              {detailFields.has('evidence') && <div className="field"><label>{terms.evidence}</label><div>{(selectedIssue.evidence || []).length === 0 ? `\u6682\u65e0${terms.evidence}` : (selectedIssue.evidence || []).map(evidence => <p key={evidence.evidence_id}><strong>{evidence.kind}</strong>\uff1a{evidence.summary || evidence.content || evidence.description || evidence.evidence_id}</p>)}</div></div>}
+              {detailFields.has('evidence') && <div className="field"><label>{terms.evidence}</label><div>{(selectedIssue.evidence || []).length === 0 ? `\u6682\u65e0${terms.evidence}` : (selectedIssue.evidence || []).map(evidence => <p key={evidence.evidence_id}><strong>{evidence.kind}</strong>：{evidence.summary || evidence.content || evidence.description || evidence.evidence_id}</p>)}</div></div>}
               {detailFields.has('decisions') && pendingRequests.map(request => (
                 <section key={request.decision_request_id} className="decision-request">
                   <h3>{request.title}</h3>
                   <p>{request.prompt}</p>
-                  {request.deadline_at != null && <small>{terms.decision}{terms.deadline}\uff1a{timeStrFull(request.deadline_at)}</small>}
+                  {request.deadline_at != null && <small>{terms.decision}{terms.deadline}：{timeStrFull(request.deadline_at)}</small>}
                   <div className="actions">
                     <input placeholder={`${terms.decision}\u5907\u6ce8...`} value={noteText} onChange={event => setNoteText(event.target.value)} />
                     {(request.options || []).map(option => <button key={option.option_id} className="btn approve" onClick={() => handleDecision(request, option)} title={option.description || ''}>{option.display_name || option.option_id}</button>)}
                   </div>
                 </section>
               ))}
-              {detailFields.has('decisions') && pendingRequests.length === 0 && <div className="empty">\u8be5{terms.issue}\u5f53\u524d\u6ca1\u6709\u5f85\u5904\u7406{terms.decision}\u3002</div>}
+              {detailFields.has('decisions') && pendingRequests.length === 0 && <div className="empty">该{terms.issue}当前没有待处理{terms.decision}。</div>}
             </>
-          ) : <div className="empty">\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a{terms.issue}\u67e5\u770b\u8be6\u60c5</div>}
+          ) : <div className="empty">请先选择一个{terms.issue}查看详情</div>}
         </section>
       )
     }
@@ -477,10 +501,10 @@ function App() {
       return (
         <aside key={widget.widget_id} className="panel transit-panel">
           <h2>{terms.in_transit} ({inTransit.length})</h2>
-          {inTransit.length === 0 && <div className="empty">\u6682\u65e0{terms.in_transit}</div>}
+          {inTransit.length === 0 && <div className="empty">暂无{terms.in_transit}</div>}
           {inTransit.map(item => (
             <div key={item.timer_id} className="transit-item">
-              <div className="transit-route">{item.from || '?'} \u2192 {item.target}</div>
+              <div className="transit-route">{item.from || '?'} → {item.target}</div>
               <div className="transit-eta">{remainingStr(item.remaining_seconds || 0)}</div>
               {item.message_preview && <div className="transit-preview">{item.message_preview}</div>}
             </div>

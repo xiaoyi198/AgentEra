@@ -2940,3 +2940,177 @@ npm run build
 ```
 
 外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；不得把值、响应或连接错误原文写入源码、文档、日志或 Git。
+
+## UI 中文编码约束（2026-07-15）
+
+- 前端源码统一使用 UTF-8。新增 JSX 中文文案应优先直接写可读中文，例如 `<div>当前状态</div>`，不要把 JSXText 写成 `<div>\u5f53\u524d...</div>`。
+- JSX 属性中的中文也应优先直接使用 UTF-8；如确需 Unicode 转义，必须放在 JavaScript 表达式中，例如 `placeholder={'\u8bf7\u8f93\u5165'}`，不要写成会按字面显示反斜杠的属性文本。
+- JavaScript 字符串可以使用 `\uXXXX`，但可读的产品文案仍优先使用 UTF-8 中文；JSXText 不会自动把字面量转义序列转换成汉字。
+- 修改 UI 文案后必须运行 `npm test`、`npm run lint` 和 `npm run build`，并扫描新增行中的替换字符、常见乱码片段及误显示的 `\uXXXX`。
+
+## Phase checkpoint: DLC derived metrics and aggregate formulas (v0.31.0, 2026-07-15)
+
+### 在 DLC 中声明派生指标
+
+在任意 DLC 的 `content.json` 顶层添加 `derived_metrics` 数组。`metric_id` 是目标、规则、UI、Agent Prompt 和存档/Generation 引用使用的稳定 ID；发布后不要仅因显示文案变化而修改它。下面是合法的最小组合示例：
+
+```json
+{
+  "derived_metrics": [
+    {
+      "metric_id": "frontier_readiness",
+      "display_name": "边境综合战备度",
+      "description": "组合警戒度、Actor 属性和统一锚定库存价值。",
+      "unit": "%",
+      "precision": 1,
+      "minimum": 0,
+      "maximum": 100,
+      "enabled": true,
+      "audiences": ["player", "ui", "agent", "rule", "objective"],
+      "missing_policy": "fail",
+      "formula": {
+        "op": "round",
+        "precision": 1,
+        "value": {
+          "op": "clamp",
+          "min": 0,
+          "max": 100,
+          "value": {
+            "op": "weighted_sum",
+            "terms": [
+              {
+                "weight": 0.55,
+                "value": {"source": "metric", "entity_id": "边境哨站", "name": "警戒度"}
+              },
+              {
+                "weight": 0.25,
+                "value": {"source": "actor_attribute", "entity_id": "frontier_guard", "name": "vigilance"}
+              },
+              {
+                "weight": 0.20,
+                "value": {
+                  "op": "clamp", "min": 0, "max": 100,
+                  "value": {"source": "anchored_inventory", "entity_id": "边境哨站", "name": "边境银券"}
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {"category": "readiness"}
+    }
+  ]
+}
+```
+
+`formula` 可使用显式 `op`，也接受三种简写：`{"constant": 1}`、`{"derived_metric": "metric_id"}`、`{"source": "sim_day"}`。Studio 保存时会规范化为统一结构。
+
+### 17 类公式节点
+
+| `op` | 字段 | 语义 |
+|---|---|---|
+| `constant` | `value` | 有限数值常量 |
+| `source` | `source` 与来源字段 | 直接读取单个世界值 |
+| `derived_metric` | `metric_id` | 引用同一已解析 Catalog 中的另一指标 |
+| `aggregate` | `source`, `aggregate`, 可选引用/过滤字段 | 聚合一组世界值 |
+| `add` / `sum` | `values[]` | 子项求和 |
+| `subtract` | `left`, `right` | 左值减右值 |
+| `multiply` | `values[]` | 子项连乘 |
+| `divide` | `left`, `right` | 左值除右值；除零返回稳定错误 |
+| `min` / `max` / `avg` | `values[]` | 子项最小值、最大值或平均值 |
+| `weighted_sum` | `terms[].weight`, `terms[].value` | 各项乘权重后求和；框架不会自动归一化权重 |
+| `clamp` | `min`, `max`, `value` | 把结果限制在闭区间内 |
+| `round` | `precision`, `value` | 四舍五入到 0-8 位小数 |
+| `coalesce` | `values[]` | 返回首个不是“缺失”的子项；不吞掉除零等公式错误 |
+
+每个 Catalog 最多 128 项；每棵公式最多 12 层、256 个节点，每个多子项节点最多 64 项。数值必须有限。跨指标依赖必须存在且不得形成自引用或循环。
+
+### 数据来源与聚合
+
+直接 `source` 支持：
+
+- `anchored_inventory`：必须提供 `entity_id` 与资源 `name`，读取该实体对应库存的 `base_value` 总和，而不是原始数量；
+- `metric` / `parameter`：必须提供 `entity_id` 与值 `name`，读取 `entity_values` 的数值；
+- `actor_attribute`：必须提供 Actor `entity_id` 与属性 `name`；
+- `sim_day`：读取当前模拟天数，不需要引用字段。
+
+`aggregate` 支持 `entity_count`、`anchored_inventory`、`metric`、`parameter`、`actor_attribute`、`relation`、`ongoing_event`，并选择 `sum`、`avg`、`min`、`max` 或 `count`：
+
+- 实体类来源可用 `filters.entity_type`、`filters.status`、`filters.tag`；可选 `entity_id` 进一步限定单一实体。
+- Actor 属性可用 `filters.actor_type`；可选 `entity_id` 限定 Actor。
+- 关系聚合中 `entity_id` 对应 `parent_id`，`target_entity_id` 对应 `child_id`，`name` 对应关系类型；`filters.active` 限制有效边，`filters.value_field` 指定数值路径，默认 `strength`。
+- 持续事件用可选 `entity_id` 限定所属实体，用 `name` 限定事件类型。
+- `count` 对空集合返回 `0`；其他聚合对空集合视为缺失。高级 `filters` 最多 16 项且值只能是安全 JSON 标量。
+
+### 受众、缺失策略与消费端
+
+- `player`：允许安全玩家 API 返回；
+- `ui`：允许框架 UI 消费；
+- `agent`：允许进入 Agent 每轮只读指标摘要；
+- `rule`：允许因果条件 `kind: "derived_metric"` 求值；
+- `objective`：允许 Objective 条件 `kind: "derived_metric"` 求值。
+
+受众是运行时权限边界。不要只给 `player` 后再期待 Rule 或 Objective 能读取。`missing_policy: "fail"` 会保留 missing 状态；`"zero"` 只在来源缺失时回退为零，不会掩盖除零、非有限结果或非法公式。定义级 `minimum`、`maximum` 与 `precision` 在公式完成后统一应用。
+
+Objective 示例：
+
+```json
+{
+  "kind": "derived_metric",
+  "name": "frontier_readiness",
+  "operator": "gte",
+  "value": 85
+}
+```
+
+因果条件使用同样的 `kind/name/operator/value` 语义，但指标必须含 `rule` 受众。Agent 只收到含显示名、稳定 ID、值和单位的确定性摘要，不会收到公式或 Metadata。
+
+### UI Manifest 与安全 API
+
+Dashboard 可加入框架拥有的派生指标组件：
+
+```json
+{
+  "widget_id": "readiness_metrics",
+  "kind": "derived_metrics",
+  "region": "top",
+  "order": 5,
+  "visible": true
+}
+```
+
+`GET /api/derived-metrics` 返回当前 Generation 中授权给 `player` 的指标集合；`GET /api/derived-metrics/{metric_id}` 只返回单项安全结果。不要建立绕过 Catalog 的调试接口来公开公式、Metadata、隐藏受众指标或底层异常。
+
+### 设置中心的 Prompt 预算
+
+“多轮记忆”页包含四项热更新配置：
+
+- `agent_defaults.knowledge_context_max_records`：每轮最多注入的当前 Agent 可见知识条数，范围 1-256；
+- `agent_defaults.knowledge_context_char_budget`：知识/信念摘要字符预算，范围 128-200000；
+- `agent_defaults.derived_metric_context_max_records`：每轮最多注入的 `agent` 受众指标条数，范围 0-64，设为 0 关闭；
+- `agent_defaults.derived_metric_context_char_budget`：派生指标摘要字符预算，范围 0-16000，设为 0 关闭。
+
+条数和字符预算同时生效，超出后按 Catalog 稳定顺序停止追加。增大预算会增加 Token 成本；不要通过预算扩大来绕过知识/指标受众隔离。
+
+### DLC Studio 工作流
+
+1. 在“派生指标”页新增稳定 ID，填写显示字段、单位、范围、精度、受众和缺失策略。
+2. 使用可视化公式树选择 17 类节点；通过当前草稿 Catalog 选择实体、Actor、资源、Entity Value、关系类型、事件和已有派生指标。
+3. 保存前处理自引用、缺失依赖、全图循环、重复 ID、非法来源字段、非有限值、Clamp 范围、Round 精度以及深度/节点上限错误。
+4. 使用 Registry Validate 与未保存草稿 Dry Run 验证真实世界引用和运行值，再发布 Generation。
+5. 热重载、归档恢复或回滚后，检查 API、Objective、Rule、Agent 和 UI 都报告同一 Generation。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_derived_metrics.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_causal_analysis.py tests/unit/test_objective_contract.py tests/unit/test_agent_runtime.py tests/unit/test_derived_metric_api.py
+python -m pytest -q
+python -m compileall multiagent_framework routers main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.').resolve()).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；未注入 URL/Key 时必须 skip。不得把实际值、响应正文、Provider 原始异常或连接地址写入源码、配置、文档、命令记录、日志或 Git。

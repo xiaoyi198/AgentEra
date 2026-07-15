@@ -17,7 +17,7 @@ NAV_SURFACES = frozenset({"main", "shell"})
 DASHBOARD_LAYOUTS = frozenset({"three_column", "two_column", "single_column"})
 DASHBOARD_REGIONS = frozenset({"top", "left", "main", "right", "bottom"})
 DASHBOARD_WIDGETS = frozenset({
-    "objectives", "issue_list", "issue_detail", "player_message", "in_transit",
+    "objectives", "derived_metrics", "issue_list", "issue_detail", "player_message", "in_transit",
 })
 ISSUE_LIST_FIELDS = frozenset({
     "title", "source", "urgency", "created_at", "status", "issue_type", "case_id",
@@ -96,6 +96,7 @@ _DEFAULT_SHELL_NAV = [
 ]
 _DEFAULT_WIDGETS = [
     {"widget_id": "objectives", "kind": "objectives", "region": "top", "order": 0, "visible": True},
+    {"widget_id": "derived_metrics", "kind": "derived_metrics", "region": "top", "order": 5, "visible": True},
     {"widget_id": "issues", "kind": "issue_list", "region": "left", "order": 10, "visible": True},
     {"widget_id": "issue_detail", "kind": "issue_detail", "region": "main", "order": 20, "visible": True},
     {"widget_id": "message", "kind": "player_message", "region": "main", "order": 30, "visible": True},

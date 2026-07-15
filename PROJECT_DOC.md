@@ -2199,3 +2199,40 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 
 - The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.
 - P1.5 is complete, while the persistent gameplay-framework goal remains **active**. The next phase is P1.6 DLC-derived metrics and aggregate formulas; P2 remains open.
+
+## Frontend display-text encoding fix (2026-07-15)
+
+- React only interprets `\uXXXX` escapes inside JavaScript string literals. The same characters inside a raw JSX text node or a quoted JSX attribute are emitted to the DOM literally, which caused empty-state and DLC capability copy to display as `\u5f53\u524d...`.
+- Display copy in `frontend/src/App.jsx`, `frontend/src/CapabilityPanel.jsx`, and `frontend/src/DLCContentEditors.jsx` now uses real UTF-8 characters for JSX text and quoted attributes. JavaScript string literals may continue to use Unicode escapes because the JavaScript parser decodes them before rendering.
+- The fix stays at the source boundary rather than adding a global runtime decoder, avoiding accidental reinterpretation of user-authored text, JSON, backslashes, or already-decoded content.
+- Browser verification scanned `/`, `/editor.html`, `/tianji.html`, and `/dlc.html` with no visible `\uXXXX` sequences. The frontend test suite (58 tests), ESLint, and the Vite production build passed.
+
+## Release architecture note: Generation-bound DLC derived metrics (v0.31.0)
+
+### Deterministic metric contract and evaluation
+
+- `multiagent_framework/derived_metrics.py` owns the single `DerivedMetricCatalog` contract. A definition contains stable `metric_id`, presentation fields, bounds/precision, `enabled`, `audiences`, `missing_policy`, safe Metadata and one normalized formula tree.
+- Formula evaluation is deterministic and LLM-free. The 17 operations cover constants, direct sources, derived dependencies, world aggregation, arithmetic, weighted sums, range limiting, rounding and fallback. Direct sources read anchored inventory base value, entity metric/parameter, Actor attribute or simulation day; aggregate sources additionally cover entity count, relation edges and ongoing events with `sum/avg/min/max/count`.
+- Catalog construction computes a topological order, rejects missing dependencies and cycles, and enforces 128 definitions, 12 levels, 256 nodes and 64 children per node. Runtime evaluation rejects non-finite numbers and division by zero, applies definition bounds/precision, implements `fail`/`zero` missing policies and reuses a batch-local dependency cache.
+
+### Generation ownership and shared consumers
+
+- `DLCRuntimeGeneration` stores the metric catalog together with the DLC package snapshot. Publish, reload, encrypted archive recovery, rollback and restart restore it as part of the same Generation; no consumer should retain a catalog from an older Generation.
+- Objective conditions with `kind: derived_metric`, causal conditions with the same fact kind, Agent prompt context, the main UI and API all delegate to the active catalog. Rule and Objective evaluation require the `rule` and `objective` audiences respectively; Agent prompt assembly requests only `agent` metrics and labels them as deterministic read-only context.
+- Public endpoints `GET /api/derived-metrics` and `GET /api/derived-metrics/{metric_id}` expose only `player` metrics from the current Generation. Public payloads omit authored formula trees, Metadata and internal exception details. The UI Manifest renderer accepts a controlled `derived_metrics` Dashboard widget and never executes DLC code.
+
+### Audience isolation and prompt budgets
+
+- `player`, `ui`, `agent`, `rule` and `objective` are explicit allow-list audiences, not display hints. A metric hidden from an audience returns no usable value to that consumer, preventing Objective/Rule/Prompt code paths from bypassing authored visibility.
+- Runtime settings add `knowledge_context_max_records`, `knowledge_context_char_budget`, `derived_metric_context_max_records` and `derived_metric_context_char_budget`. The derived-metric limits are bounded to 0-64 records and 0-16000 characters; zero disables metric prompt injection. Only evaluated names/IDs/values/units enter the prompt, never formulas or Metadata.
+
+### DLC Studio formula-tree authoring
+
+- `frontend/src/DerivedMetricEditor.jsx` and `DerivedMetricEditorTools.js` provide a Chinese visual tree editor for all operations, sources, aggregates, audience flags, missing policy, common filters and safe Metadata. Catalog-backed suggestions cover entities, Actors, resources, entity values, relationship types, events and existing derived metrics.
+- Client validation mirrors the backend's finite-number, source-field, range, precision, depth and node constraints, and performs self-reference, missing dependency, duplicate ID and full-graph cycle analysis before save. `derived_metrics` participates in Studio normalization, import/export, Keyed Diff, History and Undo/Redo.
+- `example_frontier` v1.10.0 demonstrates a bounded readiness projection that combines entity metric, Actor attribute and anchored inventory base value, then reuses the result in Objective, failure Objective, causal rules and a Dashboard widget.
+
+### Release state
+
+- The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
+- P1.6 is complete while the persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete; the next phase is P2.1 DLC calendars, seasons, turn/meeting/task cycles and automatic pause conditions. P2 remains open.

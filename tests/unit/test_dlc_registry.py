@@ -34,6 +34,22 @@ def valid_content(entity_id: str = "place", agent_id: str = "agent") -> dict:
     }
 
 
+def derived_metric(metric_id: str = "readiness", **overrides) -> dict:
+    value = {
+        "metric_id": metric_id,
+        "display_name": metric_id,
+        "audiences": ["player", "ui", "agent", "rule", "objective"],
+        "formula": {
+            "op": "source",
+            "source": "anchored_inventory",
+            "entity_id": "place",
+            "name": "coin",
+        },
+    }
+    value.update(overrides)
+    return value
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> DLCRegistry:
     return DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
@@ -144,17 +160,20 @@ def test_cross_published_package_conflicts_are_reported(registry: DLCRegistry):
     registry.create(manifest("first"))
     first = valid_content()
     first["capabilities"] = [_noop_capability_definition("first_wait", aliases=["shared_wait"])]
+    first["derived_metrics"] = [derived_metric("shared_readiness")]
     registry.save_content("first", first)
     registry.publish("first")
     registry.create(manifest("second"))
     second = valid_content()
     second["capabilities"] = [_noop_capability_definition("second_wait", aliases=["shared_wait"])]
+    second["derived_metrics"] = [derived_metric("shared_readiness")]
     registry.save_content("second", second)
     codes = {issue.code for issue in registry.validate("second")}
     assert "cross_package.entity_conflict" in codes
     assert "cross_package.agent_conflict" in codes
     assert "cross_package.resource_conflict" in codes
     assert "cross_package.capability_conflict" in codes
+    assert "cross_package.derived_metric_conflict" in codes
 
 
 def test_active_packages_are_dependency_ordered(registry: DLCRegistry):
@@ -954,3 +973,69 @@ def test_knowledge_registry_reports_unknown_actor_holders_without_treating_belie
     assert "causal_event.missing_knowledge_holder" in codes
     assert "causal_event.effect_missing_knowledge_holder" in codes
     assert "causal_event.missing_actor_component" not in codes
+
+
+
+def test_derived_metrics_validate_objective_and_causal_references(registry: DLCRegistry):
+    registry.create(manifest("derived-valid"))
+    content = valid_content()
+    content["derived_metrics"] = [derived_metric()]
+    content["objectives"] = [{
+        "objective_id": "ready",
+        "display_name": "Ready",
+        "completion": {"kind": "derived_metric", "name": "readiness", "operator": "gte", "value": 1},
+    }]
+    content["causal_event_rules"] = [causal_rule(conditions=[
+        {"kind": "derived_metric", "name": "readiness", "operator": "gte", "value": 1},
+    ])]
+
+    registry.save_content("derived-valid", content)
+
+    assert registry.validate("derived-valid") == []
+
+
+def test_derived_metric_registry_reports_contract_and_cross_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("derived-broken"))
+    content = valid_content()
+    content["derived_metrics"] = [
+        derived_metric("first", formula={"op": "derived_metric", "metric_id": "second"}),
+        derived_metric("second", formula={"op": "derived_metric", "metric_id": "first"}),
+    ]
+    content["objectives"] = [{
+        "objective_id": "ready",
+        "display_name": "Ready",
+        "completion": {"kind": "derived_metric", "name": "missing_metric", "operator": "gte", "value": 1},
+    }]
+    content["causal_event_rules"] = [causal_rule(conditions=[
+        {"kind": "derived_metric", "name": "missing_metric", "operator": "gte", "value": 1},
+    ])]
+
+    registry.save_content("derived-broken", content)
+    codes = {issue.code for issue in registry.validate("derived-broken")}
+
+    assert "derived_metric.cycle" in codes
+    assert "objective.condition.unknown_derived_metric" in codes
+    assert "causal_event.missing_derived_metric" in codes
+
+
+def test_derived_metric_registry_reports_missing_world_references(registry: DLCRegistry):
+    registry.create(manifest("derived-refs"))
+    content = valid_content()
+    content["derived_metrics"] = [
+        derived_metric("missing_entity", formula={
+            "op": "source", "source": "metric", "entity_id": "nowhere", "name": "morale",
+        }),
+        derived_metric("missing_resource", formula={
+            "op": "source", "source": "metric", "entity_id": "place", "name": "unknown",
+        }),
+        derived_metric("wrong_kind", formula={
+            "op": "source", "source": "parameter", "entity_id": "place", "name": "morale",
+        }),
+    ]
+
+    registry.save_content("derived-refs", content)
+    codes = {issue.code for issue in registry.validate("derived-refs")}
+
+    assert "derived_metric.missing_entity" in codes
+    assert "derived_metric.missing_resource" in codes
+    assert "derived_metric.invalid_resource_kind" in codes

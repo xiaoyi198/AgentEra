@@ -33,6 +33,7 @@ class FakeOrchestrator:
         self.capability_configurations = []
         self.actor_configurations = []
         self.issue_configurations = []
+        self.derived_metric_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
 
@@ -71,6 +72,10 @@ class FakeOrchestrator:
     def configure_issue_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("issues", [item["issue_type_id"] for item in definitions]))
         self.issue_configurations.append((definitions, generation, gameplay))
+
+    def configure_derived_metric_catalog(self, definitions, *, generation=0) -> None:
+        self.operations.append(("derived_metrics", [item["metric_id"] for item in definitions]))
+        self.derived_metric_configurations.append((definitions, generation))
 
     def configure_objective_catalog(
         self, objectives, endings, *, generation=0, gameplay=None
@@ -1230,3 +1235,50 @@ def test_relationship_contract_survives_materialization_reload_and_rollback(tmp_
     assert rollback["activation_kind"] == "rollback"
     assert rollback["generation"] == 3
     assert world.relationship_catalog.get("trust").display_name == "Trust v1"
+
+
+
+def test_derived_metric_catalog_survives_generation_reload_archive_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["derived_metrics"] = [{
+        "metric_id": "city_readiness",
+        "display_name": "City readiness v1",
+        "audiences": ["player", "ui", "agent", "rule", "objective"],
+        "formula": {
+            "op": "source", "source": "metric", "entity_id": "city", "name": "morale",
+        },
+    }]
+    registry.save_content("sample", content)
+    world = WorldState(str(tmp_path / "derived-metrics.db"))
+    court = CourtGraph(str(tmp_path / "derived-metrics.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active()
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert report[0].derived_metrics == 1
+    assert definitions[0]["display_name"] == "City readiness v1"
+    assert generation == 1
+    assert loader.preview_reload()["derived_metrics_changed"] is False
+    assert loader.public_runtime()["derived_metrics"]["metric_count"] == 1
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    assert restored.derived_metric_definitions[0]["metric_id"] == "city_readiness"
+    assert restored.derived_metric_packages == {"city_readiness": "sample"}
+
+    content = registry.load_content("sample")
+    content["derived_metrics"][0]["display_name"] = "City readiness v2"
+    registry.save_content("sample", content)
+    preview = loader.preview_reload()
+    assert preview["derived_metrics_changed"] is True
+    assert preview["world_changes"]["derived_metrics"] == 1
+    asyncio.run(loader.reload_active())
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert definitions[0]["display_name"] == "City readiness v2"
+    assert generation == 2
+
+    asyncio.run(loader.rollback_active(1))
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert definitions[0]["display_name"] == "City readiness v1"
+    assert generation == 3

@@ -470,3 +470,36 @@ def test_dry_run_projects_generic_effects_before_observing_next_rule():
 
     assert [node["event_type"] for node in report["nodes"]] == ["seed", "expanded", "ready"]
     assert report["nodes"][1]["world_effect_status"] == "applied"
+
+
+
+def test_dry_run_uses_unsaved_draft_derived_metric_definitions():
+    content = _content()
+    content["derived_metrics"] = [{
+        "metric_id": "supply_value",
+        "display_name": "Supply value",
+        "audiences": ["rule", "objective"],
+        "formula": {
+            "op": "source", "source": "anchored_inventory",
+            "entity_id": "city", "name": "grain",
+        },
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "draft_metric_rule",
+        "source_event_types": ["shortage"],
+        "child_event_type": "draft_metric_passed",
+        "delay_days": 0,
+        "probability": 1,
+        "conditions": [{
+            "kind": "derived_metric", "name": "supply_value",
+            "operator": "gte", "value": 80,
+        }],
+    }]
+
+    report = dry_run_causal_rules(
+        content, {"event_type": "shortage", "severity": 4}, horizon_days=1,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == [
+        "shortage", "draft_metric_passed",
+    ]

@@ -1,6 +1,6 @@
 export const MAIN_VIEWS = new Set(['dashboard', 'world', 'relations', 'debug'])
 export const SHELL_VIEWS = new Set(['gameplay', 'editor', 'dlc_studio', 'assistant'])
-export const DASHBOARD_WIDGETS = new Set(['objectives', 'issue_list', 'issue_detail', 'player_message', 'in_transit'])
+export const DASHBOARD_WIDGETS = new Set(['objectives', 'derived_metrics', 'issue_list', 'issue_detail', 'player_message', 'in_transit'])
 export const DASHBOARD_REGIONS = new Set(['top', 'left', 'main', 'right', 'bottom'])
 export const ISSUE_LIST_FIELDS = new Set(['title', 'source', 'urgency', 'created_at', 'status', 'issue_type', 'case_id'])
 export const ISSUE_DETAIL_FIELDS = new Set(['title', 'source', 'summary', 'status', 'case_id', 'deadline', 'evidence', 'decisions', 'urgency', 'created_at', 'issue_type', 'external_id'])
@@ -38,6 +38,7 @@ const DEFAULT_NAVIGATION = Object.freeze([
 
 const DEFAULT_WIDGETS = Object.freeze([
   { widget_id: 'objectives', kind: 'objectives', region: 'top', order: 0, visible: true },
+  { widget_id: 'derived_metrics', kind: 'derived_metrics', region: 'top', order: 5, visible: true },
   { widget_id: 'issues', kind: 'issue_list', region: 'left', order: 10, visible: true },
   { widget_id: 'issue_detail', kind: 'issue_detail', region: 'main', order: 20, visible: true },
   { widget_id: 'message', kind: 'player_message', region: 'main', order: 30, visible: true },

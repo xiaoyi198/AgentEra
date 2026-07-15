@@ -74,6 +74,7 @@ class DLCLoadReport:
     actions: int = 0
     capabilities: int = 0
     issue_types: int = 0
+    derived_metrics: int = 0
     objectives: int = 0
     endings: int = 0
     seeded_world: bool = False
@@ -102,6 +103,7 @@ class DLCReloadPlan:
     ui_manifest_changed: bool = False
     capabilities_changed: bool = False
     relationship_types_changed: bool = False
+    derived_metrics_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -143,6 +145,8 @@ class _DLCMaterializedSnapshot:
     action_definitions: list[dict[str, Any]]
     capability_definitions: list[dict[str, Any]]
     issue_definitions: list[dict[str, Any]]
+    derived_metric_definitions: list[dict[str, Any]]
+    derived_metric_packages: dict[str, str]
     objective_definitions: list[dict[str, Any]]
     ending_definitions: list[dict[str, Any]]
     primary_package_id: str
@@ -606,6 +610,7 @@ class DLCBundleLoader:
             actions=len(content["actions"]),
             capabilities=len(content["capabilities"]),
             issue_types=len(content["issue_types"]),
+            derived_metrics=len(content["derived_metrics"]),
             objectives=len(content["objectives"]),
             endings=len(content["endings"]),
             seeded_world=seed_world,
@@ -651,6 +656,9 @@ class DLCBundleLoader:
         capability_ids: set[str] = set()
         issue_definitions: list[dict[str, Any]] = []
         issue_type_ids: set[str] = set()
+        derived_metric_definitions: list[dict[str, Any]] = []
+        derived_metric_packages: dict[str, str] = {}
+        derived_metric_ids: set[str] = set()
         objective_definitions: list[dict[str, Any]] = []
         ending_definitions: list[dict[str, Any]] = []
         global_prompts: dict[str, str] = {}
@@ -840,6 +848,13 @@ class DLCBundleLoader:
                     raise DLCRegistryError(f"Duplicate active issue type id: {issue_type_id}")
                 issue_type_ids.add(issue_type_id)
                 issue_definitions.append(copy.deepcopy(issue_definition))
+            for metric_definition in content["derived_metrics"]:
+                metric_id = str(metric_definition.get("metric_id", ""))
+                if metric_id in derived_metric_ids:
+                    raise DLCRegistryError(f"Duplicate active derived metric id: {metric_id}")
+                derived_metric_ids.add(metric_id)
+                derived_metric_definitions.append(copy.deepcopy(metric_definition))
+                derived_metric_packages[metric_id] = package.manifest.id
             # The primary DLC owns the campaign loop. Dependency DLCs may
             # contribute entities/actions/issues without competing for final endings.
             if package.manifest.id == primary_package_id:
@@ -886,6 +901,8 @@ class DLCBundleLoader:
             action_definitions=action_definitions,
             capability_definitions=capability_definitions,
             issue_definitions=issue_definitions,
+            derived_metric_definitions=derived_metric_definitions,
+            derived_metric_packages=derived_metric_packages,
             objective_definitions=objective_definitions,
             ending_definitions=ending_definitions,
             primary_package_id=primary_package_id,
@@ -970,6 +987,10 @@ class DLCBundleLoader:
                 current is None
                 or current.relationship_definitions != candidate.relationship_definitions
             ),
+            derived_metrics_changed=(
+                current is None
+                or current.derived_metric_definitions != candidate.derived_metric_definitions
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -984,6 +1005,7 @@ class DLCBundleLoader:
                 "actions": len(candidate.action_definitions),
                 "capabilities": len(candidate.capability_definitions),
                 "issue_types": len(candidate.issue_definitions),
+                "derived_metrics": len(candidate.derived_metric_definitions),
                 "objectives": len(candidate.objective_definitions),
                 "endings": len(candidate.ending_definitions),
             },
@@ -1054,6 +1076,8 @@ class DLCBundleLoader:
             "action_definitions": copy.deepcopy(snapshot.action_definitions),
             "capability_definitions": copy.deepcopy(snapshot.capability_definitions),
             "issue_definitions": copy.deepcopy(snapshot.issue_definitions),
+            "derived_metric_definitions": copy.deepcopy(snapshot.derived_metric_definitions),
+            "derived_metric_packages": dict(snapshot.derived_metric_packages),
             "objective_definitions": copy.deepcopy(snapshot.objective_definitions),
             "ending_definitions": copy.deepcopy(snapshot.ending_definitions),
             "primary_package_id": snapshot.primary_package_id,
@@ -1285,6 +1309,11 @@ class DLCBundleLoader:
             action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
             capability_definitions=[dict(item) for item in blueprint.get("capability_definitions", [])],
             issue_definitions=[dict(item) for item in blueprint.get("issue_definitions", [])],
+            derived_metric_definitions=[dict(item) for item in blueprint.get("derived_metric_definitions", [])],
+            derived_metric_packages={
+                str(key): str(value)
+                for key, value in dict(blueprint.get("derived_metric_packages", {})).items()
+            },
             objective_definitions=[dict(item) for item in blueprint.get("objective_definitions", [])],
             ending_definitions=[dict(item) for item in blueprint.get("ending_definitions", [])],
             primary_package_id=str(blueprint.get("primary_package_id", "")),
@@ -1373,6 +1402,8 @@ class DLCBundleLoader:
             action_definitions=copy.deepcopy(snapshot.action_definitions),
             capability_definitions=copy.deepcopy(snapshot.capability_definitions),
             issue_definitions=copy.deepcopy(snapshot.issue_definitions),
+            derived_metric_definitions=copy.deepcopy(snapshot.derived_metric_definitions),
+            derived_metric_packages=dict(snapshot.derived_metric_packages),
             objective_definitions=copy.deepcopy(snapshot.objective_definitions),
             ending_definitions=copy.deepcopy(snapshot.ending_definitions),
             primary_package_id=snapshot.primary_package_id,
@@ -1708,6 +1739,10 @@ class DLCBundleLoader:
                         generation=target_generation,
                         preserve_state=True,
                     )
+                if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+                    self.orchestrator.configure_derived_metric_catalog(
+                        candidate.derived_metric_definitions, generation=target_generation,
+                    )
                 if hasattr(self.orchestrator, "configure_capability_catalog"):
                     self.orchestrator.configure_capability_catalog(
                         candidate.capability_definitions, generation=target_generation
@@ -1909,6 +1944,16 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "issues_public_state")
                 else {"configured": bool(snapshot and snapshot.issue_definitions), "generation": self.generation, "issue_types": copy.deepcopy(snapshot.issue_definitions) if snapshot else []}
             ),
+            "derived_metrics": (
+                self.orchestrator.derived_metrics_public_state()
+                if hasattr(self.orchestrator, "derived_metrics_public_state")
+                else {
+                    "configured": bool(snapshot and snapshot.derived_metric_definitions),
+                    "generation": self.generation,
+                    "metric_count": len(snapshot.derived_metric_definitions) if snapshot else 0,
+                    "metrics": [],
+                }
+            ),
             "objectives": (
                 self.orchestrator.objectives_public_state()
                 if hasattr(self.orchestrator, "objectives_public_state")
@@ -1945,6 +1990,13 @@ class DLCBundleLoader:
         self.world_state.configure_relationship_catalog(
             candidate.relationship_definitions, generation=max(1, self.generation + 1)
         )
+        # Publish the deterministic catalog before initial-event injection. World facts
+        # are seeded package-by-package, but every rule observes this generation's definitions.
+        initial_generation = max(1, self.generation + 1)
+        if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+            self.orchestrator.configure_derived_metric_catalog(
+                candidate.derived_metric_definitions, generation=initial_generation,
+            )
         # Configure causality before initial-event injection so authored opening
         # events participate in the same deterministic chain semantics.
         if hasattr(self.orchestrator, "configure_causal_events"):
@@ -1992,6 +2044,10 @@ class DLCBundleLoader:
                 candidate.actor_definitions,
                 generation=self.generation,
                 preserve_state=False,
+            )
+        if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+            self.orchestrator.configure_derived_metric_catalog(
+                candidate.derived_metric_definitions, generation=self.generation,
             )
         if hasattr(self.orchestrator, "configure_capability_catalog"):
             self.orchestrator.configure_capability_catalog(

@@ -53,7 +53,7 @@ const VIEW_OPTIONS = {
   ],
 }
 const WIDGET_OPTIONS = [
-  ['objectives', '目标面板'], ['issue_list', '事项列表'], ['issue_detail', '事项详情'],
+  ['objectives', '目标面板'], ['derived_metrics', '派生指标面板'], ['issue_list', '事项列表'], ['issue_detail', '事项详情'],
   ['player_message', '玩家消息输入'], ['in_transit', '在途消息'],
 ]
 const REGION_OPTIONS = [
