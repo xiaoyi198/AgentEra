@@ -333,3 +333,140 @@ def test_causal_replay_rejects_invalid_fixture_digest():
         assert str(exc) == "causal_replay_digest_invalid"
     else:
         raise AssertionError("invalid replay digest should fail")
+
+
+
+def test_dry_run_generic_conditions_share_runtime_semantics_and_observe_applied_world_effects():
+    content = _content()
+    content["entities"] = [
+        {
+            "id": "city", "type": "location", "name": "City",
+            "current_status": "stable", "metadata": {"tags": ["coastal"], "tier": "capital"},
+        },
+        {"id": "fort", "type": "location", "name": "Fort"},
+    ]
+    content["actors"] = [{
+        "actor_id": "governor",
+        "display_name": "Governor",
+        "actor_type": "person",
+        "entity_id": "city",
+        "attributes": {"influence": 75},
+        "states": {"mood": "focused"},
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "allied", "display_name": "Allied",
+        "direction": "undirected", "minimum_strength": 0, "maximum_strength": 100,
+        "default_strength": 50, "default_visibility": "public",
+    }]
+    content["relations"] = [{
+        "parent_id": "fort", "child_id": "city", "rel_type": "allied",
+        "strength": 80, "visibility": "public", "starts_at": 0,
+    }]
+    content["initial_events"] = [{
+        "event_id": "known_shortage", "event_type": "shortage",
+        "generated_at": 2 * 86400, "severity": 4, "target_agents": ["governor"],
+    }]
+    content["causal_event_rules"] = [
+        {
+            "rule_id": "seed_to_response",
+            "source_event_types": ["shortage"],
+            "child_event_type": "response_started",
+            "delay_days": 1,
+            "probability": 1,
+            "conditions": [
+                {"kind": "entity_tag", "entity_id": "city", "name": "coastal", "operator": "eq", "value": True},
+                {"kind": "entity_field", "entity_id": "city", "field": "metadata.tier", "operator": "eq", "value": "capital"},
+                {"kind": "actor_attribute", "entity_id": "governor", "name": "influence", "operator": "gte", "value": 70},
+                {"kind": "relationship", "entity_id": "city", "target_entity_id": "fort", "name": "allied", "field": "strength", "operator": "gte", "value": 70},
+                {"kind": "time", "name": "sim_day", "operator": "gte", "value": 2},
+                {"kind": "event_history", "name": "shortage", "field": "count", "window_days": 1, "operator": "gte", "value": 1},
+            ],
+            "world_effects": [
+                {"effect_type": "update_status", "entity_id": "city", "new_status": "mobilized"},
+                {
+                    "effect_type": "create_ongoing_event", "entity_id": "city",
+                    "event_type": "relief_operation", "description": "Emergency relief",
+                    "duration_days": 5,
+                },
+            ],
+        },
+        {
+            "rule_id": "response_to_stabilization",
+            "source_event_types": ["response_started"],
+            "child_event_type": "stabilization",
+            "delay_days": 1,
+            "probability": 1,
+            "conditions": [
+                {"kind": "entity_state", "entity_id": "city", "operator": "eq", "value": "mobilized"},
+                {"kind": "ongoing_event", "entity_id": "city", "name": "relief_operation", "field": "exists", "operator": "eq", "value": True},
+            ],
+        },
+    ]
+
+    report = dry_run_causal_rules(
+        content,
+        {
+            "event_id": "manual_shortage", "event_type": "shortage",
+            "generated_at": 2 * 86400, "severity": 4, "target_agents": ["governor"],
+        },
+        horizon_days=10,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == [
+        "shortage", "response_started", "stabilization",
+    ]
+    assert [node["day"] for node in report["nodes"]] == [2, 3, 4]
+    assert report["nodes"][1]["world_effect_status"] == "applied"
+    assert report["nodes"][2]["world_effect_status"] == "none"
+
+
+
+def test_dry_run_projects_generic_effects_before_observing_next_rule():
+    content = _content()
+    content["actors"] = [{
+        "actor_id": "governor", "display_name": "Governor", "actor_type": "person",
+        "entity_id": "city", "attributes": {}, "states": {},
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "commands", "display_name": "Commands",
+        "direction": "directed", "minimum_strength": 0, "maximum_strength": 100,
+        "default_strength": 50, "default_visibility": "public",
+    }]
+    content["causal_event_rules"] = [
+        {
+            "rule_id": "seed_to_expansion",
+            "source_event_types": ["seed"],
+            "child_event_type": "expanded",
+            "delay_days": 1,
+            "world_effects": [
+                {"effect_type": "create_entity", "entity_id": "outpost", "entity_type": "location", "name": "Outpost"},
+                {"effect_type": "move_entity", "entity_id": "outpost", "region": "north"},
+                {"effect_type": "modify_relationship", "parent_id": "city", "child_id": "outpost", "rel_type": "commands", "strength": 80},
+                {"effect_type": "modify_membership", "actor_id": "governor", "organization_id": "city", "role": "leader"},
+                {"effect_type": "reveal_information", "entity_id": "outpost", "knowledge_id": "route", "value": "known"},
+                {"effect_type": "switch_phase", "phase_id": "expansion", "metadata": {"chapter": 2}},
+            ],
+        },
+        {
+            "rule_id": "expansion_to_ready",
+            "source_event_types": ["expanded"],
+            "child_event_type": "ready",
+            "delay_days": 1,
+            "conditions": [
+                {"kind": "entity_field", "entity_id": "outpost", "field": "metadata.region", "operator": "eq", "value": "north"},
+                {"kind": "relationship", "entity_id": "city", "target_entity_id": "outpost", "name": "commands", "field": "strength", "operator": "gte", "value": 80},
+                {"kind": "actor_membership", "entity_id": "governor", "name": "city", "field": "role", "operator": "eq", "value": "leader"},
+                {"kind": "player_knowledge", "entity_id": "outpost", "name": "route", "operator": "eq", "value": "known"},
+                {"kind": "phase", "field": "phase_id", "operator": "eq", "value": "expansion"},
+                {"kind": "phase", "field": "metadata.chapter", "operator": "eq", "value": 2},
+            ],
+        },
+    ]
+
+    report = dry_run_causal_rules(
+        content, {"event_id": "manual_seed", "event_type": "seed", "severity": 4},
+        horizon_days=5,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == ["seed", "expanded", "ready"]
+    assert report["nodes"][1]["world_effect_status"] == "applied"

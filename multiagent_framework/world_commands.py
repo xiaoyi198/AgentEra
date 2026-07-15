@@ -32,6 +32,23 @@ class WorldCommandType(str, Enum):
     UPDATE_EVENT = "update_event"
     DELETE_EVENT = "delete_event"
     APPLY_MATURED_EVENT = "apply_matured_event"
+    CREATE_ENTITY = "create_entity"
+    MOVE_ENTITY = "move_entity"
+    TRANSFORM_ENTITY = "transform_entity"
+    REMOVE_ENTITY = "remove_entity"
+    MODIFY_RELATIONSHIP = "modify_relationship"
+    SET_AGENT_ENABLED = "set_agent_enabled"
+    MODIFY_MEMBERSHIP = "modify_membership"
+    CREATE_ISSUE = "create_issue"
+    SET_WORLD_TRUTH = "set_world_truth"
+    SET_ACTOR_BELIEF = "set_actor_belief"
+    REVEAL_INFORMATION = "reveal_information"
+    PROPAGATE_KNOWLEDGE = "propagate_knowledge"
+    START_INVESTIGATION = "start_investigation"
+    ADVANCE_INVESTIGATION = "advance_investigation"
+    ADVANCE_OBJECTIVE = "advance_objective"
+    UNLOCK_ACTION = "unlock_action"
+    SWITCH_PHASE = "switch_phase"
 
 
 @dataclass(slots=True)

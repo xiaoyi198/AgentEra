@@ -12,6 +12,7 @@ import math
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,9 +21,15 @@ from .prompt_registry import PromptRegistry as FrameworkPromptRegistry, PromptRe
 from .causal_events import CAUSAL_METADATA_FIELDS, CausalEventError, CausalEventRule
 from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
-from .world_state import RELATION_TYPES, RESOURCE_TOKENS
+from .world_state import RESOURCE_TOKENS
+from .relationship_contract import (
+    RelationshipCatalog, validate_relationship_definitions,
+)
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
+from .actor_contract import (
+    effective_actor_documents, normalize_actor_document, validate_actor_definitions,
+)
 from .capability_contract import normalize_capability_document, validate_capability_definitions
 from .issue_contract import normalize_issue_document, validate_issue_definitions
 from .objective_contract import (
@@ -41,6 +48,9 @@ AGENT_PROMPT_VARIABLES = {
     "id", "name", "rank", "rank_title", "location", "location_id",
     "personality", "personality_seed", "superior", "superior_id",
     "role", "agent_type",
+    "actor", "actor_id", "actor_type", "actor_entity_id", "actor_attributes",
+    "actor_traits", "actor_needs", "actor_goals", "actor_capabilities",
+    "actor_identities", "actor_memberships", "actor_states",
 }
 
 
@@ -396,7 +406,7 @@ class DLCRegistry:
         normalized.setdefault("schema_version", "1.0")
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
-            "agents", "initial_events", "ongoing_events", "random_events",
+            "relationship_types", "actors", "agents", "initial_events", "ongoing_events", "random_events",
             "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
@@ -410,6 +420,7 @@ class DLCRegistry:
             normalized["gameplay"] = normalize_gameplay_document(
                 normalized.get("gameplay", {})
             )
+            normalized["actors"] = normalize_actor_document(normalized.get("actors", []))
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
             normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
@@ -650,6 +661,7 @@ class DLCRegistry:
 
         entities = content["entities"]
         agents = content["agents"]
+        actors = effective_actor_documents(content["actors"], agents)
         resources = content["resources"]
         for collection, key in ((entities, "id"), (agents, "id"), (resources, "name")):
             label = "resources" if key == "name" else ("entities" if collection is entities else "agents")
@@ -658,6 +670,11 @@ class DLCRegistry:
 
         entity_ids = {str(item.get("id", "")) for item in entities if item.get("id")}
         agent_ids = {str(item.get("id", "")) for item in agents if item.get("id")}
+        actor_ids = {str(item.get("actor_id", item.get("id", ""))) for item in actors if item.get("actor_id", item.get("id"))}
+        actor_map = {str(item.get("actor_id", item.get("id", ""))): item for item in actors if item.get("actor_id", item.get("id"))}
+        actor_knowledge_holder_ids = actor_ids | agent_ids
+        objective_ids = {str(item.get("objective_id", "")) for item in content["objectives"] if item.get("objective_id")}
+        relationship_type_ids = RelationshipCatalog(content["relationship_types"]).ids
         resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
         for gameplay_issue in validate_gameplay_document(
             content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
@@ -683,6 +700,11 @@ class DLCRegistry:
                 capability_issue.code, capability_issue.message,
                 capability_issue.path, capability_issue.severity,
             )
+        capability_ids = {str(item.get("capability_id", "")) for item in content["capabilities"] if item.get("capability_id")}
+        for actor_issue in validate_actor_definitions(
+            actors, agents=agents, entity_ids=entity_ids, capability_ids=capability_ids,
+        ):
+            add(actor_issue.code, actor_issue.message, actor_issue.path, actor_issue.severity)
         for issue in validate_issue_definitions(
             content["issue_types"], action_ids=action_ids, entity_ids=entity_ids,
             agent_ids=agent_ids, gameplay=gameplay_contract,
@@ -769,23 +791,11 @@ class DLCRegistry:
                 add("value.invalid_kind", f"Entity value must reference metric/parameter: {name}", f"{path}.name")
             if item.get("kind") and resource and item.get("kind") != resource.get("kind"):
                 add("value.kind_mismatch", f"Value kind differs from resource definition: {name}", f"{path}.kind")
-        for index, relation in enumerate(content["relations"]):
-            path = f"relations[{index}]"
-            parent_id = str(relation.get("parent_id", ""))
-            child_id = str(relation.get("child_id", ""))
-            rel_type = str(relation.get("rel_type", ""))
-            if parent_id not in entity_ids:
-                add("relation.missing_parent", f"Unknown parent entity: {parent_id}", f"{path}.parent_id")
-            if child_id not in entity_ids:
-                add("relation.missing_child", f"Unknown child entity: {child_id}", f"{path}.child_id")
-            if rel_type not in RELATION_TYPES:
-                add(
-                    "relation.invalid_type",
-                    f"Invalid relation type: {rel_type or '<empty>'}",
-                    f"{path}.rel_type",
-                )
-            if parent_id and parent_id == child_id:
-                add("relation.self_reference", "A relation cannot point to itself", path)
+        for issue in validate_relationship_definitions(
+            content["relationship_types"], content["relations"], entity_ids=entity_ids
+        ):
+            code = "relation.invalid_type" if issue.code == "relation.unknown_type" else issue.code
+            add(code, issue.message, issue.path, issue.severity)
 
         for index, agent in enumerate(agents):
             path = f"agents[{index}]"
@@ -839,23 +849,247 @@ class DLCRegistry:
                     add("causal_event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
             for condition_index, condition in enumerate(rule.conditions):
                 condition_path = f"{path}.conditions[{condition_index}]"
-                if condition.entity_id not in entity_ids:
+                entity_kinds = {
+                    "anchored_inventory", "metric", "parameter",
+                    "entity_field", "entity_tag", "entity_state",
+                }
+                if condition.kind in entity_kinds and condition.entity_id not in entity_ids:
                     add("causal_event.missing_entity", f"Unknown entity: {condition.entity_id}", f"{condition_path}.entity_id")
-                resource = resource_map.get(condition.name)
-                if resource is None:
-                    add("causal_event.missing_resource", f"Unknown resource: {condition.name}", f"{condition_path}.name")
-                elif condition.kind == "anchored_inventory" and resource.get("kind") != "asset":
-                    add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
-                elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
-                    add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+                optional_entity_kinds = {
+                    "ongoing_event", "world_truth", "actor_belief", "player_knowledge",
+                    "knowledge_confidence", "knowledge_freshness", "knowledge_secrecy",
+                }
+                if condition.kind in optional_entity_kinds and condition.entity_id and condition.entity_id not in entity_ids:
+                    add("causal_event.missing_entity", f"Unknown entity: {condition.entity_id}", f"{condition_path}.entity_id")
+                if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                    resource = resource_map.get(condition.name)
+                    if resource is None:
+                        add("causal_event.missing_resource", f"Unknown resource: {condition.name}", f"{condition_path}.name")
+                    elif condition.kind == "anchored_inventory" and resource.get("kind") != "asset":
+                        add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
+                    elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
+                        add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+                actor_component_kinds = {
+                    "actor_attribute", "actor_state", "actor_trait", "actor_membership",
+                }
+                if condition.kind in actor_component_kinds:
+                    if condition.entity_id not in actor_ids:
+                        add("causal_event.missing_actor", f"Unknown actor: {condition.entity_id}", f"{condition_path}.entity_id")
+                    else:
+                        actor = actor_map[condition.entity_id]
+                        runtime_refs = {
+                            "actor_attribute": set(actor.get("attributes", {})),
+                            "actor_state": set(actor.get("states", {})),
+                            "actor_trait": {str(item.get("trait_id", "")) for item in actor.get("traits", [])},
+                            "actor_membership": {str(item.get("organization_id", "")) for item in actor.get("memberships", [])},
+                        }
+                        if condition.name not in runtime_refs[condition.kind]:
+                            add("causal_event.missing_actor_component", f"Unknown actor component: {condition.name}", f"{condition_path}.name")
+                if condition.kind == "actor_belief" and condition.target_entity_id not in actor_knowledge_holder_ids:
+                    add(
+                        "causal_event.missing_knowledge_holder",
+                        f"Unknown Actor knowledge holder: {condition.target_entity_id}",
+                        f"{condition_path}.target_entity_id",
+                    )
+                if condition.kind in {"knowledge_confidence", "knowledge_freshness", "knowledge_secrecy"}:
+                    layer = str(condition.filters.get("layer", "player_knowledge"))
+                    holder_id = str(condition.target_entity_id or condition.filters.get("holder_id", ""))
+                    if layer == "actor_belief" and holder_id not in actor_knowledge_holder_ids:
+                        add(
+                            "causal_event.missing_knowledge_holder",
+                            f"Unknown Actor knowledge holder: {holder_id}",
+                            f"{condition_path}.target_entity_id",
+                        )
+                if condition.kind == "relationship":
+                    for field_name, entity_id in (("entity_id", condition.entity_id), ("target_entity_id", condition.target_entity_id)):
+                        if entity_id not in entity_ids:
+                            add("causal_event.missing_entity", f"Unknown relationship endpoint: {entity_id}", f"{condition_path}.{field_name}")
+                    if condition.name not in relationship_type_ids:
+                        add("causal_event.missing_relationship_type", f"Unknown relationship type: {condition.name}", f"{condition_path}.name")
+                if condition.kind == "objective_progress":
+                    objective_id = condition.entity_id or condition.name
+                    if objective_id not in objective_ids:
+                        add("causal_event.missing_objective", f"Unknown objective: {objective_id}", f"{condition_path}.entity_id")
+                if condition.kind == "aggregate_metric":
+                    if condition.entity_id and condition.entity_id not in entity_ids and condition.field != "actor_attribute":
+                        add("causal_event.missing_entity", f"Unknown aggregate entity: {condition.entity_id}", f"{condition_path}.entity_id")
+                    if condition.field == "actor_attribute" and condition.entity_id and condition.entity_id not in actor_ids:
+                        add("causal_event.missing_actor", f"Unknown aggregate actor: {condition.entity_id}", f"{condition_path}.entity_id")
+                    if condition.field in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(condition.name)
+                        expected_kind = "asset" if condition.field == "anchored_inventory" else condition.field
+                        if resource is None:
+                            add("causal_event.missing_resource", f"Unknown aggregate resource: {condition.name}", f"{condition_path}.name")
+                        elif resource.get("kind") != expected_kind:
+                            add("causal_event.invalid_resource_kind", f"Aggregate requires resource kind {expected_kind}", f"{condition_path}.field")
+                    if condition.field == "relation" and condition.name and condition.name not in relationship_type_ids:
+                        add("causal_event.missing_relationship_type", f"Unknown aggregate relationship type: {condition.name}", f"{condition_path}.name")
+            available_effect_entities = set(entity_ids)
+            created_effect_entities: set[str] = set()
+            available_investigations: set[str] = set()
             for effect_index, effect in enumerate(rule.world_effects):
                 effect_path = f"{path}.world_effects[{effect_index}]"
                 effect_type = str(effect.get("effect_type", ""))
-                entity_fields = ("from_entity_id", "to_entity_id") if effect_type == "transfer_anchored_value" else ("entity_id",)
-                for field_name in entity_fields:
+
+                def require_effect_entity(field_name: str, *, optional: bool = False) -> str:
                     entity_id = str(effect.get(field_name, ""))
-                    if entity_id not in entity_ids:
-                        add("causal_event.effect_missing_entity", f"Unknown world-effect entity: {entity_id}", f"{effect_path}.{field_name}")
+                    if optional and not entity_id:
+                        return entity_id
+                    if entity_id not in available_effect_entities:
+                        add(
+                            "causal_event.effect_missing_entity",
+                            f"Unknown world-effect entity: {entity_id}",
+                            f"{effect_path}.{field_name}",
+                        )
+                    return entity_id
+
+                def require_actor_knowledge_holder(holder_id: str, field_name: str) -> None:
+                    if holder_id not in actor_knowledge_holder_ids:
+                        add(
+                            "causal_event.effect_missing_knowledge_holder",
+                            f"Unknown Actor knowledge holder: {holder_id}",
+                            f"{effect_path}.{field_name}",
+                        )
+
+                if effect_type == "create_entity":
+                    created_id = str(effect.get("entity_id", ""))
+                    if created_id in available_effect_entities or created_id in created_effect_entities:
+                        add(
+                            "causal_event.effect_duplicate_entity",
+                            f"World-effect entity already exists or is created twice: {created_id}",
+                            f"{effect_path}.entity_id",
+                        )
+                    else:
+                        created_effect_entities.add(created_id)
+                        available_effect_entities.add(created_id)
+                    for resource_name in effect.get("resources", {}):
+                        if str(resource_name) not in resource_map:
+                            add(
+                                "causal_event.effect_missing_resource",
+                                f"Unknown create-entity resource: {resource_name}",
+                                f"{effect_path}.resources.{resource_name}",
+                            )
+                elif effect_type == "transfer_anchored_value":
+                    require_effect_entity("from_entity_id")
+                    require_effect_entity("to_entity_id")
+                elif effect_type in {
+                    "adjust_resource", "set_resource", "update_status",
+                    "create_ongoing_event", "move_entity", "transform_entity", "remove_entity",
+                }:
+                    referenced_id = require_effect_entity("entity_id")
+                    if effect_type == "remove_entity" and referenced_id in available_effect_entities:
+                        available_effect_entities.remove(referenced_id)
+                elif effect_type in {"enable_agent", "disable_agent"}:
+                    agent_id = str(effect.get("agent_id", ""))
+                    actor_id = str(effect.get("actor_id", ""))
+                    if agent_id not in agent_ids:
+                        add(
+                            "causal_event.effect_missing_agent",
+                            f"Unknown world-effect agent: {agent_id}",
+                            f"{effect_path}.agent_id",
+                        )
+                    if actor_id and actor_id not in actor_ids:
+                        add(
+                            "causal_event.effect_missing_actor",
+                            f"Unknown world-effect actor: {actor_id}",
+                            f"{effect_path}.actor_id",
+                        )
+                elif effect_type == "modify_relationship":
+                    require_effect_entity("parent_id")
+                    require_effect_entity("child_id")
+                    rel_type = str(effect.get("rel_type", ""))
+                    if rel_type not in relationship_type_ids:
+                        add(
+                            "causal_event.effect_missing_relationship_type",
+                            f"Unknown world-effect relationship type: {rel_type}",
+                            f"{effect_path}.rel_type",
+                        )
+                elif effect_type == "modify_membership":
+                    actor_id = str(effect.get("actor_id", ""))
+                    if actor_id not in actor_ids:
+                        add(
+                            "causal_event.effect_missing_actor",
+                            f"Unknown world-effect actor: {actor_id}",
+                            f"{effect_path}.actor_id",
+                        )
+                    require_effect_entity("organization_id")
+                elif effect_type == "create_issue":
+                    issue_type_id = str(effect.get("issue_type_id", ""))
+                    if issue_type_id not in issue_type_ids:
+                        add(
+                            "causal_event.effect_missing_issue_type",
+                            f"Unknown world-effect issue type: {issue_type_id}",
+                            f"{effect_path}.issue_type_id",
+                        )
+                    source = effect.get("source", {})
+                    if isinstance(source, Mapping) and str(source.get("kind", "")) == "entity":
+                        source_id = str(source.get("id", ""))
+                        if source_id not in available_effect_entities:
+                            add(
+                                "causal_event.effect_missing_entity",
+                                f"Unknown world-effect issue source entity: {source_id}",
+                                f"{effect_path}.source.id",
+                            )
+                elif effect_type in {"declare_world_truth", "set_actor_belief", "reveal_information"}:
+                    require_effect_entity("entity_id", optional=True)
+                    if effect_type == "set_actor_belief":
+                        require_actor_knowledge_holder(str(effect.get("holder_id", "")), "holder_id")
+                elif effect_type == "propagate_knowledge":
+                    require_effect_entity("entity_id", optional=True)
+                    source_layer = str(effect.get("source_layer", ""))
+                    target_layer = str(effect.get("target_layer", ""))
+                    if source_layer == "actor_belief":
+                        require_actor_knowledge_holder(str(effect.get("source_holder_id", "")), "source_holder_id")
+                    if target_layer == "actor_belief":
+                        require_actor_knowledge_holder(str(effect.get("target_holder_id", "")), "target_holder_id")
+                elif effect_type == "start_investigation":
+                    require_effect_entity("entity_id", optional=True)
+                    investigation_id = str(effect.get("investigation_id", ""))
+                    if investigation_id in available_investigations:
+                        add(
+                            "causal_event.effect_duplicate_investigation",
+                            f"Investigation is started twice in one rule: {investigation_id}",
+                            f"{effect_path}.investigation_id",
+                        )
+                    available_investigations.add(investigation_id)
+                    if str(effect.get("investigator_layer", "")) == "actor_belief":
+                        require_actor_knowledge_holder(str(effect.get("investigator_id", "")), "investigator_id")
+                    result_policy = effect.get("result_policy", {})
+                    if isinstance(result_policy, Mapping) and result_policy:
+                        if str(result_policy.get("source_layer", "")) == "actor_belief":
+                            require_actor_knowledge_holder(
+                                str(result_policy.get("source_holder_id", "")),
+                                "result_policy.source_holder_id",
+                            )
+                        if str(result_policy.get("target_layer", effect.get("investigator_layer", ""))) == "actor_belief":
+                            require_actor_knowledge_holder(
+                                str(result_policy.get("target_holder_id", effect.get("investigator_id", ""))),
+                                "result_policy.target_holder_id",
+                            )
+                elif effect_type == "advance_objective":
+                    objective_id = str(effect.get("objective_id", ""))
+                    if objective_id not in objective_ids:
+                        add(
+                            "causal_event.effect_missing_objective",
+                            f"Unknown world-effect objective: {objective_id}",
+                            f"{effect_path}.objective_id",
+                        )
+                elif effect_type == "unlock_action":
+                    action_id = str(effect.get("action_id", ""))
+                    if action_id not in action_ids:
+                        add(
+                            "causal_event.effect_missing_action",
+                            f"Unknown world-effect action: {action_id}",
+                            f"{effect_path}.action_id",
+                        )
+                    scope_id = str(effect.get("scope_id", ""))
+                    if scope_id and scope_id not in available_effect_entities and scope_id not in actor_ids and scope_id not in agent_ids:
+                        add(
+                            "causal_event.effect_missing_scope",
+                            f"Unknown world-effect action scope: {scope_id}",
+                            f"{effect_path}.scope_id",
+                        )
+
                 resource_fields: tuple[str, ...] = ()
                 if effect_type in {"adjust_resource", "set_resource"}:
                     resource_fields = ("resource_name",)
@@ -1041,11 +1275,19 @@ class DLCRegistry:
                 for item in other_content["capabilities"]
                 for identifier in [item.get("capability_id", ""), *(item.get("aliases", []) or [])]
             }
+            own_actor_ids = {str(item.get("actor_id", item.get("id", ""))) for item in actors}
+            other_actors = effective_actor_documents(other_content["actors"], other_content["agents"])
             comparisons = (
                 ("entity", entity_ids, {str(item.get("id", "")) for item in other_content["entities"]}),
+                ("actor", own_actor_ids, {str(item.get("actor_id", item.get("id", ""))) for item in other_actors}),
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
                 ("capability", own_capability_ids, other_capability_ids),
+                (
+                    "relationship_type",
+                    {str(item.get("relationship_type_id", item.get("id", ""))) for item in content["relationship_types"]},
+                    {str(item.get("relationship_type_id", item.get("id", ""))) for item in other_content["relationship_types"]},
+                ),
             )
             for kind, own_ids, other_ids in comparisons:
                 for conflict in sorted((own_ids & other_ids) - {""}):

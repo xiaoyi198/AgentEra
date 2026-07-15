@@ -332,6 +332,10 @@ def _load_runtime_state(orch: Orchestrator) -> None:
                 orch.objective_manager.restore(
                     s.get("objective_runtime", {}), sim_time=orch._sim_time
                 )
+            if hasattr(orch, "actor_manager"):
+                orch.actor_manager.restore(s.get("actor_runtime", {}))
+            if hasattr(orch, "_sync_gameplay_effect_runtime"):
+                orch._sync_gameplay_effect_runtime()
             logger.info("Restored state: sim_time=%.1f, %d memorials",
                         orch._sim_time, len(orch.memorials))
         except Exception as e:

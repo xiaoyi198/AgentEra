@@ -31,7 +31,44 @@
       "current_status": "戒备",
       "metadata": {
         "x": 1200,
-        "y": 200
+        "y": 200,
+        "tags": [
+          "frontier",
+          "defense-hub"
+        ]
+      }
+    },
+    {
+      "id": "frontier_garrison",
+      "type": "organization",
+      "name": "边境守军",
+      "description": "负责哨站巡防、补给与边境预警的组织实体。",
+      "current_status": "战备值守",
+      "metadata": {
+        "x": 1140,
+        "y": 250
+      }
+    },
+    {
+      "id": "frontier_watchtower",
+      "type": "location",
+      "name": "北境瞭望塔",
+      "description": "负责边境观测、烽火通信与先期预警的前沿地点。",
+      "current_status": "日常监测",
+      "metadata": {
+        "x": 1320,
+        "y": 120
+      }
+    },
+    {
+      "id": "frontier_caravan",
+      "type": "organization",
+      "name": "边境商队",
+      "description": "往来哨站与内地的民间贸易与补给组织。",
+      "current_status": "等待通行",
+      "metadata": {
+        "x": 1050,
+        "y": 340
       }
     }
   ],
@@ -53,7 +90,146 @@
       "description": "当前防务警戒"
     }
   ],
-  "relations": [],
+  "relationship_types": [
+    {
+      "relationship_type_id": "command",
+      "display_name": "指挥关系",
+      "description": "组织或指挥节点对下属单位的有向调度与责任关系。",
+      "direction": "directed",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 80,
+      "default_visibility": "public",
+      "allow_expiry": false,
+      "dimensions": [],
+      "style": {
+        "label": "令",
+        "color": "#b65a4a",
+        "dashed": false,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "authority"
+      }
+    },
+    {
+      "relationship_type_id": "trust",
+      "display_name": "信任",
+      "description": "双方对等的信誉与合作预期，可随时间到期或重新评估。",
+      "direction": "undirected",
+      "minimum_strength": -100,
+      "maximum_strength": 100,
+      "default_strength": 0,
+      "default_visibility": "limited",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "personal",
+          "display_name": "人际信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对具体成员与行动者的信任。"
+        },
+        {
+          "dimension_id": "institutional",
+          "display_name": "制度信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对组织承诺和规则的信任。"
+        }
+      ],
+      "style": {
+        "label": "信",
+        "color": "#4f9d83",
+        "dashed": false,
+        "marker": "arrow"
+      },
+      "metadata": {
+        "category": "social"
+      }
+    },
+    {
+      "relationship_type_id": "rivalry",
+      "display_name": "竞争",
+      "description": "两个实体围绕资源、权力或目标形成的对等竞争关系。",
+      "direction": "undirected",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 40,
+      "default_visibility": "public",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "intensity",
+          "display_name": "竞争强度",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 40,
+          "description": "冲突与资源争夺的综合程度。"
+        }
+      ],
+      "style": {
+        "label": "竞",
+        "color": "#d17a45",
+        "dashed": true,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "conflict"
+      }
+    }
+  ],
+  "relations": [
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_watchtower",
+      "rel_type": "command",
+      "strength": 92,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": null,
+      "values": {},
+      "note": "守军直接指挥瞭望塔的轮值与预警。",
+      "metadata": {
+        "source": "example_frontier"
+      }
+    },
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_caravan",
+      "rel_type": "trust",
+      "strength": 36,
+      "visibility": "limited",
+      "starts_at": 0,
+      "expires_at": 15552000,
+      "values": {
+        "personal": 28,
+        "institutional": 44
+      },
+      "note": "一个交易周期内的有限合作信任。",
+      "metadata": {
+        "review_after_days": 180
+      }
+    },
+    {
+      "parent_id": "frontier_garrison",
+      "child_id": "frontier_caravan",
+      "rel_type": "rivalry",
+      "strength": 58,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": 7776000,
+      "values": {
+        "intensity": 58
+      },
+      "note": "双方对稀缺运力和通行配额存在阶段性竞争。",
+      "metadata": {
+        "review_after_days": 90
+      }
+    }
+  ],
   "agents": [
     {
       "id": "边境指挥官",
@@ -64,7 +240,8 @@
       "agent_type": "official",
       "superior_id": null,
       "personality_seed": "沉着",
-      "enabled": true
+      "enabled": true,
+      "actor_id": "frontier_commander"
     },
     {
       "id": "哨站守备官",
@@ -75,7 +252,8 @@
       "agent_type": "official",
       "superior_id": "边境指挥官",
       "personality_seed": "沉着",
-      "enabled": true
+      "enabled": true,
+      "actor_id": "frontier_guard"
     }
   ],
   "initial_events": [
@@ -96,7 +274,7 @@
     "沉着": "你沉着谨慎，先核实情报，再采取可执行的防务行动。"
   },
   "prompts": {
-    "official_template": "你是{name}，驻守{location}。{personality}\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
+    "official_template": "你是{name}，驻守{location}。{personality}\nActor={actor_id}，需求={actor_needs}，目标={actor_goals}，状态={actor_states}。\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
   },
   "random_events": [],
   "time_rules": [
@@ -121,7 +299,7 @@
     "player": {
       "identity_id": "frontier_commander",
       "display_name": "边境指挥官",
-      "actor_id": "边境指挥官",
+      "actor_id": "frontier_commander",
       "controlled_objects": [
         {
           "kind": "entity",
@@ -183,7 +361,7 @@
           "边境哨站"
         ],
         "actor_ids": [
-          "边境指挥官"
+          "frontier_commander"
         ]
       },
       "preconditions": [
@@ -807,6 +985,818 @@
         "content_placeholder": "可选：补充本次巡逻重点。"
       },
       "enabled": true
+    }
+  ],
+  "actors": [
+    {
+      "actor_id": "frontier_commander",
+      "display_name": "边境指挥官",
+      "description": "玩家控制的边境防务总负责人。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 10,
+        "command": 90,
+        "resilience": 80
+      },
+      "traits": [
+        {
+          "trait_id": "calm_commander",
+          "display_name": "沉着指挥",
+          "description": "优先核实情报并分配可执行任务。",
+          "intensity": 0.9,
+          "tags": [
+            "command",
+            "defense"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "situational_awareness",
+          "display_name": "态势掌握",
+          "description": "维持对边境威胁和补给状况的认知。",
+          "current": 70,
+          "target": 95,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 95
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "secure_frontier",
+          "display_name": "稳定边境",
+          "description": "保持哨站安全并避免补给崩溃。",
+          "status": "active",
+          "priority": 100,
+          "progress": 15,
+          "target": 100
+        }
+      ],
+      "capability_ids": [
+        "frontier_report",
+        "frontier_command",
+        "frontier_operation",
+        "launch_frontier_patrol"
+      ],
+      "identities": [
+        {
+          "identity_id": "frontier_commander",
+          "display_name": "边境指挥官",
+          "kind": "role",
+          "public": true,
+          "description": "边境哨站最高防务负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "commander",
+          "status": "active",
+          "rank": 10,
+          "primary": true,
+          "description": "统领边境守军。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "duty_phase": "command"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "frontier_guard",
+      "display_name": "哨站守备官",
+      "description": "执行巡逻、核验警情并向指挥官汇报。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 2,
+        "vigilance": 85,
+        "stamina": 75
+      },
+      "traits": [
+        {
+          "trait_id": "vigilant_guard",
+          "display_name": "谨慎守备",
+          "description": "面对模糊威胁时先侦察再处置。",
+          "intensity": 0.85,
+          "tags": [
+            "patrol",
+            "report"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "supply",
+          "display_name": "巡防补给",
+          "description": "巡逻和警戒所需的补给充足度。",
+          "current": 60,
+          "target": 85,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 80
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "inspect_north",
+          "display_name": "核查北侧踪迹",
+          "description": "完成北侧巡查并提交可信报告。",
+          "status": "active",
+          "priority": 90,
+          "progress": 0,
+          "target": 10
+        }
+      ],
+      "capability_ids": [
+        "frontier_operation"
+      ],
+      "identities": [
+        {
+          "identity_id": "outpost_guard",
+          "display_name": "哨站守备官",
+          "kind": "role",
+          "public": true,
+          "description": "边境守军一线守备负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "guard_officer",
+          "status": "active",
+          "rank": 2,
+          "primary": true,
+          "description": "负责哨站巡防。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "patrol_status": "ready"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "frontier_quartermaster",
+      "display_name": "军需记录官",
+      "description": "Actor-only 示例：参与世界模拟但暂不创建自主 LLM Agent。",
+      "actor_type": "person",
+      "entity_id": "边境哨站",
+      "enabled": true,
+      "attributes": {
+        "rank": 1,
+        "logistics": 88
+      },
+      "traits": [
+        {
+          "trait_id": "methodical",
+          "display_name": "条理严谨",
+          "description": "重视库存账目和价值锚一致性。",
+          "intensity": 0.8,
+          "tags": [
+            "logistics"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "inventory_accuracy",
+          "display_name": "账实一致",
+          "current": 75,
+          "target": 100,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 90
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "reconcile_assets",
+          "display_name": "核对锚定资产",
+          "status": "active",
+          "priority": 80,
+          "progress": 20,
+          "target": 100
+        }
+      ],
+      "capability_ids": [],
+      "identities": [
+        {
+          "identity_id": "quartermaster",
+          "display_name": "军需记录官",
+          "kind": "role",
+          "public": true
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "frontier_garrison",
+          "role": "quartermaster",
+          "status": "active",
+          "rank": 1,
+          "primary": true
+        }
+      ],
+      "states": {
+        "ledger_open": true
+      },
+      "metadata": {
+        "actor_only": true
+      }
+    }
+  ],
+  "causal_condition_groups": [
+    {
+      "group_id": "frontier_response_readiness",
+      "name": "边境应急响应就绪条件",
+      "description": "演示实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
+      "conditions": [
+        {
+          "kind": "entity_tag",
+          "entity_id": "边境哨站",
+          "name": "frontier",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "entity_field",
+          "entity_id": "边境哨站",
+          "field": "metadata.x",
+          "operator": "gte",
+          "value": 1000
+        },
+        {
+          "kind": "actor_attribute",
+          "entity_id": "frontier_guard",
+          "name": "vigilance",
+          "operator": "gte",
+          "value": 80
+        },
+        {
+          "kind": "actor_state",
+          "entity_id": "frontier_guard",
+          "name": "patrol_status",
+          "operator": "eq",
+          "value": "ready"
+        },
+        {
+          "kind": "actor_trait",
+          "entity_id": "frontier_guard",
+          "name": "vigilant_guard",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "actor_membership",
+          "entity_id": "frontier_guard",
+          "name": "frontier_garrison",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "relationship",
+          "entity_id": "frontier_caravan",
+          "target_entity_id": "frontier_garrison",
+          "name": "trust",
+          "field": "strength",
+          "operator": "gte",
+          "value": 30
+        },
+        {
+          "kind": "event_history",
+          "entity_id": "哨站守备官",
+          "name": "patrol_report",
+          "field": "count",
+          "window_days": 30,
+          "operator": "gte",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "group_id": "frontier_stabilization_ready",
+      "name": "边境稳定化条件",
+      "description": "演示前序世界效果可被实体状态、持续事件、阶段、目标公开状态和锚定库存聚合条件观察。",
+      "conditions": [
+        {
+          "kind": "entity_state",
+          "entity_id": "边境哨站",
+          "operator": "eq",
+          "value": "应急动员"
+        },
+        {
+          "kind": "ongoing_event",
+          "entity_id": "边境哨站",
+          "name": "frontier_relief_operation",
+          "field": "exists",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "phase",
+          "field": "phase_id",
+          "operator": "eq",
+          "value": "frontier_response"
+        },
+        {
+          "kind": "objective_progress",
+          "entity_id": "secure_frontier",
+          "field": "progress",
+          "operator": "exists"
+        },
+        {
+          "kind": "aggregate_metric",
+          "entity_id": "边境哨站",
+          "name": "边境银券",
+          "field": "anchored_inventory",
+          "aggregate": "sum",
+          "filters": {
+            "tag": "frontier"
+          },
+          "operator": "gte",
+          "value": 50
+        }
+      ]
+    },
+    {
+      "group_id": "frontier_intelligence_confirmed",
+      "name": "边境情报核验完成条件",
+      "description": "演示隐藏世界真相、Actor 主观认知、玩家知识元数据、新鲜度、保密级别与调查状态的组合判断。",
+      "conditions": [
+        {
+          "kind": "world_truth",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "actor_belief",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "frontier_guard",
+          "field": "confidence",
+          "operator": "gte",
+          "value": 0.5
+        },
+        {
+          "kind": "player_knowledge",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "knowledge_confidence",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "gte",
+          "value": 0.8,
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_freshness",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "fresh",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_secrecy",
+          "entity_id": "边境哨站",
+          "name": "frontier_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "restricted",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "investigation",
+          "entity_id": "verify_frontier_route",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "completed"
+        }
+      ]
+    }
+  ],
+  "causal_rule_templates": [
+    {
+      "template_id": "frontier_deterministic_follow_up",
+      "name": "边境确定性后续模板",
+      "description": "统一设置一天延迟、确定触发和安全链深度，并要求模拟时间已开始。",
+      "rule": {
+        "delay_days": 1,
+        "probability": 1,
+        "severity_delta": 0,
+        "max_depth": 4,
+        "max_fires_per_chain": 1,
+        "priority": 20,
+        "enabled": true,
+        "conditions": [
+          {
+            "kind": "time",
+            "name": "sim_day",
+            "operator": "gte",
+            "value": 0
+          }
+        ]
+      }
+    }
+  ],
+  "causal_event_rules": [
+    {
+      "rule_id": "patrol_report_to_frontier_response",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_response_readiness"
+      ],
+      "source_event_types": [
+        "patrol_report"
+      ],
+      "child_event_type": "frontier_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "巡逻报告触发边境应急响应。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "update_status",
+          "entity_id": "边境哨站",
+          "new_status": "应急动员",
+          "reason": "巡逻报告确认需要启动边境应急响应"
+        },
+        {
+          "effect_type": "create_ongoing_event",
+          "entity_id": "边境哨站",
+          "event_type": "frontier_relief_operation",
+          "description": "守军与补给官协同执行边境支援。",
+          "duration_days": 3,
+          "expected_result": {
+            "new_status": "持续巡防"
+          },
+          "reason": "记录跨回合持续的支援行动"
+        },
+        {
+          "effect_type": "create_entity",
+          "entity_id": "frontier_relief_command",
+          "entity_type": "organization",
+          "name": "边境支援指挥组",
+          "description": "应急响应期间临时成立的支援组织。",
+          "current_status": "active",
+          "metadata": {
+            "tags": [
+              "frontier",
+              "temporary-command"
+            ]
+          },
+          "resources": {
+            "边境银券": 10
+          },
+          "reason": "为应急响应建立可继续引用的临时组织实体"
+        },
+        {
+          "effect_type": "modify_relationship",
+          "operation": "upsert",
+          "parent_id": "frontier_garrison",
+          "child_id": "frontier_relief_command",
+          "rel_type": "command",
+          "strength": 85,
+          "visibility": "public",
+          "starts_in_days": 0,
+          "values": {},
+          "note": "守军统一指挥临时支援组织。",
+          "metadata": {
+            "source": "causal_effect"
+          },
+          "reason": "建立守军与临时支援组织的指挥关系"
+        },
+        {
+          "effect_type": "modify_membership",
+          "operation": "upsert",
+          "actor_id": "frontier_quartermaster",
+          "organization_id": "frontier_relief_command",
+          "role": "quartermaster",
+          "status": "active",
+          "metadata": {
+            "temporary": true
+          },
+          "reason": "将补给官编入临时支援组织"
+        },
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "frontier_security_report",
+          "source": {
+            "kind": "agent",
+            "id": "哨站守备官",
+            "entity_id": "边境哨站"
+          },
+          "title": "边境应急响应待决",
+          "summary": "守备官请求确认巡逻与支援方案。",
+          "details": {
+            "phase": "response",
+            "organization_id": "frontier_relief_command"
+          },
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "哨站守备官"
+            }
+          ],
+          "urgency": "high",
+          "deadline_days": 2,
+          "metadata": {
+            "generated_by": "causal_effect"
+          },
+          "reason": "把巡逻警情投影为玩家可处理的 Issue"
+        },
+        {
+          "effect_type": "declare_world_truth",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "value": {
+            "open": false,
+            "risk": "blocked",
+            "cause": "landslide"
+          },
+          "source": "frontier_sensor",
+          "confidence": 1,
+          "stale_after_days": 7,
+          "expires_in_days": 30,
+          "secrecy_level": "restricted",
+          "visibility_scopes": [],
+          "distortion": {},
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "authoritative"
+          },
+          "reason": "记录仅供权威规则使用的真实通路状态"
+        },
+        {
+          "effect_type": "set_actor_belief",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "holder_id": "frontier_guard",
+          "value": {
+            "open": "uncertain",
+            "risk": "moderate"
+          },
+          "source": "distant_observation",
+          "confidence": 0.65,
+          "stale_after_days": 3,
+          "expires_in_days": 10,
+          "secrecy_level": "confidential",
+          "visibility_scopes": [
+            "frontier_guard"
+          ],
+          "distortion": {
+            "omitted": [
+              "cause"
+            ],
+            "bias": "underestimate"
+          },
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "unverified"
+          },
+          "reason": "记录守备 Actor 可能失真的主观判断"
+        },
+        {
+          "effect_type": "start_investigation",
+          "investigation_id": "verify_frontier_route",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "investigator_layer": "player_knowledge",
+          "investigator_id": "player",
+          "required_progress": 2,
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "哨站守备官"
+            }
+          ],
+          "result_policy": {
+            "source_layer": "world_truth",
+            "target_layer": "player_knowledge",
+            "source_holder_id": "",
+            "target_holder_id": "player",
+            "confidence_multiplier": 0.9,
+            "source": "investigation:verify_frontier_route",
+            "secrecy_level": "restricted",
+            "distortion": {},
+            "metadata": {
+              "method": "field_verification"
+            }
+          },
+          "metadata": {
+            "category": "route_verification"
+          },
+          "reason": "启动跨事件的玩家核验流程"
+        },
+        {
+          "effect_type": "reveal_information",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_relief_authorized",
+          "value": {
+            "authorized": true,
+            "organization_id": "frontier_relief_command"
+          },
+          "source": "哨站守备官",
+          "confidence": 0.95,
+          "metadata": {
+            "phase": "response"
+          },
+          "reason": "向玩家知识状态公开支援授权结果"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_response",
+          "metadata": {
+            "chapter": 1,
+            "label": "边境应急响应"
+          },
+          "reason": "巡逻报告已进入应急响应流程"
+        }
+      ]
+    },
+    {
+      "rule_id": "frontier_response_to_stabilization",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_stabilization_ready"
+      ],
+      "source_event_types": [
+        "frontier_response_started"
+      ],
+      "child_event_type": "frontier_stabilization",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "stabilization",
+        "summary": "应急响应进入稳定化阶段。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "propagate_knowledge",
+          "source_layer": "actor_belief",
+          "target_layer": "player_knowledge",
+          "entity_id": "边境哨站",
+          "knowledge_id": "frontier_route_status",
+          "source_holder_id": "frontier_guard",
+          "target_holder_id": "player",
+          "confidence_multiplier": 0.6,
+          "source": "field_report",
+          "secrecy_level": "restricted",
+          "distortion": {
+            "label": "unverified"
+          },
+          "metadata": {
+            "verification": "pending"
+          },
+          "reason": "先把守备 Actor 的未核验判断传播给玩家"
+        },
+        {
+          "effect_type": "advance_investigation",
+          "investigation_id": "verify_frontier_route",
+          "mode": "adjust",
+          "amount": 2,
+          "status": "completed",
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "reason": "现场勘察完成并触发权威结果投影"
+        },
+        {
+          "effect_type": "update_status",
+          "entity_id": "边境哨站",
+          "new_status": "持续巡防",
+          "reason": "应急响应已进入稳定化"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_frontier",
+          "mode": "adjust",
+          "amount": 20,
+          "status": "active",
+          "reason": "应急响应进入稳定化并推进边境目标"
+        },
+        {
+          "effect_type": "unlock_action",
+          "action_id": "frontier_patrol",
+          "scope_id": "边境哨站",
+          "reason": "稳定化阶段开放强化巡逻"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_stabilization",
+          "metadata": {
+            "chapter": 2,
+            "label": "边境稳定化"
+          },
+          "reason": "响应链完成并进入稳定化阶段"
+        }
+      ]
+    },
+    {
+      "rule_id": "frontier_stabilization_to_intelligence_confirmation",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_intelligence_confirmed"
+      ],
+      "source_event_types": [
+        "frontier_stabilization"
+      ],
+      "child_event_type": "frontier_intelligence_confirmed",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "intelligence_confirmed",
+        "summary": "调查完成，玩家获得经核验的边境路线情报。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "frontier_security_report",
+          "source": {
+            "kind": "system",
+            "id": "causal_event",
+            "entity_id": "边境哨站"
+          },
+          "title": "边境路线核验完成",
+          "summary": "现场调查确认路线受阻，需要重新规划支援路径。",
+          "details": {
+            "investigation_id": "verify_frontier_route",
+            "knowledge_id": "frontier_route_status"
+          },
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "urgency": "normal",
+          "metadata": {
+            "generated_by": "knowledge_investigation"
+          },
+          "reason": "把已核验知识转化为玩家可处理事务"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_frontier",
+          "mode": "adjust",
+          "amount": 10,
+          "status": "active",
+          "reason": "完成情报核验并推进边境目标"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "frontier_intelligence_confirmed",
+          "metadata": {
+            "chapter": 3,
+            "label": "边境情报核验"
+          },
+          "reason": "三层知识与调查链已完成"
+        }
+      ]
     }
   ]
 }

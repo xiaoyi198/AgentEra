@@ -12,16 +12,18 @@ from typing import Any, Callable, Awaitable
 
 from .action_agent import ActionAgent
 from .action_contract import ActionCatalog
+from .actor_contract import ActorDefinition, ActorManager
 from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
-from .causal_events import CausalEventEngine
+from .causal_events import CausalConditionContext, CausalEventEngine
 from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
 from .gameplay_contract import GameplayContract
+from .gameplay_effect_runtime import GameplayEffectRuntime
 from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
 from .objective_contract import ObjectiveManager
@@ -94,6 +96,7 @@ class Orchestrator:
         self.agent_generation: int = 0
         self._gameplay_contract = GameplayContract()
         self._ui_manifest = UIManifest.from_content({})
+        self.actor_manager = ActorManager()
         self.capability_catalog = CapabilityCatalog()
         configure_router_capabilities = getattr(self.router, "configure_capability_catalog", None)
         if callable(configure_router_capabilities):
@@ -144,6 +147,9 @@ class Orchestrator:
         self._sim_time: float = 0.0
         self.random_event_generator = RandomEventGenerator(sim_time=self._sim_time)
         self.causal_event_engine = CausalEventEngine()
+        self.gameplay_effect_runtime = GameplayEffectRuntime()
+        self.player_knowledge_provider: Any = self.gameplay_effect_runtime
+        self._sync_gameplay_effect_runtime(project_issues=False)
         self.time_simulator = (
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
@@ -228,6 +234,24 @@ class Orchestrator:
             **self._ui_manifest.to_dict(),
             "generation": self._ui_manifest_generation,
         }
+
+    def configure_actor_catalog(
+        self,
+        definitions: list[ActorDefinition | dict[str, Any]],
+        *,
+        generation: int = 0,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish immutable Actor components while preserving valid runtime overlays."""
+        self.actor_manager.configure(
+            definitions, generation=generation, preserve_state=preserve_state
+        )
+        self._sync_gameplay_effect_runtime(project_issues=False)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def actors_public_state(self) -> dict[str, Any]:
+        return self.actor_manager.public_state()
 
     def configure_capability_catalog(
         self, definitions: list[dict[str, Any]], *, generation: int = 0,
@@ -365,6 +389,7 @@ class Orchestrator:
             definitions, generation=generation,
             gameplay=gameplay or self._gameplay_contract,
         )
+        self._sync_gameplay_effect_runtime(project_issues=False)
         if self.persistor:
             self.persistor.mark_state_dirty()
 
@@ -381,6 +406,7 @@ class Orchestrator:
             action_ids=self.action_catalog.action_ids,
             gameplay=gameplay or self._gameplay_contract,
         )
+        self._sync_gameplay_effect_runtime()
         self._sync_legacy_memorials()
         if self.persistor:
             self.persistor.mark_state_dirty()
@@ -397,6 +423,7 @@ class Orchestrator:
             objectives, endings, generation=generation,
             gameplay=gameplay or self._gameplay_contract,
         )
+        self._sync_gameplay_effect_runtime(project_issues=False)
         if self.persistor:
             self.persistor.mark_state_dirty()
 
@@ -469,10 +496,13 @@ class Orchestrator:
         return result
 
     def _action_agent_ids(self) -> set[str]:
-        result = set(self.agents)
+        result = {agent_id for agent_id in self.agents if self.is_agent_enabled(agent_id)}
         player = self._gameplay_contract.player
         if player is not None:
-            result.update(item.id for item in player.controlled_objects if item.kind == "agent")
+            result.update(
+                item.id for item in player.controlled_objects
+                if item.kind == "agent" and self.is_agent_enabled(item.id)
+            )
         return result
 
     def preview_dlc_action(self, action_id: str, invocation: dict[str, Any]) -> dict[str, Any]:
@@ -634,6 +664,26 @@ class Orchestrator:
         """Return the WorldState bound to ActionAgent, or None."""
         return getattr(self.action_agent, "world_state", None)
 
+    def _sync_gameplay_effect_runtime(self, *, project_issues: bool = True) -> dict[str, Any]:
+        """Refresh the SQLite-authoritative effect read model and manager projections."""
+        state = self.gameplay_effect_runtime.refresh(self.world_state)
+        self.gameplay_effect_runtime.sync_managers(
+            actor_manager=self.actor_manager,
+            issue_manager=self.issue_manager,
+            objective_manager=self.objective_manager,
+            action_catalog=self.action_catalog,
+            sim_time=self._sim_time,
+            project_issues=project_issues,
+        )
+        return state
+
+    def is_agent_enabled(self, agent_id: str) -> bool:
+        """Return whether an Agent may receive or execute new work."""
+        return self.gameplay_effect_runtime.agent_enabled(agent_id)
+
+    def gameplay_effects_public_state(self) -> dict[str, Any]:
+        return self.gameplay_effect_runtime.public_state(sim_time=self._sim_time)
+
     @property
     def sim_time(self) -> float:
         return self._sim_time
@@ -663,6 +713,7 @@ class Orchestrator:
             court=self.court,
             sim_time_provider=lambda: self._sim_time,
             seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+            knowledge_provider=self.gameplay_effect_runtime,
         )
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
@@ -696,6 +747,7 @@ class Orchestrator:
                 court=self.court,
                 sim_time_provider=lambda: self._sim_time,
                 seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
+                knowledge_provider=self.gameplay_effect_runtime,
             )
             prepared[agent_id] = agent
 
@@ -791,11 +843,23 @@ class Orchestrator:
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
         causal_scheduled = self.causal_event_engine.observe(
-            event, sim_time=self._sim_time, world_state=self.world_state,
+            event,
+            sim_time=self._sim_time,
+            condition_context=CausalConditionContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                objective_manager=self.objective_manager,
+                knowledge_provider=self.player_knowledge_provider,
+                issue_manager=self.issue_manager,
+                action_catalog=self.action_catalog,
+            ),
         )
         if causal_scheduled and self.persistor:
             self.persistor.mark_state_dirty()
         for agent_id in event.target_agents:
+            if not self.is_agent_enabled(agent_id):
+                logger.info("Skipped event %s for disabled agent %s", event.event_id, agent_id)
+                continue
             self._pending_wakeups.append({
                 "target": agent_id,
                 "payload": {
@@ -853,6 +917,7 @@ class Orchestrator:
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
             "objective_runtime": self.objective_manager.snapshot(),
+            "actor_runtime": self.actor_manager.snapshot(),
             "agent_memories": agent_memories,
         }
 
@@ -879,6 +944,7 @@ class Orchestrator:
         self.objective_manager.restore(
             state.get("objective_runtime", {}), sim_time=self._sim_time
         )
+        self._sync_gameplay_effect_runtime()
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})
         restored = 0
@@ -1061,6 +1127,7 @@ class Orchestrator:
                         })
                         continue
                     effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
+                    self._sync_gameplay_effect_runtime()
                     self._record_operational_metric("causal_effect_commands", effect_count)
                     if self.persistor and effect_result.applied_count:
                         self.persistor.mark_state_dirty()
@@ -1106,11 +1173,13 @@ class Orchestrator:
                         matured_result.error_code,
                         matured_result.error,
                     )
-            if self.persistor and any(
+            if any(
                 matured_result.ok and not matured_result.replayed
                 for matured_result in matured_results
             ):
-                self.persistor.mark_state_dirty()
+                self._sync_gameplay_effect_runtime()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
 
         # 2. 处理待唤醒 — 拆分出皇帝奏折 vs Agent 调用
         if self._pending_wakeups:
@@ -1135,7 +1204,7 @@ class Orchestrator:
                 official = self.court.get_official(target_id)
                 if self._is_player_recipient(target_id, official):
                     player_wakeups.append(wakeup)
-                elif self.agents.get(target_id):
+                elif self.agents.get(target_id) and self.is_agent_enabled(target_id):
                     if target_id not in merged_agent_wakeups:
                         merged_agent_wakeups[target_id] = {
                             "target": target_id,
@@ -1153,6 +1222,9 @@ class Orchestrator:
                         new_from = wakeup.get("payload", {}).get("from", "")
                         if new_from and new_from not in base_payload.get("from", ""):
                             base_payload["from"] = f"{base_payload.get('from', '')}, {new_from}".strip(", ")
+                elif self.agents.get(target_id):
+                    logger.info("Dropped wakeup for disabled agent %s", target_id)
+                    result.agent_errors.append({"agent_id": target_id, "error": "disabled"})
                 else:
                     unresolved.append(target_id)
 
@@ -1275,6 +1347,7 @@ class Orchestrator:
         tasks = [
             self._call_agent_safe(agent, wakeup)
             for agent, wakeup in agent_wakeups
+            if self.is_agent_enabled(agent.agent_id)
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1344,6 +1417,9 @@ class Orchestrator:
 
         返回需要进入 Router 批处理的 action 列表（request_action 已在此处直接分发）。
         """
+        if not self.is_agent_enabled(agent.agent_id):
+            logger.info("Skipped background turn for disabled agent %s", agent.agent_id)
+            return []
         self._record_operational_metric("agent_turns")
         previous_outcome = getattr(agent, "last_turn_outcome", None)
         turn_error_recorded = False

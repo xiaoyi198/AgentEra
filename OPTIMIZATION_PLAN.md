@@ -1448,3 +1448,89 @@ This checkpoint completes P0.6 and the full P0 gameplay loop foundation:
 The persistent gameplay-framework goal remains **active**. P0 is complete, but P1/P2 remain open. The next work should move into generic Actor components, DLC-defined relationships, richer causal conditions/effects, and world/Actor/player knowledge layers rather than adding theme-specific branches.
 
 The v0.25.0 release gate passed 567 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 32 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern scanning, encoding checks, and Git diff checks.
+
+
+## Phase checkpoint: Generation-bound generic Actor components (v0.26.0, 2026-07-14)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.1:
+
+- introduced a DLC-authored generic Actor contract for attributes, traits, needs, goals, capabilities, identities, memberships and states;
+- separated Actor identity/state from LLM Agent execution while preserving same-ID legacy projection and supporting Actor-only roles;
+- integrated Actor validation, cross-package ownership, Generation materialization, encrypted archive recovery, reload/rollback and persisted runtime overlays;
+- added safe Actor APIs, prompt variables and a detailed Chinese DLC Studio Actor editor with import/export, keyed diff and history support;
+- upgraded `example_frontier` to v1.5.0 and synchronized AgentEra to v0.26.0.
+
+The persistent gameplay-framework goal remains **active**. P1.1 is complete; P1.2 should next generalize relationship contracts with direction, strength, visibility, expiry and multi-dimensional values. P1.3+ and P2 remain open.
+
+The v0.26.0 release gate passed 576 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 34 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, encoding and credential scans, and Git diff checks.
+
+## Phase checkpoint: DLC-authored relationship contracts (v0.27.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.2:
+
+- introduced package-authored `relationship_types` with directed/undirected semantics, strength bounds/defaults, visibility, expiry, bounded dimensions, style and metadata;
+- normalized and validated extended relationship edges through a Generation-bound `RelationshipCatalog`, including canonical undirected endpoints and active/inactive time state;
+- migrated SQLite persistence, world-state export Schema, generation archives, hot reload, rollback and restart recovery to preserve catalog/edge consistency;
+- added dynamic relationship APIs, a catalog-driven relationship graph, and detailed Chinese DLC Studio editors with import/export, diff and history support;
+- upgraded `example_frontier` to v1.6.0 and synchronized AgentEra to v0.27.0.
+
+The persistent gameplay-framework goal remains **active**. P1.2 is complete; P1.3 should next generalize causal condition/effect expressiveness while preserving deterministic preview, replay and generation lifecycle semantics. P1.4+ and P2 remain open.
+
+The v0.27.0 release gate passed 592 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 35 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern and encoding scans, and Git diff checks.
+
+## Phase checkpoint: generic causal-condition expressiveness (v0.28.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.3:
+
+- introduced one shared deterministic condition contract with 17 fact kinds, 12 operators, typed values, bounded history windows, aggregate functions and source-specific filters;
+- unified production scheduling, Orchestrator publication, Registry validation, static analysis and unsaved-draft Dry Run around the same evaluator;
+- added bounded payload-free causal event history, Snapshot Schema 2.0 recovery and fail-closed player-knowledge semantics;
+- extended cross-reference validation and Dry Run projection across entities, Metadata/tags/state, generic Actors, DLC relationships, ongoing events, Objectives and aggregate metrics;
+- replaced the legacy three-kind Studio row editor with a complete Chinese dynamic card editor and safe serialization for all condition groups/templates/rules;
+- upgraded `example_frontier` to v1.7.0 with a deterministic two-stage causal chain and synchronized AgentEra to v0.28.0.
+
+The persistent gameplay-framework goal remains **active**. P1.3 is complete; P1.4 should next generalize causal effects for entity lifecycle, Agent lifecycle, relationships/positions, Issue creation, knowledge revelation, objective progression, action unlocks and stage transitions. P1.5-P1.6 and P2 remain open.
+
+The v0.28.0 local gate passed 600 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected), a 155-test focused causal/runtime suite, 41 frontend tests, Python compile, frontend lint/build and zero-issue `example_frontier` Registry validation. External API tests remain opt-in through `AGENTERA_TEST_*` environment variables only.
+
+## Phase checkpoint: generic causal-effect runtime (v0.29.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.4:
+
+- introduced a shared bounded contract for 18 generic effects and deterministic materialization into stable, idempotent world commands;
+- made WorldState plus Gameplay Effect Runtime one atomic authority with complete rollback, snapshot/restart recovery and Generation-safe public state;
+- added entity and Agent lifecycle effects, relationship/membership mutation, Issue and Knowledge creation, Objective progression, Action unlock and Phase switching;
+- projected accepted state into Agent, Actor, Issue, Objective and Action managers, including disabled-Agent targeting/execution enforcement;
+- unified production and Dry Run transaction semantics and extended Registry validation with ordered same-batch `create_entity` references;
+- replaced the limited Studio effect rows with a full Chinese editor for all 18 effects, and added `phase` as the 18th visual condition source;
+- upgraded `example_frontier` to v1.8.0 and synchronized AgentEra to v0.29.0.
+
+The v0.29.0 local gate passed 620 Python tests, with 2 external-API environment-gated tests skipped because `AGENTERA_TEST_*` credentials were not injected; the focused causal/runtime suite passed 120 tests. Frontend verification passed 46 tests, ESLint and the Vite production build. Python compile, `git diff --check` and zero-issue `example_frontier` Registry validation also passed. Studio visual QA verified both saved effect chains and the 18-option catalog, plus a 390px single-column layout without document-level horizontal overflow. No external API request was attempted.
+
+The persistent gameplay-framework goal remains **active**. P1.4 is complete; P1.5 should next implement explicit world-truth, Actor-belief and player-knowledge layers with provenance, confidence, freshness, secrecy, distortion and investigation. P1.6 and P2 remain open.
+
+
+## Phase checkpoint: three-layer knowledge and investigation (v0.30.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.5:
+
+- added explicit World Truth, Actor Belief, and Player Knowledge authorities with provenance, confidence, freshness/expiry, five secrecy levels, scope, distortion, status, evidence, and safe metadata;
+- integrated propagation and investigation into World Commands, causal effects, causal conditions, Registry validation, static analysis, Dry Run, transactions, snapshots, reload, rollback, and recovery;
+- constrained investigation result policies to safe source/target layers, explicit holder semantics, bounded confidence multipliers, and validated secrecy/distortion/value overrides;
+- isolated Agent prompts to the bound Actor's subjective beliefs and removed hidden-layer contents and counts from public player projections;
+- expanded the DLC Studio catalogs to 25 conditions and 23 effects with detailed Chinese guidance, safe serialization, and investigation policy editing;
+- upgraded `example_frontier` to v1.9.0 with an end-to-end truth, distorted belief, propagation, investigation, verification, and third-phase gate example; synchronized AgentEra to v0.30.0.
+
+The persistent gameplay-framework goal remains **active**. P1.5 is complete. P1.6 (DLC-derived indicators and aggregate formulas) and all P2 long-term gameplay work remain open.
+
+The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.

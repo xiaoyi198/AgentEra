@@ -49,7 +49,10 @@ def execute_causal_world_commands(
             "source": "causal_event",
             "causal_event_id": event.event_id,
             "causal_rule_id": rule_id,
-            "effect_index": index,
+            "command_index": index,
+            "effect_index": int(plan.get("effect_index", index)),
+            "effect_type": str(plan.get("effect_type", plan.get("command_type", ""))),
+            "sub_index": int(plan.get("sub_index", 0)),
         }
         for key in ("anchored_base_value", "anchor_rate", "transfer_side", "transfer_id"):
             if key in command_payload:

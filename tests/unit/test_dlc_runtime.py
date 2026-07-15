@@ -31,6 +31,7 @@ class FakeOrchestrator:
         self.gameplay_configurations = []
         self.action_configurations = []
         self.capability_configurations = []
+        self.actor_configurations = []
         self.issue_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
@@ -58,6 +59,10 @@ class FakeOrchestrator:
     def configure_action_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("actions", [item["action_id"] for item in definitions]))
         self.action_configurations.append((definitions, generation, gameplay))
+
+    def configure_actor_catalog(self, definitions, *, generation=0, preserve_state=True) -> None:
+        self.operations.append(("actors", [item.actor_id for item in definitions]))
+        self.actor_configurations.append((definitions, generation, preserve_state))
 
     def configure_capability_catalog(self, definitions, *, generation=0) -> None:
         self.operations.append(("capabilities", [item["capability_id"] for item in definitions]))
@@ -1134,3 +1139,94 @@ def test_runtime_publishes_capabilities_across_reload_and_rollback(tmp_path: Pat
     assert rollback["source_generation"] == 1
     assert orchestrator.capability_configurations[-1][0][0]["display_name"] == "Generation One Report"
     assert loader.public_runtime()["capabilities"]["capabilities"][0]["capability_id"] == "city_report"
+
+
+
+def test_runtime_materializes_explicit_actor_components_and_actor_only_definition(tmp_path: Path):
+    registry = DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
+    registry.create({"id": "actors", "name": "Actors", "version": "1.0.0"})
+    registry.save_content("actors", {
+        "entities": [
+            {"id": "outpost", "type": "location", "name": "Outpost"},
+            {"id": "garrison", "type": "organization", "name": "Garrison"},
+        ],
+        "actors": [
+            {
+                "actor_id": "guard_actor", "display_name": "Guard", "entity_id": "outpost",
+                "attributes": {"rank": 6},
+                "needs": [{"need_id": "supply", "current": 40, "target": 80}],
+                "identities": [{"identity_id": "watch_commander"}],
+                "memberships": [{"organization_id": "garrison", "role": "commander", "primary": True}],
+                "states": {"alert": True},
+            },
+            {"actor_id": "actor_only", "display_name": "Quartermaster"},
+        ],
+        "agents": [{"id": "guard_agent", "actor_id": "guard_actor"}],
+        "prompts": {"official_template": "{name}|{actor_id}|{actor_needs}|{actor_states}"},
+    })
+    registry.publish("actors")
+    registry.set_enabled("actors", True)
+    world = WorldState(str(tmp_path / "actors.db"))
+    court = CourtGraph(str(tmp_path / "actors.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active(seed_world=False)[0]
+
+    assert report.actors == 2 and report.agents == 1
+    definitions, generation, preserve_state = orchestrator.actor_configurations[-1]
+    assert generation == 1 and preserve_state is False
+    assert {item.actor_id for item in definitions} == {"guard_actor", "actor_only"}
+    assert orchestrator.agents["guard_agent"].config.display_name == "Guard"
+    prompt = orchestrator.agents["guard_agent"].config.system_prompt
+    assert "guard_actor" in prompt and '"supply"' in prompt and '"alert":true' in prompt
+
+
+def test_relationship_contract_survives_materialization_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["entities"].append({"id": "gate", "type": "location", "name": "Gate"})
+    content["relationship_types"] = [{
+        "relationship_type_id": "trust",
+        "display_name": "Trust v1",
+        "direction": "undirected",
+        "minimum_strength": -100,
+        "maximum_strength": 100,
+        "default_strength": 0,
+        "default_visibility": "private",
+        "allow_expiry": True,
+        "dimensions": [{
+            "dimension_id": "personal", "display_name": "Personal",
+            "minimum": -100, "maximum": 100, "default": 0,
+        }],
+    }]
+    content["relations"] = [{
+        "parent_id": "gate", "child_id": "city", "rel_type": "trust",
+        "strength": 70, "visibility": "limited", "expires_at": 20,
+        "values": {"personal": 80},
+    }]
+    registry.save_content("sample", content)
+    world = WorldState(str(tmp_path / "relationships.db"))
+    court = CourtGraph(str(tmp_path / "relationships.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    reports = loader.load_active()
+    assert reports[0].relationship_types == 1
+    assert world.relationship_catalog.get("trust").display_name == "Trust v1"
+    assert world.get_all_relations()[0]["parent_id"] == "city"
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    assert restored.relationship_definitions[0]["relationship_type_id"] == "trust"
+
+    content["relationship_types"][0]["display_name"] = "Trust v2"
+    registry.save_content("sample", content)
+    result = asyncio.run(loader.reload_active())
+    assert result["generation"] == 2
+    assert world.relationship_catalog.get("trust").display_name == "Trust v2"
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    assert rollback["activation_kind"] == "rollback"
+    assert rollback["generation"] == 3
+    assert world.relationship_catalog.get("trust").display_name == "Trust v1"

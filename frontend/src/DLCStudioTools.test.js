@@ -30,6 +30,8 @@ const base = {
   inventory: [],
   entity_values: [],
   relations: [],
+  relationship_types: [],
+  actors: [],
   agents: [],
   initial_events: [],
   ongoing_events: [],
@@ -66,12 +68,25 @@ test('import normalization fills missing collections and rejects wrong shapes', 
   assert.equal(normalized.schema_version, '1.0')
   assert.deepEqual(normalized.prompts, {})
   assert.deepEqual(normalized.inventory, [])
+  assert.deepEqual(normalized.relationship_types, [])
   assert.throws(() => normalizeImportedContent({ entities: {} }), /entities must be an array/)
   assert.throws(() => normalizeImportedContent({ prompts: [] }), /prompts must be an object/)
   assert.throws(
     () => normalizeImportedContent({ format: 'world-simulator-dlc-content-v2', content: base }),
     /Unsupported DLC content format/,
   )
+})
+
+
+test('relationship types normalize export and diff by stable relationship_type_id', () => {
+  const before = { ...base, relationship_types: [{ relationship_type_id: 'trust', display_name: 'Trust', direction: 'undirected' }] }
+  const after = { ...before, relationship_types: [{ ...before.relationship_types[0], display_name: 'Mutual trust' }, { relationship_type_id: 'rivalry', display_name: 'Rivalry' }] }
+  const exported = createContentExport({ id: 'demo' }, after, '2026-07-15T00:00:00.000Z')
+  assert.deepEqual(normalizeImportedContent(exported).relationship_types, after.relationship_types)
+  const section = summarizeContentDiff(before, after).sections.find(item => item.section === 'relationship_types')
+  assert.equal(section.changed, 1)
+  assert.equal(section.added, 1)
+  assert.deepEqual(section.entries.map(item => item.key), ['rivalry', 'trust'])
 })
 
 test('diff summary reports keyed additions removals and changes', () => {
@@ -91,6 +106,40 @@ test('diff summary reports keyed additions removals and changes', () => {
     'entities:city:removed',
     'personas:calm:added',
   ])
+})
+
+test('actor content round-trips through export and import', () => {
+  const content = {
+    ...base,
+    actors: [{ actor_id: 'frontier_guard', display_name: 'Frontier Guard', traits: [{ trait_id: 'vigilant', value: 0.8 }] }],
+  }
+  const exported = createContentExport({ id: 'actors', name: 'Actors', version: '1.0.0' }, content)
+
+  assert.deepEqual(normalizeImportedContent(exported).actors, content.actors)
+})
+
+test('actor keyed diff and history track additions and edits by actor_id', () => {
+  const initial = {
+    ...base,
+    actors: [{ actor_id: 'frontier_guard', display_name: 'Frontier Guard' }],
+  }
+  const next = {
+    ...initial,
+    actors: [
+      { actor_id: 'frontier_guard', display_name: 'Veteran Guard' },
+      { actor_id: 'frontier_quartermaster', display_name: 'Quartermaster' },
+    ],
+  }
+
+  const diff = summarizeContentDiff(initial, next)
+  assert.deepEqual(diff.entries.map(item => `${item.section}:${item.key}:${item.type}`), [
+    'actors:frontier_guard:changed',
+    'actors:frontier_quartermaster:added',
+  ])
+
+  const history = commitContentHistory(createContentHistory(initial), next)
+  assert.deepEqual(undoContentHistory(history).present.actors, initial.actors)
+  assert.deepEqual(redoContentHistory(undoContentHistory(history)).present.actors, next.actors)
 })
 
 test('history truncates redo on commit and round-trips undo redo', () => {

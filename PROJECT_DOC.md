@@ -2048,3 +2048,154 @@ Status: **implemented and locally verified**.
 - `POST /api/capabilities/{capability_id}/invoke` 校验目标、参数和 Generation 后调用 Orchestrator，响应采用结构化成功/错误码。
 - React `CapabilityPanel` 从 API 动态构建能力、目标和参数表单；Generation 更新后重新读取目录。
 - DLC Studio 的“能力”页签提供完整中文字段说明、白名单选择、参数与目标编辑、即时验证、Content Diff、导入导出及撤销/重做。
+
+
+## Release architecture note: Generation-bound generic Actor components (v0.26.0)
+
+### Canonical Actor contract
+
+- `multiagent_framework/actor_contract.py` owns normalization, validation, immutable `ActorDefinition` values and the mutable `ActorManager` overlay.
+- `content.json.actors` is authoritative. Components cover attributes, traits, needs, goals, capability IDs, identities, memberships, states and metadata. IDs and nested JSON are bounded; non-finite numbers, unsafe shapes, duplicate local IDs and duplicate organization memberships are rejected.
+- Actor and Agent are deliberately separate. `agents[].actor_id` binds an LLM runtime to a role, Actor-only entries are valid, and legacy Agents without an explicit binding project to same-ID Actors. Explicit references to unknown Actors are validation errors.
+
+### Package ownership and validation
+
+- `DLCRegistry` normalizes Actor documents before materialization and validates entity, capability, identity, membership and Agent references. Actor IDs must remain unique across the active package set.
+- Prompt variable allowlists include the public Actor components but exclude metadata. The Registry continues to reject executable code, provider credentials and arbitrary prompt fields.
+- `example_frontier` v1.5.0 demonstrates Agent/Actor ID separation, Actor-only roles, organization membership and Actor-driven Prompt context.
+
+### Generation and persistence lifecycle
+
+- `DLCRuntimeManager` materializes Actor definitions and Agent-to-Actor prompt packages into the same immutable Generation snapshot as agents, actions and capabilities. Generation archives preserve Actor definitions and can reconstruct legacy snapshots from the former Official projection.
+- Reload configures the `ActorManager` atomically. Compatible runtime overlays survive a normal hot reload; values that violate the replacement Schema are discarded or clamped to the new definition. Rollback/recovery configures the archived catalog before restoring runtime state.
+- `Orchestrator.save_state()` and `load_state()` persist the `actor_runtime` overlay with the rest of authoritative world state. Public runtime summaries expose only safe definitions and state.
+
+### API and authoring surfaces
+
+- `GET /api/actors` returns the safe Actor catalog/runtime summary and `GET /api/actors/{actor_id}` returns a single public Actor or 404. Provider profiles and credentials are never part of these payloads.
+- DLC Studio includes an Actor editor with Chinese field guidance for every component. Actor content participates in import/export, keyed diff, history, undo/redo and advanced JSON. Agent authoring includes an explicit Actor selector.
+- Agent prompt packages can consume structured Actor variables such as attributes, traits, needs, goals and states while keeping metadata outside the LLM context boundary.
+
+### Release verification
+
+The v0.26.0 checkpoint passed 576 Python tests with 2 credential-gated external API tests skipped, 34 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding checks, secret scans and `git diff --check`. The persistent gameplay goal remains active: P1.1 is complete; P1.2 and later phases remain open.
+
+## UI scroll containment maintenance (2026-07-15)
+
+The 2026 fixed-viewport visual shells keep headers and the floating application navigation stable, but every information-bearing column must own an explicit scroll container. A regression in the visual override layer changed both the registry detail column and the TianJi tool catalog to `overflow: hidden`, so long Agent forms and the 18-tool catalog were clipped below the viewport.
+
+The frontend now restores independent vertical scrolling for `frontend/src/editor.css` `.editor-right` and `frontend/src/tianji.css` `.tj-tools-panel`. Both containers use contained overscroll, stable scrollbar gutters, and vertical touch panning. The TianJi tool heading remains sticky while the catalog scrolls. Mobile breakpoints continue to return the registry to normal document flow, while the bounded TianJi catalog remains directly scrollable.
+
+Browser verification used the running DLC data at a 1280 x 720 viewport: the registry detail column exposed 908 px of content inside a 548 px viewport and scrolled to its 360 px maximum; the TianJi catalog exposed more than 2300 px inside the same 548 px viewport and accepted wheel scrolling while preserving the sticky heading.
+
+## Release architecture note: Generation-bound DLC relationship contracts (v0.27.0)
+
+### Canonical contract and validation
+
+- `multiagent_framework/relationship_contract.py` owns `RelationshipTypeDefinition`, `RelationshipCatalog`, normalization, edge validation and the two legacy compatibility definitions. `content.json.relationship_types` is the authoritative package-authored source.
+- A type defines stable identity, localized presentation, `directed`/`undirected` semantics, minimum/maximum/default strength, default visibility, expiry permission, optional bounded dimensions, graph style and JSON-safe metadata. The Registry rejects duplicate IDs, invalid ranges, unsupported visibility, unsafe nested values and cross-package ownership conflicts.
+- Edges are identified by the composite `(parent_id, child_id, rel_type)` key and carry strength, visibility, optional start/expiry timestamps, dimension values, note and metadata. The catalog supplies defaults and rejects unknown dimensions, out-of-range values and forbidden expiry. Undirected endpoints are canonicalized so reversed input addresses the same edge.
+
+### WorldState and persistence
+
+- `WorldState` owns the active immutable `RelationshipCatalog`; every relation read/write is normalized against it. Active state is derived from `starts_at <= current_time < expires_at`, while historical/inactive edges remain queryable when requested.
+- SQLite persists the catalog in `relationship_type_catalog` and migrates legacy `entity_relations` tables by adding the v0.27.0 columns without discarding existing subordinate/affiliated rows. World-state export Schema is `2.1` and includes the dynamic catalog and extended edge shape.
+- `DLCRuntimeManager` builds relationship definitions during Generation preparation, archives the JSON-safe blueprint, and publishes the catalog together with the rest of the committed Generation. Reload, rollback and restart recovery install the archived catalog before relation state restoration, preventing mixed-generation validation.
+
+### API and frontend consumption
+
+- `GET /api/relationship-types` and `GET /api/relationship-types/{id}` expose the safe active catalog. `GET /api/relations` and `GET /api/world-state/{entity_id}/relations` support active/inactive filtering; `POST /api/relations` and `DELETE /api/relations` mutate validated edges through WorldState.
+- `RelationsView` renders labels, colors, dashed strokes and endpoint markers from the catalog, supports dynamic filters and dimension forms, and edits time windows, visibility and metadata without court-specific type branches.
+- DLC Studio treats `relationship_types` as a first-class keyed collection. The relationship-type editor and relation-edge editor share validation semantics, participate in import/export, diff, history and raw JSON, and block deletion while draft edges still reference the type.
+
+### Compatibility and release state
+
+- `subordinate` and `affiliated` remain effective defaults for older DLCs and databases. A DLC may override either stable ID to customize its presentation and constraints, but unrelated active packages may not claim the same non-legacy ID.
+- `example_frontier` v1.6.0 exercises directed command, undirected trust/rivalry, visibility, expiry, dimensions, style and metadata. AgentEra is synchronized at v0.27.0.
+- The v0.27.0 release gate passed 592 Python tests with 2 credential-gated external API tests skipped, 35 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding and credential scans, and `git diff --check`. The persistent gameplay goal remains active. P1.2 is complete; P1.3 (richer causal condition/effect expressiveness) is the next phase.
+
+## Release architecture note: generic causal-condition expressiveness (v0.28.0)
+
+### Shared condition contract
+
+- `multiagent_framework/causal_conditions.py` is the single schema, validation and resolution boundary for causal facts. It defines 17 fact kinds, 12 operators, `sum/avg/min/max/count`, seven aggregate sources, bounded values, bounded `window_days`, and bounded JSON-safe filters.
+- `causal_events.py`, `causal_analysis.py`, `dlc_registry.py` and `orchestrator.py` consume the shared contract. Production scheduling, static diagnostics, unsaved-draft Dry Run and runtime publication therefore cannot implement divergent comparisons or source semantics.
+- Entity facts cover direct fields, `metadata.xxx`, tags and current state. Actor facts resolve runtime attributes/states plus declared traits and memberships. Relationship facts honor the active `RelationshipCatalog`, including reversed endpoint lookup for undirected types and `strength`, `active`, `values.xxx` or metadata fields.
+
+### History, objectives, aggregates and privacy
+
+- The causal scheduler keeps a bounded, payload-free event history containing only normalized event identity/type, targets and generated time. Snapshot Schema `2.0` persists and restores this history after strict validation; legacy snapshots restore an empty history.
+- `event_history` supports event type, target Agent and day-window filtering. `ongoing_event` exposes count, existence and minimum remaining days. `time` exposes simulation days or seconds, and `objective_progress` consumes only `ObjectiveManager.public_state()` fields.
+- `aggregate_metric` can aggregate entity counts, anchored inventory value, metrics, parameters, Actor attributes, relationship values/counts and ongoing-event counts. Filters are bounded and interpreted only by allowlisted source-specific fields.
+- `player_knowledge` never falls back to WorldState. It delegates to an explicitly installed knowledge Provider and resolves as missing when no Provider exists, so ordinary comparisons fail closed instead of gaining omniscient access.
+
+### Registry, Dry Run and Studio
+
+- Registry validation checks package-visible entity, resource, Actor, relationship-type, endpoint and Objective references, including aggregate source/resource-kind constraints. The built-in and DLC-authored relationship IDs come from `RelationshipCatalog.ids` rather than hard-coded legacy constants.
+- `_SeedWorldFacts` projects entity fields/metadata/tags/state, Actor definitions/runtime overlays, relationship edges/catalog, ongoing events and bounded initial event history. Transactional world effects remain isolated while downstream conditions can observe earlier Dry Run effects.
+- `frontend/src/CausalConditionTools.js` owns frontend catalogs, normalization and secret-free serialization. `CausalConditionBuilder` renders detailed Chinese cards for all condition kinds, dynamically exposes only relevant references, supports number/text/boolean/list values and Filter JSON, and strips editor-only fields before saving.
+- `example_frontier` v1.7.0 demonstrates a deterministic two-stage chain in which stage two observes stage-one entity-state and ongoing-event effects. AgentEra version identity is synchronized at v0.28.0.
+
+### Verification and remaining scope
+
+- Focused causal/runtime verification: 155 passed. Full Python verification: 600 passed, with 2 external-API tests skipped because `AGENTERA_TEST_*` credentials were not injected. Frontend verification: 41 tests, ESLint and Vite production build passed. Python compile and `example_frontier` Registry validation also passed with zero issues.
+- The persistent gameplay-framework goal remains active. This release completes P1.3 only. P1.4 must next expand generic causal effects; P1.5-P1.6 and P2 remain open.
+
+## Release architecture note: generic causal-effect runtime (v0.29.0)
+
+### Shared authored-effect and command contract
+
+- `multiagent_framework/gameplay_effects.py` is the single normalization/materialization boundary for 18 generic `world_effects`. Authored batches are bounded to 32 effects and materialize at most 64 immutable commands.
+- Legacy resource/status/ongoing-event/anchored-transfer shapes remain compatible. New commands cover entity create/move/transform/remove, Agent enable/disable, relationship and membership mutation, Issue creation, player-knowledge revelation, Objective progression, Action unlocks and phase switching.
+- Materialized command IDs are deterministic: `causal:{event_id}:{command_index}`. The scheduler freezes commands before dispatch, and replay of the same child event is idempotent rather than duplicating world side effects.
+
+### Atomic authority and Manager projection
+
+- `WorldState.apply_causal_effects()` snapshots SQLite-backed world data and `GameplayEffectRuntime`, executes the complete command batch inside one transaction, and restores both authorities on any reducer, projection or commit failure.
+- `GameplayEffectRuntime` owns Generation-safe dynamic state for Agent enablement, Actor membership overlays, Issues, player Knowledge, Objective state, Action unlocks and the current Phase. Its snapshot is persisted with runtime state and restored before causal scheduling resumes.
+- Orchestrator projection updates Agent, Actor, Issue, Objective and Action managers only after authoritative command acceptance. Disabled Agents are excluded from targeting and execution; restored legacy runtime state is synchronized into the effect runtime before use.
+
+### Registry, Dry Run and authoring
+
+- Registry validates world effects in author order. A successful `create_entity` extends the rule-local entity catalog so later relationship, membership, knowledge, scope or lifecycle effects may safely reference the new stable ID; duplicate, missing and removed references are rejected at precise paths.
+- Dry Run uses the same materializer, command reducers, transaction boundaries and rollback behavior as production. Projected entities, relationships, memberships, Issues, Knowledge, Objectives, unlocks and Phase are therefore observable by downstream conditions without mutating live SQLite.
+- The condition contract now exposes an 18th `phase` fact kind through `phase_id` or `metadata.xxx`. `frontend/src/CausalConditionTools.js` and `CausalEffectTools.js` provide matching Chinese catalogs, defaults, normalization, bounded JSON parsing and secret-free serialization.
+- DLC Studio groups all 18 effects into six Chinese authoring categories, shows field-level constraints and atomicity guidance, and includes entities created earlier in the same rule in later reference controls.
+
+### Verification
+
+- Full Python gate: `620 passed, 2 skipped`; focused causal/runtime gate: `120 passed`. The two external API tests skipped because `AGENTERA_TEST_*` variables were absent, so no external request was made.
+- Frontend gate: `46 passed`; ESLint and Vite production build passed. Python compile, `git diff --check`, and `example_frontier` Registry validation (`0 issues`) passed.
+- Visual QA confirmed the two saved example rules round-trip as 8 and 4 effects, the effect selector exposes all 18 effect types, the stabilization condition reads `phase_id`, and the 390px layout uses single-column effect fields/toolbars without document-level horizontal overflow.
+
+### Example and remaining scope
+
+- `example_frontier` v1.8.0 demonstrates an atomic response batch that creates `frontier_relief_command`, immediately links it to the garrison and quartermaster, creates an Issue, reveals Knowledge and switches Phase. Its stabilization stage observes the response Phase, advances an Objective, unlocks an Action and switches to chapter two.
+- AgentEra version identity is synchronized at v0.29.0. The persistent gameplay-framework goal remains active: P1.4 is complete; P1.5 must implement three-layer world/Actor/player knowledge, while P1.6 and P2 remain open.
+
+
+## Release architecture note: three-layer knowledge and investigation runtime (v0.30.0)
+
+### Authoritative knowledge model
+
+- `multiagent_framework/knowledge_contract.py` defines the bounded, theme-neutral contract for `world_truth`, `actor_belief`, and `player_knowledge`. Records carry provenance, confidence, freshness/expiry, five secrecy levels, scope, distortion, status, evidence, source metadata, and JSON-safe extension metadata.
+- `multiagent_framework/knowledge_runtime.py` is the SQLite-backed authority for records, propagation, and investigations. World Truth has no holder; Actor Belief and Player Knowledge require an explicit holder. Expired source records fail propagation with `knowledge_source_expired` rather than silently copying stale information.
+- Knowledge state participates in WorldState snapshots, causal transactions, runtime recovery, Generation reload/rollback semantics, and deterministic command replay. The earlier gameplay-effect Knowledge projection remains compatible while delegating explicit layered behavior to the knowledge runtime.
+
+### Commands, causal rules, and investigations
+
+- The World Command bus accepts `set_world_truth`, `set_actor_belief`, `reveal_information`, `propagate_knowledge`, `start_investigation`, and `advance_investigation`. Authored causal effects expose the matching five new generic effects plus the upgraded player revelation effect, bringing the effect catalog to 23.
+- The causal condition catalog now contains 25 fact kinds. Explicit `world_truth`, `actor_belief`, upgraded `player_knowledge`, confidence, freshness, secrecy, and investigation conditions use the same knowledge provider in production, Registry analysis, and unsaved-draft Dry Run.
+- Investigation completion uses a normalized result policy. Sources may be any knowledge layer, but targets are restricted to Actor Belief or Player Knowledge; holder requirements, confidence multipliers, secrecy, distortion, value override, source metadata, and audit reason are validated before command materialization.
+
+### Security projections and authoring surfaces
+
+- Agent prompt assembly resolves the Agent-to-Actor binding and injects only that Actor's bounded belief projection. It never injects World Truth or another Actor's beliefs, and labels the projection as untrusted subjective context rather than instructions.
+- Player/public projections omit hidden layer contents and hidden layer counts, preventing both direct disclosure and trivial count-based inference. Knowledge without an explicit provider remains fail-closed.
+- Registry validation, static analysis, Dry Run, and DLC Studio share the layered contract. The Studio condition/effect editors provide 25/23 Chinese catalog entries, field-level constraints, secrecy/freshness guidance, investigation result-policy editing, safe JSON normalization, and round-trip serialization.
+- `example_frontier` v1.9.0 demonstrates a complete World Truth -> distorted Actor Belief -> unverified Player Knowledge -> investigation -> verified Player Knowledge flow and gates its third phase with layered knowledge and investigation conditions.
+
+### Release state
+
+- The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.
+- P1.5 is complete, while the persistent gameplay-framework goal remains **active**. The next phase is P1.6 DLC-derived metrics and aggregate formulas; P2 remains open.

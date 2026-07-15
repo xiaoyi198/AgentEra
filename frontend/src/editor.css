@@ -995,7 +995,14 @@ button:disabled {
   box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,.025);
   animation: ui-enter .36s ease both;
 }
-.editor-right { animation-delay: .05s; }
+.editor-right {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  animation-delay: .05s;
+}
 .tab-bar {
   display: flex;
   gap: 4px;

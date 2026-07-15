@@ -2658,3 +2658,285 @@ python -c "from pathlib import Path; from multiagent_framework.dlc_registry impo
 ```
 
 可选外部 API 连通测试只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入凭据时测试必须 skip；严禁把 URL 或 Key 写入命令、源码、日志、配置和提交。
+
+
+## Generic Actor development workflow (v0.26.0)
+
+### Authoritative schema and compatibility
+
+Define reusable roles in `content.json.actors`; bind an LLM Agent with `agents[].actor_id`. Do not duplicate mutable role state inside Agent configuration. An omitted binding keeps legacy behavior by projecting a same-ID Actor, while an explicit unknown Actor ID fails Registry validation. Actor-only definitions are supported.
+
+`actor_id`, component-local IDs and references must be stable package data, not translated display labels. Use `display_name` and `description` for localized text. Actor components are:
+
+- `attributes`: bounded scalar values used by rules and presentation;
+- `traits`: stable `trait_id`, intensity/value, tags and optional description;
+- `needs`: stable `need_id`, current/target/min/max values and optional rate;
+- `goals`: stable `goal_id`, priority, progress, status and optional deadline;
+- `capability_ids`: references to enabled DLC capability IDs;
+- `identities`: named identities/titles with optional entity and validity interval;
+- `memberships`: one record per organization, with role, status and weight;
+- `states`: bounded JSON-safe runtime state;
+- `metadata`: authoring extensions that are persisted but not injected into prompts.
+
+### Runtime invariants
+
+1. Actor definitions are immutable within one Generation; only the `ActorManager` runtime overlay may change.
+2. Reload, rollback and archive recovery must publish Actor, Agent, capability and prompt mappings from the same Generation snapshot.
+3. Preserved state must be revalidated against the new Actor Schema. Never carry a need, goal or state value across reload merely because the field name matches.
+4. Actor public state and persistence payloads must remain secret-free. Provider URLs, API keys and model-profile credentials never belong in Actor attributes, states or metadata.
+5. Keep the compatibility projection to `Official/CourtGraph` isolated. New generic behavior should read Actor components rather than adding more court-specific fields.
+
+### Prompt and API rules
+
+The allowlisted prompt variables are `actor`, `actor_id`, `actor_type`, `actor_entity_id`, `actor_attributes`, `actor_traits`, `actor_needs`, `actor_goals`, `actor_capabilities`, `actor_identities`, `actor_memberships` and `actor_states`. They are serialized as bounded safe JSON. Do not add `actor_metadata` without a separate threat-model and disclosure review.
+
+Use `GET /api/actors` for the catalog/runtime summary and `GET /api/actors/{actor_id}` for details. A missing Actor returns 404; an unavailable runtime returns 503. Do not expose internal model bindings through either endpoint.
+
+### DLC Studio workflow
+
+1. Open “Actor / 角色组件” and create the Actor before adding an explicit Agent binding.
+2. Fill stable IDs first, then localized display names and component values. Every field includes Chinese guidance.
+3. Use the Agent editor to select `actor_id`; leave it empty only when intentionally relying on legacy same-ID projection.
+4. Add Actor prompt variables only where the Agent needs them. Prefer the smallest component set and avoid dumping the entire Actor document.
+5. Review Content Diff, run Registry validation, then reload. Verify Actor-only entries, Agent-bound entries and state preservation separately.
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_actor_contract.py tests/unit/test_actor_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py
+python -m pytest -q
+python -m compileall multiagent_framework routers
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; print(DLCRegistry(Path('.')).validate('example_frontier'))"
+git diff --check
+```
+
+The optional external API smoke test remains process-environment only. It pulls `/v1/models`, auto-selects bounded chat candidates and tests `/v1/chat/completions`; it must skip when the required environment variables are absent and must not print provider response bodies or persist secrets.
+
+## Scrollable viewport-shell contract (2026-07-15)
+
+When a page uses a fixed desktop shell (`height: 100vh; overflow: hidden`), apply the following rules:
+
+1. Every flex/grid ancestor between the shell and the intended scroller must have `min-height: 0`.
+2. Put `overflow-y: auto` on the element that actually owns the long information, not only on the page body.
+3. Use `overflow: hidden` only for structural/card clipping. Do not include a long-form content column in a grouped selector that forces hidden overflow.
+4. Prefer `overscroll-behavior: contain`, `scrollbar-gutter: stable`, and `touch-action: pan-y` on independent desktop columns.
+5. Sticky controls inside a scroller need an opaque background and a positive `z-index` so content cannot paint over them.
+6. At mobile breakpoints, either restore document flow (`height: auto; overflow: visible`) or keep an explicit bounded inner scroller; never leave a fixed-height, hidden-overflow column without a scroll owner.
+
+Current reference implementations are `.editor-right` in `frontend/src/editor.css` and `.tj-tools-panel` in `frontend/src/tianji.css`. For manual regression checks, load real DLC data, select a registry node with a long detail form, expand all TianJi tool categories, then verify mouse-wheel/touch scrolling and confirm the bottom-most content is reachable at both desktop and mobile widths.
+
+## DLC relationship contract authoring workflow (v0.27.0)
+
+### Relationship type schema
+
+在 `content.json.relationship_types` 中声明关系类型。`relationship_type_id` 是存档、API 和跨版本引用使用的稳定 ID，不要使用会随翻译变化的显示文本。推荐字段：
+
+- `display_name` / `description`：面向作者与玩家的中文名称和说明；
+- `direction`：`directed` 表示 source → target，`undirected` 表示双方对等；无向边会规范化端点顺序，禁止依赖输入顺序表达含义；
+- `minimum_strength`、`maximum_strength`、`default_strength`：有限数值且默认值必须落在区间内；
+- `default_visibility`：`public`、`limited`、`private` 或 `secret`；这是数据语义，不代表 API 自动完成身份鉴权，调用层仍需执行可见性策略；
+- `allow_expiry`：为 false 时边不得填写 `expires_at`；
+- `dimensions`：每项使用稳定 `dimension_id`、名称、说明、最小/最大/默认值；边上的 `values` 只能引用已声明维度并满足范围；
+- `style`：建议使用 `label`、CSS 颜色 `color`、布尔 `dashed` 和 `marker`（如 `arrow`、`closed`、`none`）；它只控制安全展示，不允许脚本或组件名；
+- `metadata`：仅存放 JSON-safe 作者扩展信息，不要放 Provider、模型凭据、Prompt、文件路径或可执行配置。
+
+框架始终提供 `subordinate` 和 `affiliated` 两个 legacy 类型。新 DLC 可继续直接引用，也可用同 ID 覆盖展示/约束；其他自定义 ID 在全部启用 DLC 之间必须唯一。
+
+### Relation edge schema
+
+关系边至少填写 `source_entity_id`、`target_entity_id` 和 `relationship_type_id`，可选填写：
+
+- 关系边使用 `(parent_id, child_id, rel_type)` 复合键；同一复合键再次写入表示覆盖更新；
+- `strength`：省略时采用类型默认值；
+- `visibility`：必须是四种白名单值之一；
+- `starts_at` / `expires_at`：使用世界时间数值，要求 `expires_at > starts_at`；当前时间早于开始或不早于到期时边为 inactive；
+- `values`：关系类型定义的多维数值映射；
+- `note`：简短叙事说明；
+- `metadata`：有界 JSON-safe 扩展数据。
+
+不要在业务代码里按 `subordinate`/`affiliated` 写分支。需要方向、样式、范围或维度时，从当前 Generation 的 `RelationshipCatalog` 查询。对无向边执行查询、更新和删除时同样交给 Catalog 规范化端点。
+
+### DLC Studio workflow
+
+1. 在“关系类型”页签先创建类型，填写稳定 ID、中文说明、方向、强度、公开性、到期规则、维度和样式。
+2. 再进入关系边编辑器，从当前草稿目录选择类型并填写强度、时间窗口、维度、备注和 Metadata。
+3. 删除类型前先删除或迁移所有引用边；Studio 会提示引用位置，但最终仍以 Registry 校验为准。
+4. 使用 Content Diff、撤销/重做和导入导出检查 keyed collection 变化；批量修改时才使用高级 JSON。
+5. 保存后执行 Registry validate，再 reload；同时检查关系类型 API、关系列表和主界面动态图例是否属于同一 Generation。
+
+### Runtime and migration rules
+
+关系目录是 Generation-bound 权威数据。新增运行时入口必须通过 `WorldState`/`RelationshipCatalog`，不能绕过校验直接写 SQLite。Schema 迁移必须保留旧边；archive、rollback 和 restart recovery 必须先恢复目录再恢复边。修改类型范围、方向或维度时，应准备旧边兼容/迁移方案，不能假设热重载会静默接受不再合法的数据。
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_relationship_contract.py tests/unit/test_relationship_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_generation_archive.py tests/unit/test_worldstate_time_api.py
+python -m pytest -q
+python -m compileall multiagent_framework routers
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+外部 API 连通测试只允许从 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS` 读取临时配置；未注入时必须 skip。禁止把实际 URL、Key 或响应原文写入源码、命令记录、日志、文档和提交。
+## Generic causal-condition authoring workflow (v0.28.0)
+
+### Authoritative schema and shared evaluator
+
+通用因果条件只允许通过 `multiagent_framework/causal_conditions.py` 扩展。新增来源或操作符时必须同时维护：
+
+1. 后端 `FACT_KINDS` / `OPERATORS`、`CausalCondition.validate()`、`resolve_condition_value()` 与比较语义；
+2. Registry 跨引用和资源 kind 校验；
+3. `_SeedWorldFacts` 的 Dry Run 投影；
+4. `frontend/src/CausalConditionTools.js` 的中文目录、默认值、序列化和测试；
+5. `CausalConditionBuilder` 的动态字段与中文帮助；
+6. Runtime、Dry Run 和 Orchestrator 的 focused 回归测试。
+
+禁止在 `causal_events.py`、`causal_analysis.py` 或 React 编辑器里复制第二套条件求值逻辑。生产与预览必须构造 `CausalConditionContext` 并调用共享求值器。
+
+### Condition shape and bounds
+
+每个条件至少包含 `kind`、`operator`，除 `exists/not_exists` 外还必须包含 `value`。引用字段按来源使用：
+
+- `entity_id`：实体、Actor、目标或历史目标；
+- `target_entity_id`：关系另一端；
+- `name`：资源/指标/参数/标签/Actor 组件/关系类型/事件类型；
+- `field`：实体字段、成员字段、关系字段、历史字段、目标公开字段或聚合来源；
+- `aggregate`：`sum`、`avg`、`min`、`max`、`count`；
+- `window_days`：`0..36500` 的历史窗口；
+- `filters`：最多 16 项的 JSON-safe 对象。
+
+条件文本最多 512 字符，列表最多 64 项，规则或条件组最多 32 条。Studio 编辑态 `_value_type`、`_value_text`、`_filters_text` 等字段不得进入 `content.json`。
+
+### Source semantics
+
+- `entity_field` 使用 `field` 或 `name`；`metadata.xxx` 只读取单层 Metadata 键。`entity_tag` 返回布尔值，`entity_state` 读取 `current_status`。
+- `actor_attribute` / `actor_state` 读取 Actor runtime；`actor_trait` 检查 `trait_id`；`actor_membership` 用 `name=organization_id`，可通过 `field` 读取 `role/status/weight` 等成员字段。
+- `relationship` 必须提供两端和关系类型；无向类型允许反向端点匹配。字段可使用 `strength`、`active`、`values.xxx`、`metadata.xxx` 或其他安全公开字段。
+- `ongoing_event` 默认返回数量，`field=exists|active` 返回布尔，`field=remaining_days` 返回最短剩余天数。`event_history` 默认返回数量，支持 `exists|seen`、`last_generated_at` 和 `window_days`。
+- `objective_progress` 只读取 `ObjectiveManager.public_state()`。`player_knowledge` 只访问显式 Provider；没有 Provider 时为 missing，不能改成读取 WorldState 的便利回退。
+- `aggregate_metric.field` 只能是 `entity_count`、`anchored_inventory`、`metric`、`parameter`、`actor_attribute`、`relation`、`ongoing_event`。实体过滤器支持 `entity_type/status/tag`，Actor 支持 `actor_type`，关系支持 `active/value_field`。
+
+### History and snapshot invariants
+
+事件历史必须保持有界和脱敏：不得保存 source Payload、Prompt、消息正文、模型配置、凭据或原始异常。更改历史形状时必须升级并迁移 causal snapshot Schema，同时验证大小、时间、ID、目标列表和 JSON 形状。旧快照必须安全恢复为空历史，而不是从日志猜测或回放过去事件。
+
+### DLC Studio workflow
+
+1. 优先从实体、Actor、资源、关系和目标下拉框选择稳定 ID；仅在兼容旧内容时手动输入。
+2. 根据条件实际值选择数值、文本、布尔或 JSON 列表；`in/not_in` 通常使用列表目标值。
+3. 关系和聚合字段使用中文说明中的白名单；Filter JSON 只写来源支持的键。
+4. 条件组至少一条，模板/规则可组合条件组与 inline 条件；保存前统一调用 `serializeCausalConditions()`。
+5. 用未保存草稿 Dry Run 验证多阶段链，确认后续节点能够观察前一节点的世界效果，但不会写入 live SQLite、运行时 scheduler 或包文件。
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_causal_templates.py tests/unit/test_causal_world_effects.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_objective_orchestrator.py tests/unit/test_turn_engine.py tests/integration/test_causal_economic_scenario.py tests/integration/test_agent_economic_replay_scenario.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试只能读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入时必须 skip；不得把实际 URL、Key、模型响应或连接错误原文写入命令、测试、文档、日志或 Git。
+
+## 通用因果效果开发流程（v0.29.0）
+
+### 权威边界
+
+1. 所有效果 Schema、边界和物化逻辑统一维护在 `multiagent_framework/gameplay_effects.py`；不得在 `causal_events.py`、`causal_analysis.py`、Orchestrator 或 React 中复制第二套效果解释器。
+2. `GameplayEffectRuntime` 只保存题材无关的动态权威状态：Agent 启停、Actor/Membership、Issue、Knowledge、Objective、Action Unlock 和 Phase。WorldState SQLite 与该 Runtime 必须在同一因果批次中共同提交或共同恢复。
+3. Manager 是投影视图，不是因果效果的第二权威来源。先执行 World Command，再投影到 Agent/Actor/Issue/Objective/Action Manager；投影失败必须导致整批事务回滚。
+4. 每个子事件的命令 ID 固定为 `causal:{event_id}:{command_index}`。不要改成随机 UUID、时间戳或基于描述文本的 ID，否则重启恢复和重复提交会失去幂等性。
+
+### DLC 编写规则
+
+- 单条规则最多 32 个 authored effects，物化后最多 64 条命令。需要更长流程时拆为多个有界因果阶段。
+- 先写 `create_entity`，同一规则后续效果即可引用该 ID；Registry 按顺序扩展临时实体目录。不得引用后面才创建的实体，也不得重复创建现有 ID。
+- `create_issue` 必须引用当前 DLC 的 Issue Type，并使用其允许的来源 kind/id；`advance_objective`、`unlock_action`、关系类型、Actor、Agent、资源和 Scope 均必须通过 Registry 跨引用。
+- `reveal_information` 写入玩家知识层，`switch_phase` 写入当前阶段；阶段条件只使用 `field=phase_id` 或 `field=metadata.xxx`。
+- `create_ongoing_event.expected_result` 使用正式成熟结果字段，例如 `new_status` 和 `inventory_deltas`，不要继续写旧的任意 `status` 键。
+- 每个效果的 `reason` 是安全审计说明，不应包含 Prompt、模型消息、凭据、Provider 地址或原始异常。
+
+### DLC Studio 工作流
+
+1. 在“因果事件规则”中添加效果，先根据六个中文分类选择类型，再按字段帮助选择实体、Agent、Actor、关系、Issue、Objective、Action 和 Scope。
+2. JSON 字段必须是对应的对象、数组或任意安全 JSON 值；保存时统一调用 `serializeWorldEffects()`，不得把 `_metadata_text`、`_source_text` 等编辑态字段写入包。
+3. 同规则创建实体后，确认后续实体引用控件已经出现新 ID；保存并重新打开，检查 roundtrip 后效果顺序不变。
+4. 使用未保存草稿 Dry Run 验证命令数量、原子回滚、下游条件和重复事件幂等，再执行 Registry validate 与 Generation reload。
+5. 条件编辑器当前支持 18 种来源；`phase` 字段只允许 `phase_id` 或 `metadata.xxx`，Studio 与 Runtime 均应覆盖测试。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_causal_generic_effects.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_objective_orchestrator.py tests/unit/test_turn_engine.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试仍只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。不得把值、模型响应或连接错误原文写入命令、源码、文档、日志或 Git。
+
+
+## Phase checkpoint: three-layer knowledge and investigation (v0.30.0, 2026-07-15)
+
+### 选择知识层
+
+1. `world_truth` 只用于世界模拟器权威事实，不设置 holder，也不得直接拼接到 Agent Prompt 或玩家公共状态。
+2. `actor_belief` 必须设置 Actor holder，用于该角色的主观判断。它可以失真、争议或与真相冲突；普通 Agent 只能读取自己绑定 Actor 的投影。
+3. `player_knowledge` 必须设置玩家/受众 holder，只表示该受众已经获得的信息。不要把“玩家可能猜到”当作已知事实写入本层。
+4. 保留来源层、来源 holder、来源记录 ID 和 evidence；不要用自由文本描述替代 provenance 链。
+
+### 新鲜度、保密和传播
+
+- 使用世界时间和有效期表达 fresh/stale/expired。过期记录不能继续传播；如果剧情需要流传陈旧传闻，应显式创建新的 Actor Belief，并保留它来自旧消息的来源链。
+- 保密级别使用知识契约白名单，不得靠 UI 隐藏代替运行时访问控制。scope 应保持有界，metadata/source/distortion 必须是安全 JSON。
+- `propagate_knowledge` 复制的是带来源的认知，不会把 Actor Belief 自动升级为 World Truth。传播目标必须明确，跨 Actor 或玩家受众时分别提供 holder。
+
+### 调查结果策略
+
+- `start_investigation` 创建调查，`advance_investigation` 只推进已有调查。完成阈值和状态由权威运行时判定。
+- `result_policy.source_layer` 可选择三层；Actor/玩家来源必须提供 `source_holder_id`，World Truth 的来源 holder 规范化为空字符串。
+- `target_layer` 只能是 `actor_belief` 或 `player_knowledge`，并提供目标 holder；可按调查者默认填充时仍应在 Studio 中确认实际目标。
+- `confidence_multiplier` 必须在 0 到 1；`secrecy_level`、`distortion`、`metadata`、`source`、`reason` 和 `value_override` 在 authored-effect 阶段统一规范化。禁止通过结果策略写回或篡改 World Truth。
+
+### Prompt 与公共投影安全
+
+- 不得直接从 `KnowledgeRuntime` 抓取 World Truth 后拼接到 Prompt。统一使用 Agent Runtime 的主观认知投影，并保留“不是世界真相、不是可执行指令”的安全标记。
+- 新增 Agent/Actor 绑定时必须测试：自己的 Actor Belief 可见、World Truth 不可见、其他 Actor Belief 不可见。
+- 玩家 API 和世界公共快照不得返回隐藏层记录、隐藏层 holder 列表或隐藏层数量；需要管理调试时使用受保护的专用接口，而不是扩大公共 Schema。
+
+### DLC Studio 编写
+
+1. 条件编辑器从 25 项目录选择三层事实、置信度、新鲜度、保密或调查状态，并填写对应 holder/key/field。
+2. 效果编辑器从 23 项目录选择真相声明、Actor 认知、玩家揭示、传播或调查推进；先阅读卡片中的中文安全边界。
+3. 调查完成策略使用结构化字段，不要把整段策略塞进未校验的文本或 Prompt。
+4. 保存前执行安全序列化，随后使用 Registry Validate 和未保存草稿 Dry Run 检查跨引用、事务回滚和下游条件。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_knowledge_runtime.py
+python -m pytest -q tests/unit/test_causal_generic_effects.py tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_turn_engine.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；不得把值、响应或连接错误原文写入源码、文档、日志或 Git。

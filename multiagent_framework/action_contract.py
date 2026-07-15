@@ -1,4 +1,4 @@
-﻿"""Deterministic DLC-authored player action contracts.
+"""Deterministic DLC-authored player action contracts.
 
 DLCs declare action schemas while the framework enforces player control,
 preconditions, anchored costs, authoritative time, cooldowns and idempotency.
@@ -333,12 +333,19 @@ class ActionDefinition:
     cooldown: dict[str, Any]
     result: dict[str, Any]
     enabled: bool = True
+    initially_unlocked: bool = True
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any], path: str = "action") -> "ActionDefinition":
         enabled = raw.get("enabled", True)
+        initially_unlocked = raw.get("initially_unlocked", True)
         if not isinstance(enabled, bool):
             raise ActionContractError("action.invalid_enabled", path=path + ".enabled")
+        if not isinstance(initially_unlocked, bool):
+            raise ActionContractError(
+                "action.invalid_initially_unlocked",
+                path=path + ".initially_unlocked",
+            )
         parameters = tuple(
             ActionParameter.parse(_map(item, "action.parameter.invalid", f"{path}.parameters[{index}]"), f"{path}.parameters[{index}]")
             for index, item in enumerate(_list(raw.get("parameters", []), "action.invalid_parameters", path + ".parameters", 32))
@@ -392,6 +399,7 @@ class ActionDefinition:
             cooldown=cooldown,
             result=result,
             enabled=enabled,
+            initially_unlocked=initially_unlocked,
         )
         _validate_template_refs({"preconditions": preconditions, "costs": costs, "duration": duration, "result": result}, names, path)
         return definition
@@ -410,6 +418,7 @@ class ActionDefinition:
             "cooldown": copy.deepcopy(self.cooldown),
             "result": copy.deepcopy(self.result),
             "enabled": self.enabled,
+            "initially_unlocked": self.initially_unlocked,
         }
 
 
@@ -588,6 +597,7 @@ class ActionCatalog:
         self._cooldown_order: deque[str] = deque()
         self._receipts: dict[str, dict[str, Any]] = {}
         self._receipt_order: deque[str] = deque()
+        self._effect_unlocks: dict[str, dict[str, Any]] = {}
         self._fingerprint = _canonical_hash([])
 
     @property
@@ -619,13 +629,44 @@ class ActionCatalog:
             self._gameplay = gameplay or GameplayContract()
             self._fingerprint = _canonical_hash(canonical)
 
+    def set_effect_unlocks(self, unlocks: Mapping[str, Any] | None) -> None:
+        normalized: dict[str, dict[str, Any]] = {}
+        if isinstance(unlocks, Mapping):
+            for raw_key, raw in unlocks.items():
+                if not isinstance(raw, Mapping):
+                    continue
+                action_id = str(raw.get("action_id", ""))
+                scope_id = str(raw.get("scope_id", ""))
+                if action_id in self._definitions:
+                    normalized[f"{action_id}:{scope_id}"] = copy.deepcopy(dict(raw))
+        with self._lock:
+            self._effect_unlocks = normalized
+
+    def _unlock_scopes(self, action_id: str) -> list[str]:
+        prefix = f"{action_id}:"
+        return sorted(
+            str(row.get("scope_id", ""))
+            for key, row in self._effect_unlocks.items()
+            if key.startswith(prefix) and bool(row.get("unlocked", False))
+        )
+
     def public_state(self) -> dict[str, Any]:
         with self._lock:
+            actions = []
+            for key in sorted(self._definitions):
+                definition = self._definitions[key]
+                if not definition.enabled:
+                    continue
+                item = definition.to_dict()
+                scopes = self._unlock_scopes(definition.action_id)
+                item["unlock_scopes"] = scopes
+                item["unlocked"] = definition.initially_unlocked or bool(scopes)
+                actions.append(item)
             return {
                 "configured": bool(self._definitions),
                 "generation": self._generation,
                 "fingerprint": self._fingerprint,
-                "actions": [self._definitions[key].to_dict() for key in sorted(self._definitions) if self._definitions[key].enabled],
+                "actions": actions,
             }
 
     def _definition(self, action_id: str) -> ActionDefinition:
@@ -635,6 +676,26 @@ class ActionCatalog:
         if not definition.enabled:
             raise ActionContractError("action.disabled", details={"action_id": definition.action_id})
         return definition
+
+    def _ensure_unlocked(
+        self,
+        definition: ActionDefinition,
+        *,
+        actor_id: str = "",
+        control_id: str = "",
+        target_id: str = "",
+    ) -> None:
+        if definition.initially_unlocked:
+            return
+        candidates = {"", str(actor_id), str(control_id), str(target_id)}
+        for scope_id in candidates:
+            row = self._effect_unlocks.get(f"{definition.action_id}:{scope_id}")
+            if isinstance(row, Mapping) and bool(row.get("unlocked", False)):
+                return
+        raise ActionContractError(
+            "action.locked",
+            details={"action_id": definition.action_id, "required_scopes": sorted(candidates)},
+        )
 
     def _normalize_parameters(self, definition: ActionDefinition, supplied: Mapping[str, Any]) -> dict[str, Any]:
         known = {item.name for item in definition.parameters}
@@ -893,6 +954,12 @@ class ActionCatalog:
         actor_id, control = self._authorize(definition, request)
         parameters = self._normalize_parameters(definition, request.parameters or {})
         target_id = self._normalize_target(definition, request.target_id, control, world_state, available_agent_ids)
+        self._ensure_unlocked(
+            definition,
+            actor_id=actor_id,
+            control_id=control.id,
+            target_id=target_id,
+        )
         normalized_invocation = ActionInvocation(
             invocation_id=request.invocation_id,
             expected_generation=request.expected_generation,

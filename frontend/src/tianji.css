@@ -572,6 +572,20 @@ body {
 }
 .tj-chat-panel { animation-delay: .05s; }
 .tj-state-panel { animation-delay: .1s; }
+.tj-tools-panel {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-top: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+}
+.tj-tools-panel h2 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+}
 .tj-tools-panel, .tj-state-panel { display: flex; flex-direction: column; }
 .tj-tools-panel h2, .tj-state-panel h2 {
   margin: 0;

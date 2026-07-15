@@ -1,5 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft, normalizeCausalReplayFixture } from './DLCStudioTools.js'
+import { effectiveRelationshipTypes } from './RelationshipTypeTools.js'
+import {
+  CAUSAL_AGGREGATES, CAUSAL_AGGREGATE_SOURCES, CAUSAL_CONDITION_KINDS, CAUSAL_CONDITION_OPERATORS, CAUSAL_VALUE_TYPES,
+  defaultCausalCondition, normalizeCausalConditionForEditor, serializeCausalConditions,
+} from './CausalConditionTools.js'
+import { WORLD_EFFECT_TYPES, defaultWorldEffect, normalizeWorldEffectsForEditor, serializeWorldEffects } from './CausalEffectTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -53,6 +59,11 @@ const T = {
   prompts: 'Prompts',
   quantity: '\u6570\u91cf',
   relationType: '\u5173\u7cfb\u7c7b\u578b',
+  strength: '\u5173\u7cfb\u5f3a\u5ea6',
+  visibility: '\u53ef\u89c1\u6027',
+  startsAt: '\u5f00\u59cb\u6a21\u62df\u65f6\u95f4',
+  expiresAt: '\u5230\u671f\u6a21\u62df\u65f6\u95f4',
+  dimensionValues: '\u591a\u7ef4\u5173\u7cfb\u503c',
   relations: '\u5173\u7cfb',
   requiredVariables: '\u5fc5\u9700\u53d8\u91cf\uff08\u9017\u53f7\u5206\u9694\uff09',
   resource: '\u8d44\u6e90',
@@ -74,7 +85,7 @@ const CAUSAL_RESERVED_FIELDS = [
 const EMPTY = {
   inventory: { entity_id: '', item_name: '', category: '', quantity: 0, description: '' },
   entity_values: { entity_id: '', name: '', kind: 'metric', value: 0, description: '' },
-  relations: { parent_id: '', child_id: '', rel_type: 'subordinate', note: '' },
+  relations: { parent_id: '', child_id: '', rel_type: 'subordinate', strength: 100, visibility: 'public', starts_at: 0, expires_at: '', values: {}, note: '', metadata: {} },
   initial_events: { event_id: '', event_type: 'world_event', severity: 5, target_agents: [], initial_payload: {}, generated_at: 0 },
   ongoing_events: { event_id: '', entity_id: '', event_type: 'state_change', description: '', start_time: 0, end_time: 0, expected_result: {}, source_action_id: '' },
   random_events: { template_id: '', event_type: 'world_event', target_agents: [], initial_payload: {}, severity_min: 3, severity_max: 7, min_interval_days: 30, max_interval_days: 90, probability: 1, max_occurrences: 0, enabled: true },
@@ -137,18 +148,20 @@ function parseArray(value, label) {
 function normalizedListForm(kind, value) {
   const source = value ? deepClone(value) : deepClone(EMPTY[kind])
   if (kind === 'initial_events' || kind === 'random_events' || kind === 'causal_event_rules') source._payload_text = jsonText(source.initial_payload)
-  if (kind === 'causal_condition_groups') source.conditions = Array.isArray(source.conditions) ? source.conditions : []
+  if (kind === 'causal_condition_groups') source.conditions = (Array.isArray(source.conditions) ? source.conditions : []).map(normalizeCausalConditionForEditor)
   if (kind === 'causal_rule_templates') source._rule_text = JSON.stringify(source.rule && typeof source.rule === 'object' && !Array.isArray(source.rule) ? source.rule : {}, null, 2)
   if (kind === 'causal_event_rules') {
     source._source_types_text = (source.source_event_types || ['*']).join(', ')
     source.condition_group_ids = Array.isArray(source.condition_group_ids) ? source.condition_group_ids : []
     source._inherit_template_defaults = Boolean(source.template_id) && !['delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled', 'target_agents'].some(key => Object.hasOwn(source, key))
     source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
-    source.conditions = Array.isArray(source.conditions) ? source.conditions : []
-    source.world_effects = (Array.isArray(source.world_effects) ? source.world_effects : []).map(effect => ({
-      ...effect,
-      _expected_result_text: effect.effect_type === 'create_ongoing_event' ? jsonText(effect.expected_result) : undefined,
-    }))
+    source.conditions = (Array.isArray(source.conditions) ? source.conditions : []).map(normalizeCausalConditionForEditor)
+    source.world_effects = normalizeWorldEffectsForEditor(source.world_effects)
+  }
+  if (kind === 'relations') {
+    source._values_text = jsonText(source.values || source.dimension_values)
+    source._metadata_text = jsonText(source.metadata)
+    source.expires_at = source.expires_at ?? ''
   }
   if (kind === 'ongoing_events') source._result_text = jsonText(source.expected_result)
   if (kind === 'time_rules') source._action_types_text = (source.action_types || ['*']).join(', ')
@@ -213,13 +226,7 @@ function serializeListForm(kind, form) {
   if (kind === 'causal_condition_groups') {
     data.group_id = String(data.group_id || '').trim()
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(data.group_id)) throw new Error('Condition group ID must be a safe identifier.')
-    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
-      kind: String(condition.kind || ''), entity_id: String(condition.entity_id || ''),
-      name: String(condition.name || ''), operator: String(condition.operator || ''), value: Number(condition.value),
-    }))
-    const kinds = new Set(['anchored_inventory', 'metric', 'parameter'])
-    const operators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
-    if (!data.conditions.length || data.conditions.some(condition => !kinds.has(condition.kind) || !condition.entity_id || !condition.name || !operators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Condition groups require at least one complete condition.')
+    data.conditions = serializeCausalConditions(data.conditions, { requireOne: true })
   }
   if (kind === 'causal_rule_templates') {
     data.template_id = String(data.template_id || '').trim()
@@ -231,25 +238,8 @@ function serializeListForm(kind, form) {
   if (kind === 'causal_event_rules') {
     const inheritTemplateDefaults = Boolean(data.template_id && data._inherit_template_defaults)
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
-    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
-      kind: String(condition.kind || ''),
-      entity_id: String(condition.entity_id || ''),
-      name: String(condition.name || ''),
-      operator: String(condition.operator || ''),
-      value: Number(condition.value),
-    }))
-    data.world_effects = (Array.isArray(data.world_effects) ? data.world_effects : []).map(source => {
-      const effect = { ...source, effect_type: String(source.effect_type || '') }
-      delete effect._expected_result_text
-      if (effect.effect_type === 'adjust_resource') effect.quantity_delta = Number(effect.quantity_delta)
-      if (effect.effect_type === 'set_resource') effect.quantity = Number(effect.quantity)
-      if (effect.effect_type === 'transfer_anchored_value') effect.base_value = Number(effect.base_value)
-      if (effect.effect_type === 'create_ongoing_event') {
-        effect.duration_days = Number(effect.duration_days)
-        effect.expected_result = parseObject(source._expected_result_text || '{}', 'Ongoing expected result')
-      }
-      return effect
-    })
+    data.conditions = serializeCausalConditions(data.conditions)
+    data.world_effects = serializeWorldEffects(data.world_effects)
     delete data._payload_text
     data.source_event_types = [...new Set(String(data._source_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     data.inherit_payload_keys = [...new Set(String(data._inherit_keys_text || '').split(',').map(value => value.trim()).filter(Boolean))]
@@ -268,16 +258,6 @@ function serializeListForm(kind, form) {
     if (!Number.isInteger(data.max_fires_per_chain) || data.max_fires_per_chain < 1 || data.max_fires_per_chain > 64) throw new Error('Max fires per chain must be an integer from 1 to 64.')
     if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
     if (CAUSAL_RESERVED_FIELDS.some(key => Object.hasOwn(data.initial_payload, key) || data.inherit_payload_keys.includes(key))) throw new Error('Causal metadata fields are reserved.')
-    const conditionKinds = new Set(['anchored_inventory', 'metric', 'parameter'])
-    const conditionOperators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
-    if (data.conditions.some(condition => !conditionKinds.has(condition.kind) || !condition.entity_id || !condition.name || !conditionOperators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Every condition needs a kind, entity, matching resource, operator, and finite value.')
-    const effectTypes = new Set(['adjust_resource', 'set_resource', 'update_status', 'create_ongoing_event', 'transfer_anchored_value'])
-    if (data.world_effects.length > 32 || data.world_effects.some(effect => !effectTypes.has(effect.effect_type))) throw new Error('World effects must use a supported type and cannot exceed 32 entries.')
-    if (data.world_effects.some(effect => effect.effect_type !== 'transfer_anchored_value' && !effect.entity_id)) throw new Error('Every world effect requires an entity.')
-    if (data.world_effects.some(effect => ['adjust_resource', 'set_resource'].includes(effect.effect_type) && (!effect.resource_name || !Number.isFinite(effect.quantity_delta ?? effect.quantity)))) throw new Error('Resource effects require a resource and finite quantity.')
-    if (data.world_effects.some(effect => effect.effect_type === 'update_status' && !String(effect.new_status || '').trim())) throw new Error('Status effects require a new status.')
-    if (data.world_effects.some(effect => effect.effect_type === 'create_ongoing_event' && (!safeId(effect.event_type) || !Number.isFinite(effect.duration_days) || effect.duration_days < 0 || effect.duration_days > 3650))) throw new Error('Ongoing effects require a safe event type and duration from 0 to 3650 days.')
-    if (data.world_effects.some(effect => effect.effect_type === 'transfer_anchored_value' && (!effect.from_entity_id || !effect.to_entity_id || !effect.from_resource || !effect.to_resource || !Number.isFinite(effect.base_value) || effect.base_value <= 0))) throw new Error('Anchored transfers require both entities, both asset resources, and a positive base value.')
     delete data._inherit_template_defaults
     if (inheritTemplateDefaults) {
       for (const field of ['target_agents', 'delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled']) delete data[field]
@@ -358,6 +338,23 @@ function serializeListForm(kind, form) {
     if (data.max_days < data.min_days) throw new Error('max_days must be greater than or equal to min_days.')
     if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
   }
+  if (kind === 'relations') {
+    data.parent_id = String(data.parent_id || '').trim()
+    data.child_id = String(data.child_id || '').trim()
+    data.rel_type = String(data.rel_type || '').trim()
+    data.strength = Number(data.strength)
+    data.visibility = String(data.visibility || 'public')
+    data.starts_at = Number(data.starts_at || 0)
+    data.expires_at = data.expires_at === '' || data.expires_at == null ? null : Number(data.expires_at)
+    data.values = parseObject(data._values_text, T.dimensionValues)
+    data.metadata = parseObject(data._metadata_text, T.metadata)
+    data.note = String(data.note || '')
+    delete data._values_text
+    delete data._metadata_text
+    if (!Number.isFinite(data.strength)) throw new Error('Relationship strength must be a finite number.')
+    if (!Number.isFinite(data.starts_at)) throw new Error('starts_at must be a finite number.')
+    if (data.expires_at !== null && (!Number.isFinite(data.expires_at) || data.expires_at <= data.starts_at)) throw new Error('expires_at must be later than starts_at.')
+  }
   if (kind === 'ongoing_events') {
     data.expected_result = parseObject(data._result_text, T.expectedResult)
     delete data._result_text
@@ -425,133 +422,466 @@ function EditorError({ children }) {
   return children ? <div className="dlc-editor-error">{children}</div> : null
 }
 
-const CONDITION_KINDS = [
-  { key: 'anchored_inventory', label: 'Anchored inventory value' },
-  { key: 'metric', label: 'World metric' },
-  { key: 'parameter', label: 'World parameter' },
-]
-const CONDITION_OPERATORS = [
-  { key: 'lt', label: '<' }, { key: 'lte', label: '<=' }, { key: 'eq', label: '=' },
-  { key: 'gte', label: '>=' }, { key: 'gt', label: '>' },
-]
-
 function resourcesForCondition(resources, kind) {
   const resourceKind = kind === 'anchored_inventory' ? 'asset' : kind
   return resources.filter(item => item.kind === resourceKind)
 }
 
-function CausalConditionBuilder({ value, entities, resources, onChange }) {
-  const conditions = Array.isArray(value) ? value : []
+function effectiveActorOptions(actors, agents) {
+  const byId = new Map()
+  for (const actor of actors || []) {
+    const actorId = actor.actor_id || actor.id
+    if (actorId) byId.set(actorId, { ...actor, actor_id: actorId, _projected_agent: false })
+  }
+  for (const agent of agents || []) {
+    const actorId = agent.actor_id || agent.id
+    if (actorId && !byId.has(actorId)) byId.set(actorId, {
+      actor_id: actorId,
+      display_name: agent.name || agent.display_name || actorId,
+      _projected_agent: true,
+    })
+  }
+  return [...byId.values()]
+}
+
+function actorComponentNames(actor, kind) {
+  if (!actor) return []
+  if (kind === 'actor_attribute') return Object.keys(actor.attributes || {})
+  if (kind === 'actor_state') return Object.keys(actor.states || {})
+  if (kind === 'actor_trait') return (actor.traits || []).map(item => item.trait_id).filter(Boolean)
+  if (kind === 'actor_membership') return (actor.memberships || []).map(item => item.organization_id).filter(Boolean)
+  return []
+}
+
+const ACTOR_COMPONENT_CONDITION_KINDS = new Set(['actor_attribute', 'actor_state', 'actor_trait', 'actor_membership'])
+
+function conditionNameLabel(kind) {
+  return {
+    anchored_inventory: 'Asset 资源', metric: 'Metric 指标', parameter: 'Parameter 参数',
+    entity_tag: '标签', actor_attribute: 'Attribute 名称', actor_state: 'State 名称',
+    actor_trait: 'Trait ID', actor_membership: 'Organization ID', relationship: '关系类型',
+    ongoing_event: '事件类型（可选）', event_history: '事件类型（可选）',
+    world_truth: '?? ID', actor_belief: '?? ID', player_knowledge: '?? ID',
+    knowledge_confidence: '?? ID', knowledge_freshness: '?? ID', knowledge_secrecy: '?? ID',
+  }[kind] || '名称'
+}
+
+function CausalConditionBuilder({ value, entities, resources, actors, agents, relationshipTypes, objectives, ongoingEvents, eventTypes, onChange }) {
+  const conditions = (Array.isArray(value) ? value : []).map(normalizeCausalConditionForEditor)
+  const actorOptions = effectiveActorOptions(actors, agents)
+  const catalogs = { entities, resources, actors: actorOptions, relationshipTypes, objectives, ongoingEvents, eventTypes }
   const update = (index, name, nextValue) => {
     const next = conditions.map(item => ({ ...item }))
     next[index][name] = nextValue
-    if (name === 'kind') {
-      const candidates = resourcesForCondition(resources, nextValue)
-      if (!candidates.some(item => item.name === next[index].name)) next[index].name = candidates[0]?.name || ''
-    }
     onChange(next)
   }
-  const add = () => {
-    const kind = 'anchored_inventory'
-    onChange([...conditions, {
-      kind,
-      entity_id: entities[0]?.id || '',
-      name: resourcesForCondition(resources, kind)[0]?.name || '',
-      operator: 'lt',
-      value: 0,
-    }])
+  const updateMany = (index, values) => {
+    const next = conditions.map(item => ({ ...item }))
+    next[index] = { ...next[index], ...values }
+    onChange(next)
   }
+  const changeKind = (index, kind) => {
+    const next = conditions.map(item => ({ ...item }))
+    next[index] = defaultCausalCondition(kind, catalogs)
+    onChange(next)
+  }
+  const add = () => onChange([...conditions, defaultCausalCondition('anchored_inventory', catalogs)])
   const remove = index => onChange(conditions.filter((_, itemIndex) => itemIndex !== index))
 
   return <section className="dlc-condition-builder">
-    <div className="dlc-condition-header"><div><strong>Condition builder</strong><small>All conditions must pass. No raw JSON is required.</small></div><button type="button" onClick={add}>+ Add condition</button></div>
-    {!conditions.length && <div className="dlc-condition-empty">No conditions: matching event types continue to probability evaluation.</div>}
+    <div className="dlc-condition-header"><div><strong>通用因果条件</strong><small>同一组内所有条件必须同时成立；编辑器与运行时、Dry Run 使用相同语义，无需手写完整条件 JSON。</small></div><button type="button" onClick={add}>＋ 添加条件</button></div>
+    {!conditions.length && <div className="dlc-condition-empty">当前没有附加条件：事件类型匹配后会直接进入概率与调度判断。</div>}
     {conditions.map((condition, index) => {
-      const candidates = resourcesForCondition(resources, condition.kind)
-      const selectedResource = candidates.find(item => item.name === condition.name)
-      return <div className="dlc-condition-row" key={`condition-${index}`}>
-        <label>Fact kind<select value={condition.kind || 'anchored_inventory'} onChange={event => update(index, 'kind', event.target.value)}>{CONDITION_KINDS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
-        <label>Resource / value<select value={condition.name || ''} onChange={event => update(index, 'name', event.target.value)}><option value="">--</option>{candidates.map(item => <option key={item.name} value={item.name}>{item.name}{item.unit ? ` (${item.unit})` : ''}</option>)}</select></label>
-        <label>Compare<select value={condition.operator || 'lt'} onChange={event => update(index, 'operator', event.target.value)}>{CONDITION_OPERATORS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <label>Threshold<input type="number" step="any" value={condition.value ?? 0} onChange={event => update(index, 'value', event.target.value)} /></label>
-        <button type="button" className="danger" onClick={() => remove(index)}>Delete</button>
-        {condition.kind === 'anchored_inventory' && <small className="dlc-condition-anchor">Compares quantity * anchor_rate{selectedResource ? `; ${selectedResource.name} anchor rate ${selectedResource.anchor_rate ?? 1}` : ''}</small>}
-      </div>
+      const kindDefinition = CAUSAL_CONDITION_KINDS.find(item => item.key === condition.kind)
+      const resourceCandidates = resourcesForCondition(resources, condition.kind)
+      const selectedResource = resourceCandidates.find(item => item.name === condition.name)
+      const selectedActor = actorOptions.find(item => item.actor_id === condition.entity_id)
+      const componentNames = actorComponentNames(selectedActor, condition.kind)
+      const needsValue = !['exists', 'not_exists'].includes(condition.operator)
+      const aggregateSource = condition.field || 'entity_count'
+      const knowledgeLayer = condition._knowledge_layer || 'player_knowledge'
+      const aggregateResources = ['anchored_inventory', 'metric', 'parameter'].includes(aggregateSource) ? resourcesForCondition(resources, aggregateSource) : []
+      const nameOptions = aggregateSource === 'relation'
+        ? relationshipTypes.map(item => ({ key: item.relationship_type_id, label: item.display_name || item.relationship_type_id }))
+        : aggregateSource === 'ongoing_event'
+          ? [...new Set((ongoingEvents || []).map(item => item.event_type).filter(Boolean))].map(key => ({ key, label: key }))
+          : aggregateResources.map(item => ({ key: item.name, label: `${item.name}${item.unit ? `（${item.unit}）` : ''}` }))
+      return <article className="dlc-condition-card" key={`condition-${index}`}>
+        <div className="dlc-condition-toolbar">
+          <strong>条件 #{index + 1}</strong>
+          <label>条件来源<select value={condition.kind} onChange={event => changeKind(index, event.target.value)}>{CAUSAL_CONDITION_KINDS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          <label>比较方式<select value={condition.operator} onChange={event => update(index, 'operator', event.target.value)}>{CAUSAL_CONDITION_OPERATORS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          <button type="button" className="danger" onClick={() => remove(index)}>删除</button>
+        </div>
+        <p className="dlc-condition-help">{kindDefinition?.help}</p>
+        <div className="dlc-condition-grid">
+          {['anchored_inventory', 'metric', 'parameter'].includes(condition.kind) && <>
+            <EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>{conditionNameLabel(condition.kind)}<select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 请选择 --</option>{resourceCandidates.map(item => <option key={item.name} value={item.name}>{item.name}{item.unit ? `（${item.unit}）` : ''}</option>)}</select><small>资源类型必须与条件来源一致，Registry 会再次校验跨引用。</small></label>
+          </>}
+
+          {condition.kind === 'entity_field' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>字段路径<input value={condition.field || condition.name} onChange={event => updateMany(index, { field: event.target.value, name: '' })} placeholder="name 或 metadata.population" /><small>直接字段示例：name、type；Metadata 示例：metadata.population。</small></label></>}
+          {condition.kind === 'entity_tag' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>标签<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="frontier" /><small>实际值为“实体是否含此标签”的布尔值，通常与“等于 true”搭配。</small></label></>}
+          {condition.kind === 'entity_state' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>读取字段<input value="current_status" disabled /><small>实体状态固定读取 current_status。</small></label></>}
+
+          {ACTOR_COMPONENT_CONDITION_KINDS.has(condition.kind) && <>
+            <label>Actor<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">-- 请选择 --</option>{actorOptions.map(actor => <option key={actor.actor_id} value={actor.actor_id}>{actor.display_name || actor.actor_id}（{actor.actor_id}{actor._projected_agent ? ' · Agent 兼容投影' : ''}）</option>)}</select><small>优先使用显式 Actor；未定义同名 Actor 的 Agent 会作为兼容选项出现。</small></label>
+            <label>{conditionNameLabel(condition.kind)}<input list={`causal-actor-components-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder={condition.kind === 'actor_membership' ? 'organization_id' : '组件名称'} /><datalist id={`causal-actor-components-${index}`}>{componentNames.map(name => <option key={name} value={name} />)}</datalist><small>列表来自当前 Actor 定义，也允许输入之后准备新增的组件 ID。</small></label>
+            {condition.kind === 'actor_membership' && <label>成员关系字段（可选）<input list="causal-membership-fields" value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="留空表示判断成员关系存在" /><datalist id="causal-membership-fields"><option value="role" /><option value="status" /><option value="title" /><option value="weight" /></datalist><small>留空时实际值为 true；填写后读取该 Membership 对象中的字段。</small></label>}
+          </>}
+
+          {condition.kind === 'relationship' && <>
+            <EntitySelect label="来源实体" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <EntitySelect label="目标实体" value={condition.target_entity_id} entities={entities} onChange={next => update(index, 'target_entity_id', next)} />
+            <label>关系类型<select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 请选择 --</option>{relationshipTypes.map(item => <option key={item.relationship_type_id} value={item.relationship_type_id}>{item.display_name || item.relationship_type_id}（{item.relationship_type_id}）</option>)}</select><small>无向关系会自动接受反向端点；有向关系严格按来源 → 目标匹配。</small></label>
+            <label>读取字段<input list={`causal-relation-fields-${index}`} value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="strength" /><datalist id={`causal-relation-fields-${index}`}><option value="strength" /><option value="exists" /><option value="active" />{relationshipTypes.find(item => item.relationship_type_id === condition.name)?.dimensions?.map(dimension => <option key={dimension.dimension_id || dimension.id} value={`values.${dimension.dimension_id || dimension.id}`} />)}</datalist><small>支持 strength、exists、active、values.&lt;dimension_id&gt;、metadata.&lt;key&gt;。</small></label>
+          </>}
+
+          {condition.kind === 'ongoing_event' && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>事件类型（可选）<input list={`causal-ongoing-types-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="relief_operation" /><datalist id={`causal-ongoing-types-${index}`}>{[...new Set((ongoingEvents || []).map(item => item.event_type).filter(Boolean))].map(name => <option key={name} value={name} />)}</datalist><small>留空统计全部持续事件。</small></label>
+            <label>读取字段<select value={condition.field || 'count'} onChange={event => update(index, 'field', event.target.value)}><option value="count">数量 count</option><option value="exists">是否存在 exists</option><option value="active">是否激活 active</option><option value="remaining_days">最短剩余天数</option></select></label>
+          </>}
+
+          {condition.kind === 'event_history' && <>
+            <label>目标 Agent（可选）<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">全部 Agent</option>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name || agent.id}（{agent.id}）</option>)}</select><small>此处 entity_id 表示历史事件 target_agents 中的 Agent ID。</small></label>
+            <label>事件类型（可选）<input list={`causal-history-types-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="shortage" /><datalist id={`causal-history-types-${index}`}>{eventTypes.map(name => <option key={name} value={name} />)}</datalist><small>留空统计时间窗口内的全部脱敏历史事件。</small></label>
+            <label>读取字段<select value={condition.field || 'count'} onChange={event => update(index, 'field', event.target.value)}><option value="count">数量 count</option><option value="exists">是否出现 exists</option><option value="seen">是否见过 seen</option><option value="last_generated_at">最后生成时间（秒）</option></select></label>
+            <label>时间窗口（天）<input type="number" min="0" max="36500" step="any" value={condition.window_days} onChange={event => update(index, 'window_days', event.target.value)} /><small>0 表示只看当前模拟时刻；留空表示全部有界历史。</small></label>
+          </>}
+
+          {condition.kind === 'time' && <label>时间口径<select value={condition.name || 'sim_day'} onChange={event => update(index, 'name', event.target.value)}><option value="sim_day">模拟天数 sim_day</option><option value="sim_time">模拟秒数 sim_time</option><option value="seconds">模拟秒数 seconds</option></select><small>建议规则设计使用 sim_day，便于 DLC 作者阅读与复现。</small></label>}
+
+          {condition.kind === 'objective_progress' && <>
+            <label>Objective<select value={condition.entity_id || condition.name} onChange={event => updateMany(index, { entity_id: event.target.value, name: '' })}><option value="">-- 请选择 --</option>{objectives.map(item => <option key={item.objective_id} value={item.objective_id}>{item.display_name || item.objective_id}（{item.objective_id}）</option>)}</select></label>
+            <label>公开状态字段<input list="causal-objective-fields" value={condition.field || 'progress'} onChange={event => update(index, 'field', event.target.value)} /><datalist id="causal-objective-fields"><option value="progress" /><option value="status" /><option value="completed" /><option value="failed" /></datalist><small>常用 progress（数值）或 status（文本）；实际可读字段取决于 Objective 公共状态。</small></label>
+          </>}
+
+          {condition.kind === 'aggregate_metric' && <>
+            <label>聚合来源<select value={aggregateSource} onChange={event => { const source = event.target.value; const next = conditions.map(item => ({ ...item })); next[index] = defaultCausalCondition('aggregate_metric', catalogs); next[index].field = source; next[index].aggregate = source === 'entity_count' || source === 'ongoing_event' ? 'count' : 'sum'; if (['anchored_inventory', 'metric', 'parameter'].includes(source)) next[index].name = resourcesForCondition(resources, source)[0]?.name || ''; if (source === 'relation') next[index].name = relationshipTypes[0]?.relationship_type_id || ''; onChange(next) }} >{CAUSAL_AGGREGATE_SOURCES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select><small>来源决定 name、entity_id 与过滤器的解释方式。</small></label>
+            <label>聚合方法<select value={condition.aggregate || 'sum'} onChange={event => update(index, 'aggregate', event.target.value)}>{CAUSAL_AGGREGATES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+            {['entity_count', 'anchored_inventory', 'metric', 'parameter', 'ongoing_event'].includes(aggregateSource) && <EntitySelect label="限定实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />}
+            {aggregateSource === 'actor_attribute' && <label>限定 Actor（可选）<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">全部 Actor</option>{actorOptions.map(actor => <option key={actor.actor_id} value={actor.actor_id}>{actor.display_name || actor.actor_id}（{actor.actor_id}）</option>)}</select></label>}
+            {aggregateSource !== 'entity_count' && <label>{aggregateSource === 'actor_attribute' ? 'Attribute 名称' : aggregateSource === 'relation' ? '关系类型（可选）' : aggregateSource === 'ongoing_event' ? '事件类型（可选）' : '资源 / 数值名称'}{nameOptions.length ? <select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 全部 / 请选择 --</option>{nameOptions.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select> : <input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="名称" />}<small>资源与 Actor Attribute 必填；关系和持续事件可留空统计全部。</small></label>}
+          </>}
+
+          {['world_truth', 'actor_belief', 'player_knowledge'].includes(condition.kind) && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>知识 ID<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="route_status" /><small>知识 ID 对应同一实体下的 knowledge_id；关联实体可留空。</small></label>
+            {condition.kind === 'actor_belief' && <label>Actor / Agent holder<input list={`causal-knowledge-holder-${index}`} value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="observer" /><datalist id={`causal-knowledge-holder-${index}`}>{actorOptions.map(item => <option key={item.actor_id} value={item.actor_id} />)}</datalist><small>必须指定持有该认知的 holder；只会读取这个 Actor 的主观认知。</small></label>}
+            {condition.kind === 'player_knowledge' && <label>玩家 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player" /><small>默认使用 player；可为多玩家场景指定其他 holder。</small></label>}
+            <label>读取字段（可选）<input value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="默认读取 value；也可填写 confidence / metadata.xxx" /></label>
+            {condition.kind === 'world_truth' ? <div className="dlc-condition-warning">世界真相仅供权威规则求值，绝不能直接写入 Agent 提示词或公共玩家投影。</div>
+              : condition.kind === 'actor_belief' ? <div className="dlc-condition-warning">这里读取 Actor 自己的主观认知；它可能错误、失真或过期，并且必须指定 holder。</div>
+                : <div className="dlc-condition-warning">这里只读取玩家已经获得的信息，不会泄露世界真相或其他 Actor 的认知。</div>}
+          </>}
+
+          {['knowledge_confidence', 'knowledge_freshness', 'knowledge_secrecy'].includes(condition.kind) && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>知识 ID<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="route_status" /></label>
+            <label>知识层<select value={knowledgeLayer} onChange={event => update(index, '_knowledge_layer', event.target.value)}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select><small>序列化为 filters.layer；用于选择要比较哪一层记录。</small></label>
+            {knowledgeLayer === 'actor_belief' && <label>Actor / Agent holder<input list={`causal-meta-holder-${index}`} value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="observer" /><datalist id={`causal-meta-holder-${index}`}>{actorOptions.map(item => <option key={item.actor_id} value={item.actor_id} />)}</datalist><small>Actor 认知层必填。</small></label>}
+            {knowledgeLayer === 'player_knowledge' && <label>玩家 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player" /></label>}
+            <div className="dlc-condition-anchor">{condition.kind === 'knowledge_confidence' ? '目标值填写 0～1 的数字。' : condition.kind === 'knowledge_freshness' ? '目标值填写 fresh / stale / expired。' : '目标值填写 public / restricted / confidential / secret / top_secret。'}</div>
+          </>}
+
+          {condition.kind === 'investigation' && <>
+            <label>调查 ID<input value={condition.entity_id || condition.name} onChange={event => updateMany(index, { entity_id: event.target.value, name: '' })} placeholder="verify_route_status" /><small>填写 start_investigation 创建的唯一 ID。</small></label>
+            <label>调查者 holder（可选）<input value={condition.target_entity_id} onChange={event => update(index, 'target_entity_id', event.target.value)} placeholder="player 或 Actor ID" /><small>用于限定具体调查者；留空只按调查 ID 查询。</small></label>
+            <label>调查字段<select value={condition.field || 'status'} onChange={event => update(index, 'field', event.target.value)}><option value="status">status / 状态</option><option value="progress">progress / 当前进度</option><option value="required_progress">required_progress / 所需进度</option></select></label>
+            <div className="dlc-condition-anchor">状态可比较 active、paused、completed、cancelled；进度字段请使用数值操作符。</div>
+          </>}
+
+          {condition.kind === 'phase' && <>
+            <label>阶段字段<input list="causal-phase-fields" value={condition.field || 'phase_id'} onChange={event => update(index, 'field', event.target.value)} placeholder="phase_id 或 metadata.chapter" /><datalist id="causal-phase-fields"><option value="phase_id" /><option value="metadata.chapter" /><option value="metadata.label" /></datalist><small>使用 phase_id 读取阶段 ID；使用 metadata.xxx 读取 switch_phase 写入的阶段元数据。</small></label>
+            <div className="dlc-condition-anchor">阶段状态由 switch_phase 效果原子更新，可用于下一条因果规则判断章节、模式或流程节点。</div>
+          </>}
+        </div>
+
+        {needsValue ? <div className="dlc-condition-value-row">
+          <label>目标值类型<select value={condition._value_type} onChange={event => { const type = event.target.value; updateMany(index, { _value_type: type, _value_text: type === 'number' ? '0' : type === 'boolean' ? 'true' : type === 'list' ? '[]' : '' }) }}>{CAUSAL_VALUE_TYPES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          {condition._value_type === 'boolean' ? <label>目标值<select value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)}><option value="true">true / 是</option><option value="false">false / 否</option></select></label>
+            : condition._value_type === 'list' ? <label className="dlc-condition-wide">目标值列表<textarea rows="3" spellCheck="false" value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)} placeholder='["mobilized", "stable"]' /><small>必须是 JSON 数组，最多 64 项；适合“属于列表 / 不属于列表”。</small></label>
+              : <label>目标值<input type={condition._value_type === 'number' ? 'number' : 'text'} step="any" value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)} /><small>{condition._value_type === 'number' ? '必须是有限数字。' : '最长 512 个字符。'}</small></label>}
+        </div> : <div className="dlc-condition-existence-note">“{condition.operator === 'exists' ? '存在' : '不存在'}”操作符不需要目标值；它只判断事实是否能够被安全解析。</div>}
+
+        <details className="dlc-condition-advanced"><summary>高级过滤器 JSON（可选）</summary><label>Filters<textarea rows="4" spellCheck="false" value={condition._filters_text} onChange={event => update(index, '_filters_text', event.target.value)} /><small>最多 16 个字段。entity_count 支持 entity_type、status、tag；actor_attribute 支持 actor_type；relation 支持 active、value_field。其他字段会安全保留，但只有运行时已支持的字段参与求值。</small></label></details>
+        {condition.kind === 'anchored_inventory' && <div className="dlc-condition-anchor">当前比较统一锚定价值 = 数量 × anchor_rate{selectedResource ? `；${selectedResource.name} 的 anchor_rate 为 ${selectedResource.anchor_rate ?? 1}` : ''}。</div>}
+      </article>
     })}
   </section>
 }
 
-const WORLD_EFFECT_TYPES = [
-  { key: 'adjust_resource', label: 'Adjust resource' },
-  { key: 'set_resource', label: 'Set resource' },
-  { key: 'update_status', label: 'Update entity status' },
-  { key: 'create_ongoing_event', label: 'Create ongoing event' },
-  { key: 'transfer_anchored_value', label: 'Transfer anchored value' },
-]
+const EFFECT_GROUPS = [...new Set(WORLD_EFFECT_TYPES.map(item => item.group))]
 
-function defaultWorldEffect(effectType, entities, resources) {
-  const entityId = entities[0]?.id || ''
-  const resource = resources[0]?.name || ''
-  const asset = resources.find(item => item.kind === 'asset')?.name || ''
-  if (effectType === 'set_resource') return { effect_type: effectType, entity_id: entityId, resource_name: resource, quantity: 0, reason: '' }
-  if (effectType === 'update_status') return { effect_type: effectType, entity_id: entityId, new_status: '' }
-  if (effectType === 'create_ongoing_event') return { effect_type: effectType, entity_id: entityId, event_type: 'state_change', description: '', duration_days: 1, expected_result: {}, _expected_result_text: '{}' }
-  if (effectType === 'transfer_anchored_value') return { effect_type: effectType, from_entity_id: entityId, from_resource: asset, to_entity_id: entityId, to_resource: asset, base_value: 1, reason: '' }
-  return { effect_type: 'adjust_resource', entity_id: entityId, resource_name: resource, quantity_delta: 0, reason: '' }
+function EffectReferenceInput({ label, value, listId, onChange, placeholder = '', help = '' }) {
+  return <label>{label}<input list={listId} value={value || ''} onChange={event => onChange(event.target.value)} placeholder={placeholder} />{help && <small>{help}</small>}</label>
 }
 
-function ResourceSelect({ value, resources, assetsOnly = false, onChange }) {
+function ResourceSelect({ value, resources, assetsOnly = false, onChange, label = '资源名称' }) {
   const choices = assetsOnly ? resources.filter(item => item.kind === 'asset') : resources
-  return <label>Resource<select value={value || ''} onChange={event => onChange(event.target.value)}><option value="">--</option>{choices.map(item => <option key={item.name} value={item.name}>{item.name}{item.kind === 'asset' ? ` (anchor ${item.anchor_rate ?? 1})` : ` (${item.kind})`}</option>)}</select></label>
+  return <label>{label}<select value={value || ''} onChange={event => onChange(event.target.value)}><option value="">-- 请选择 --</option>{choices.map(item => <option key={item.name} value={item.name}>{item.name}{item.kind === 'asset' ? `（锚定率 ${item.anchor_rate ?? 1}）` : `（${item.kind}）`}</option>)}</select><small>{assetsOnly ? '仅列出带 anchor_rate 的 asset 资源。' : '资源必须已在 DLC 的资源目录中定义。'}</small></label>
 }
 
-function CausalWorldEffectBuilder({ value, entities, resources, onChange }) {
+function JsonEffectField({ label, value, onChange, rows = 5, help = '必须是合法 JSON 对象。' }) {
+  return <label className="dlc-world-effect-wide">{label}<textarea className="dlc-json-field" rows={rows} spellCheck="false" value={value || ''} onChange={event => onChange(event.target.value)} /><small>{help}</small></label>
+}
+
+function KnowledgeRecordEffectFields({ effect, onField }) {
+  const type = effect.effect_type
+  return <>
+    <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => onField('entity_id', next)} help="用于区分同名知识所属对象；不绑定具体实体时可留空。" />
+    <label>知识 ID<input value={effect.knowledge_id || ''} onChange={event => onField('knowledge_id', event.target.value)} placeholder="route_status" /><small>知识 ID 是稳定标识；同一实体下应保持 knowledge_id 唯一。</small></label>
+    {type === 'set_actor_belief' && <EffectReferenceInput label="Actor / Agent holder ID" value={effect.holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => onField('holder_id', next)} help="必须指定持有该认知的 holder 或 Agent 映射。" />}
+    {type === 'reveal_information' && <EffectReferenceInput label="玩家 holder ID" value={effect.holder_id || 'player'} listId="dlc-effect-knowledge-holder-catalog" onChange={next => onField('holder_id', next)} help="默认 player；多玩家场景可填写其他 holder。" />}
+    <label>知识来源<input value={effect.source || 'causal_event'} onChange={event => onField('source', event.target.value)} placeholder="causal_event" /><small>记录信息从何而来，便于追踪来源链。</small></label>
+    <label>置信度<input type="number" min="0" max="1" step="0.01" value={effect.confidence ?? 1} onChange={event => onField('confidence', event.target.value)} /><small>0～1；传播后会与置信度倍率相乘。</small></label>
+    <label>变陈旧天数（可选）<input type="number" min="0" max="36500" step="any" value={effect.stale_after_days ?? ''} onChange={event => onField('stale_after_days', event.target.value)} /><small>到期后标记为 stale，但仍可被规则读取。</small></label>
+    <label>完全过期天数（可选）<input type="number" min="0" max="36500" step="any" value={effect.expires_in_days ?? ''} onChange={event => onField('expires_in_days', event.target.value)} /><small>过期后禁止继续传播该知识。</small></label>
+    <label>保密级别<select value={effect.secrecy_level || 'public'} onChange={event => onField('secrecy_level', event.target.value)}><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+    <label>知识状态<select value={effect.status || 'active'} onChange={event => onField('status', event.target.value)}><option value="active">active / 有效</option><option value="disputed">disputed / 有争议</option><option value="retracted">retracted / 已撤回</option></select></label>
+    <JsonEffectField label="知识值 JSON" value={effect._value_text} onChange={next => onField('_value_text', next)} help="可填写对象、数组、数字、布尔、文本或 null；文本必须使用 JSON 双引号。" />
+    <JsonEffectField label="可见作用域 JSON 数组" value={effect._visibility_scopes_text} onChange={next => onField('_visibility_scopes_text', next)} help='填写 holder ID 数组，例如 ["player", "observer"]；空数组表示不额外限定。' />
+    <JsonEffectField label="失真 JSON" value={effect._distortion_text} onChange={next => onField('_distortion_text', next)} help='记录遗漏、偏差或改写，例如 {"omitted":["origin"]}。' />
+    <JsonEffectField label="知识 Metadata JSON" value={effect._metadata_text} onChange={next => onField('_metadata_text', next)} />
+    <div className="dlc-condition-warning">{type === 'declare_world_truth' ? '世界真相是隐藏权威层，绝不能直接注入 Agent。' : type === 'set_actor_belief' ? 'Actor 认知不等于事实，并且只对指定 holder 可见。' : '玩家知识只写入指定 holder，不会自动揭露隐藏层。'}</div>
+  </>
+}
+
+function CausalWorldEffectBuilder({ value, entities, resources, agents, actors, relationshipTypes, issueTypes, objectives, actions, onChange }) {
   const effects = Array.isArray(value) ? value : []
+  const catalogs = { entities, resources, agents, actors, relationshipTypes, issueTypes, objectives, actions }
+  const createdEntityIds = effects.filter(item => item.effect_type === 'create_entity').map(item => String(item.entity_id || '').trim()).filter(Boolean)
+  const entityCatalog = [...new Set([...(entities || []).map(item => item.id), ...createdEntityIds].filter(Boolean))]
+  const actorCatalog = (actors || []).map(item => item.actor_id || item.id).filter(Boolean)
+  const agentCatalog = (agents || []).map(item => item.id || item.agent_id).filter(Boolean)
+  const knowledgeHolderCatalog = [...new Set(['player', ...actorCatalog, ...agentCatalog])]
+  const investigationCatalog = [...new Set(effects.filter(item => item.effect_type === 'start_investigation').map(item => String(item.investigation_id || '').trim()).filter(Boolean))]
+  const scopeCatalog = [...new Set([...entityCatalog, ...actorCatalog, ...agentCatalog])]
+  const effectDefinition = effect => WORLD_EFFECT_TYPES.find(item => item.key === effect.effect_type) || WORLD_EFFECT_TYPES[0]
   const update = (index, name, nextValue) => {
     const next = effects.map(item => ({ ...item }))
     next[index][name] = nextValue
     onChange(next)
   }
-  const changeType = (index, effectType) => {
+  const changeMany = (index, values) => {
     const next = effects.map(item => ({ ...item }))
-    next[index] = defaultWorldEffect(effectType, entities, resources)
+    next[index] = { ...next[index], ...values }
     onChange(next)
   }
-  const add = () => onChange([...effects, defaultWorldEffect('adjust_resource', entities, resources)])
+  const changeType = (index, effectType) => {
+    const next = effects.map(item => ({ ...item }))
+    next[index] = defaultWorldEffect(effectType, catalogs)
+    onChange(next)
+  }
+  const add = () => {
+    if (effects.length >= 32) return
+    onChange([...effects, defaultWorldEffect('adjust_resource', catalogs)])
+  }
   const remove = index => onChange(effects.filter((_, itemIndex) => itemIndex !== index))
 
   return <section className="dlc-world-effect-builder">
-    <div className="dlc-condition-header"><div><strong>Transactional world effects</strong><small>Effects are frozen when scheduled and committed atomically before the child event reaches Agents.</small></div><button type="button" onClick={add}>+ Add world effect</button></div>
-    {!effects.length && <div className="dlc-condition-empty">No effects: this rule only emits an Agent-facing event.</div>}
-    {effects.map((effect, index) => <div className="dlc-world-effect-row" key={`world-effect-${index}`}>
-      <div className="dlc-world-effect-toolbar"><label>Effect type<select value={effect.effect_type || 'adjust_resource'} onChange={event => changeType(index, event.target.value)}>{WORLD_EFFECT_TYPES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><button type="button" className="danger" onClick={() => remove(index)}>Delete</button></div>
-      {['adjust_resource', 'set_resource'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
-        <EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
-        <ResourceSelect value={effect.resource_name} resources={resources} onChange={next => update(index, 'resource_name', next)} />
-        <label>{effect.effect_type === 'adjust_resource' ? 'Quantity delta' : 'Quantity'}<input type="number" step="any" value={effect.effect_type === 'adjust_resource' ? effect.quantity_delta ?? 0 : effect.quantity ?? 0} onChange={event => update(index, effect.effect_type === 'adjust_resource' ? 'quantity_delta' : 'quantity', event.target.value)} /></label>
-        <label>Reason<input value={effect.reason || ''} onChange={event => update(index, 'reason', event.target.value)} /></label>
-      </div>}
-      {effect.effect_type === 'update_status' && <div className="dlc-world-effect-grid"><EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>New status<input value={effect.new_status || ''} onChange={event => update(index, 'new_status', event.target.value)} /></label></div>}
-      {effect.effect_type === 'create_ongoing_event' && <div className="dlc-world-effect-grid">
-        <EntitySelect value={effect.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
-        <label>Ongoing event type<input value={effect.event_type || ''} onChange={event => update(index, 'event_type', event.target.value)} /></label>
-        <label>Duration days<input type="number" min="0" max="3650" step="any" value={effect.duration_days ?? 1} onChange={event => update(index, 'duration_days', event.target.value)} /></label>
-        <label className="dlc-world-effect-wide">Description<input value={effect.description || ''} onChange={event => update(index, 'description', event.target.value)} /></label>
-        <label className="dlc-world-effect-wide">Matured result JSON<textarea className="dlc-json-field" rows="5" spellCheck="false" value={effect._expected_result_text ?? jsonText(effect.expected_result)} onChange={event => update(index, '_expected_result_text', event.target.value)} /></label>
-      </div>}
-      {effect.effect_type === 'transfer_anchored_value' && <>
-        <div className="dlc-world-effect-grid">
-          <EntitySelect value={effect.from_entity_id} entities={entities} onChange={next => update(index, 'from_entity_id', next)} />
-          <ResourceSelect value={effect.from_resource} resources={resources} assetsOnly onChange={next => update(index, 'from_resource', next)} />
-          <EntitySelect value={effect.to_entity_id} entities={entities} onChange={next => update(index, 'to_entity_id', next)} />
-          <ResourceSelect value={effect.to_resource} resources={resources} assetsOnly onChange={next => update(index, 'to_resource', next)} />
-          <label>Base value<input type="number" min="0" step="any" value={effect.base_value ?? 1} onChange={event => update(index, 'base_value', event.target.value)} /></label>
-          <label>Reason<input value={effect.reason || ''} onChange={event => update(index, 'reason', event.target.value)} /></label>
+    <datalist id="dlc-effect-entity-catalog">{entityCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-agent-catalog">{agentCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-actor-catalog">{actorCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-scope-catalog">{scopeCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-knowledge-holder-catalog">{knowledgeHolderCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-investigation-catalog">{investigationCatalog.map(id => <option key={id} value={id} />)}</datalist>
+    <datalist id="dlc-effect-relationship-catalog">{(relationshipTypes || []).map(item => <option key={item.relationship_type_id} value={item.relationship_type_id} />)}</datalist>
+    <datalist id="dlc-effect-issue-catalog">{(issueTypes || []).map(item => <option key={item.issue_type_id} value={item.issue_type_id} />)}</datalist>
+    <datalist id="dlc-effect-objective-catalog">{(objectives || []).map(item => <option key={item.objective_id} value={item.objective_id} />)}</datalist>
+    <datalist id="dlc-effect-action-catalog">{(actions || []).map(item => <option key={item.action_id} value={item.action_id} />)}</datalist>
+    <div className="dlc-condition-header"><div><strong>事务型通用因果效果</strong><small>效果在调度时冻结，在子事件发送给 Agent 前以原子事务提交；任一效果失败时整批回滚。</small></div><button type="button" disabled={effects.length >= 32} onClick={add}>＋ 添加效果</button></div>
+    <div className="dlc-world-effect-overview"><strong>已配置 {effects.length} / 32</strong><span>可创建实体、Issue、知识、关系、职位、目标、行动解锁与世界阶段。新建实体 ID 可被同一规则后续效果直接引用。</span></div>
+    {!effects.length && <div className="dlc-condition-empty">未配置效果：该规则只会生成面向 Agent 的后续事件，不修改世界状态。</div>}
+    {effects.map((effect, index) => {
+      const definition = effectDefinition(effect)
+      return <article className="dlc-world-effect-row" key={`world-effect-${index}`}>
+        <div className="dlc-world-effect-toolbar">
+          <span className="dlc-world-effect-index">效果 {index + 1}</span>
+          <label>效果类型<select value={effect.effect_type || 'adjust_resource'} onChange={event => changeType(index, event.target.value)}>{EFFECT_GROUPS.map(group => <optgroup key={group} label={group}>{WORLD_EFFECT_TYPES.filter(item => item.group === group).map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</optgroup>)}</select></label>
+          <span className="dlc-world-effect-badge">{definition.group}</span>
+          <button type="button" className="danger" onClick={() => remove(index)}>删除</button>
         </div>
-        <small className="dlc-condition-anchor">Debit quantity = base value / source anchor; credit quantity = base value / destination anchor. The atomic batch conserves anchored value.</small>
-      </>}
-    </div>)}
+        <div className="dlc-world-effect-help"><strong>{definition.label}</strong><span>{definition.description}</span></div>
+
+        {['adjust_resource', 'set_resource'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} help="可引用当前实体，也可填写本规则前面刚创建的实体 ID。" />
+          <ResourceSelect value={effect.resource_name} resources={resources} onChange={next => update(index, 'resource_name', next)} />
+          <label>{effect.effect_type === 'adjust_resource' ? '数量增量' : '目标数量'}<input type="number" step="any" value={effect.effect_type === 'adjust_resource' ? effect.quantity_delta ?? 0 : effect.quantity ?? 0} onChange={event => update(index, effect.effect_type === 'adjust_resource' ? 'quantity_delta' : 'quantity', event.target.value)} /><small>{effect.effect_type === 'adjust_resource' ? '允许负数；结果库存仍受世界状态约束。' : '直接覆盖当前库存数量。'}</small></label>
+        </div>}
+
+        {effect.effect_type === 'update_status' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>新状态<input value={effect.new_status || ''} onChange={event => update(index, 'new_status', event.target.value)} placeholder="mobilized" /><small>写入实体 current_status，最长 512 字符。</small></label>
+        </div>}
+
+        {effect.effect_type === 'create_ongoing_event' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="关联实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>持续事件类型<input value={effect.event_type || ''} onChange={event => update(index, 'event_type', event.target.value)} placeholder="relief_operation" /><small>稳定 ID；用于后续条件和成熟结算。</small></label>
+          <label>持续天数<input type="number" min="0" max="3650" step="any" value={effect.duration_days ?? 1} onChange={event => update(index, 'duration_days', event.target.value)} /><small>0–3650 天；0 表示立即成熟。</small></label>
+          <label className="dlc-world-effect-wide">事件描述<input value={effect.description || ''} onChange={event => update(index, 'description', event.target.value)} /><small>面向编辑者和运行日志的说明，最长 1000 字符。</small></label>
+          <JsonEffectField label="成熟结果 JSON" value={effect._expected_result_text} onChange={next => update(index, '_expected_result_text', next)} help="对象可包含 new_status、inventory_deltas 等成熟时执行的结果。" />
+        </div>}
+
+        {effect.effect_type === 'transfer_anchored_value' && <>
+          <div className="dlc-world-effect-grid">
+            <EffectReferenceInput label="来源实体 ID" value={effect.from_entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'from_entity_id', next)} />
+            <ResourceSelect label="来源资产" value={effect.from_resource} resources={resources} assetsOnly onChange={next => update(index, 'from_resource', next)} />
+            <EffectReferenceInput label="目标实体 ID" value={effect.to_entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'to_entity_id', next)} />
+            <ResourceSelect label="目标资产" value={effect.to_resource} resources={resources} assetsOnly onChange={next => update(index, 'to_resource', next)} />
+            <label>基础价值<input type="number" min="0" step="any" value={effect.base_value ?? 1} onChange={event => update(index, 'base_value', event.target.value)} /><small>必须大于 0；输入的是统一锚定价值，不是资源数量。</small></label>
+          </div>
+          <div className="dlc-condition-anchor">扣减数量 = 基础价值 ÷ 来源 anchor_rate；增加数量 = 基础价值 ÷ 目标 anchor_rate。整批事务保持锚定价值守恒。</div>
+        </>}
+
+        {effect.effect_type === 'create_entity' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="新实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} placeholder="frontier_outpost" help="必须是新 ID；同一规则后面的效果可立即引用。" />
+          <label>实体类型<input value={effect.entity_type || ''} onChange={event => update(index, 'entity_type', event.target.value)} placeholder="location" /><small>稳定类型 ID，例如 person、organization、location。</small></label>
+          <label>实体名称<input value={effect.name || ''} onChange={event => update(index, 'name', event.target.value)} placeholder="前线哨站" /><small>玩家可见名称，必填。</small></label>
+          <label>当前状态<input value={effect.current_status || ''} onChange={event => update(index, 'current_status', event.target.value)} placeholder="active" /><small>可留空；常用 active、stable、mobilized。</small></label>
+          <label className="dlc-world-effect-wide">实体描述<textarea rows="3" value={effect.description || ''} onChange={event => update(index, 'description', event.target.value)} /><small>最长 4000 字符。</small></label>
+          <JsonEffectField label="实体 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} help="标签、坐标、扩展属性等对象字段。" />
+          <JsonEffectField label="初始库存 JSON" value={effect._resources_text} onChange={next => update(index, '_resources_text', next)} help='对象键为已定义资源名称，值为有限数字，例如 {"silver": 20}。' />
+        </div>}
+
+        {effect.effect_type === 'move_entity' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>X 坐标（可选）<input type="number" step="any" value={effect.x ?? ''} onChange={event => update(index, 'x', event.target.value)} /></label>
+          <label>Y 坐标（可选）<input type="number" step="any" value={effect.y ?? ''} onChange={event => update(index, 'y', event.target.value)} /></label>
+          <label>区域（可选）<input value={effect.region || ''} onChange={event => update(index, 'region', event.target.value)} placeholder="north_frontier" /></label>
+          <EffectReferenceInput label="地点 ID（可选）" value={effect.location_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'location_id', next)} help="X、Y、区域、地点 ID 至少填写一项。" />
+        </div>}
+
+        {effect.effect_type === 'transform_entity' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>新实体类型（可选）<input value={effect.new_type || ''} onChange={event => update(index, 'new_type', event.target.value)} /></label>
+          <label>新名称（可选）<input value={effect.new_name || ''} onChange={event => update(index, 'new_name', event.target.value)} /></label>
+          <label>新状态（可选）<input value={effect.new_status || ''} onChange={event => update(index, 'new_status', event.target.value)} /></label>
+          <label className="dlc-world-effect-wide">新描述（可选）<textarea rows="3" value={effect.new_description || ''} onChange={event => update(index, 'new_description', event.target.value)} /></label>
+          <JsonEffectField label="Metadata 补丁 JSON（可选）" value={effect._metadata_patch_text} onChange={next => update(index, '_metadata_patch_text', next)} help="至少填写一个转化字段；空对象不会产生变更。" />
+        </div>}
+
+        {effect.effect_type === 'remove_entity' && <div className="dlc-world-effect-grid"><EffectReferenceInput label="要移除的实体 ID" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} help="移除会同步清理该实体的库存、关系和持续事件。" /></div>}
+
+        {['enable_agent', 'disable_agent'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="Agent ID" value={effect.agent_id} listId="dlc-effect-agent-catalog" onChange={next => update(index, 'agent_id', next)} help="必须引用 DLC 中已定义的 Agent。" />
+          <EffectReferenceInput label="关联 Actor ID（可选）" value={effect.actor_id} listId="dlc-effect-actor-catalog" onChange={next => update(index, 'actor_id', next)} help="填写时必须引用已定义 Actor。" />
+          <JsonEffectField label="Agent 状态 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+        </div>}
+
+        {effect.effect_type === 'modify_relationship' && <div className="dlc-world-effect-grid">
+          <label>操作<select value={effect.operation || 'upsert'} onChange={event => changeMany(index, { operation: event.target.value })}><option value="upsert">新增或更新 upsert</option><option value="remove">删除 remove</option></select><small>删除操作只需要两端实体和关系类型。</small></label>
+          <EffectReferenceInput label="父/来源实体 ID" value={effect.parent_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'parent_id', next)} />
+          <EffectReferenceInput label="子/目标实体 ID" value={effect.child_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'child_id', next)} />
+          <EffectReferenceInput label="关系类型 ID" value={effect.rel_type} listId="dlc-effect-relationship-catalog" onChange={next => update(index, 'rel_type', next)} help="必须在关系类型目录中定义。" />
+          {effect.operation !== 'remove' && <>
+            <label>关系强度（可选）<input type="number" step="any" value={effect.strength ?? ''} onChange={event => update(index, 'strength', event.target.value)} /></label>
+            <label>可见性（可选）<select value={effect.visibility || ''} onChange={event => update(index, 'visibility', event.target.value)}><option value="">使用类型默认值</option><option value="public">public / 公开</option><option value="private">private / 私密</option><option value="secret">secret / 秘密</option></select></label>
+            <label>延迟生效天数<input type="number" min="0" max="3650" step="any" value={effect.starts_in_days ?? 0} onChange={event => update(index, 'starts_in_days', event.target.value)} /></label>
+            <label>持续天数（可选）<input type="number" min="0" max="3650" step="any" value={effect.duration_days ?? ''} onChange={event => update(index, 'duration_days', event.target.value)} /><small>留空表示永久；填写时必须大于 0。</small></label>
+            <label className="dlc-world-effect-wide">关系备注<input value={effect.note || ''} onChange={event => update(index, 'note', event.target.value)} /></label>
+            <JsonEffectField label="关系维度值 JSON" value={effect._values_text} onChange={next => update(index, '_values_text', next)} help='例如 {"trust": 0.8, "fear": 0.1}。' />
+            <JsonEffectField label="关系 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          </>}
+        </div>}
+
+        {effect.effect_type === 'modify_membership' && <div className="dlc-world-effect-grid">
+          <label>操作<select value={effect.operation || 'upsert'} onChange={event => update(index, 'operation', event.target.value)}><option value="upsert">新增或更新 upsert</option><option value="remove">删除 remove</option></select></label>
+          <EffectReferenceInput label="Actor ID" value={effect.actor_id} listId="dlc-effect-actor-catalog" onChange={next => update(index, 'actor_id', next)} />
+          <EffectReferenceInput label="组织实体 ID" value={effect.organization_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'organization_id', next)} help="组织必须是已存在或同规则前面创建的实体。" />
+          {effect.operation !== 'remove' && <>
+            <label>职位 / 角色<input value={effect.role || 'member'} onChange={event => update(index, 'role', event.target.value)} placeholder="commander" /></label>
+            <label>成员状态<input value={effect.status || 'active'} onChange={event => update(index, 'status', event.target.value)} placeholder="active" /></label>
+            <JsonEffectField label="成员身份 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          </>}
+        </div>}
+
+        {effect.effect_type === 'create_issue' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="Issue 类型 ID" value={effect.issue_type_id} listId="dlc-effect-issue-catalog" onChange={next => update(index, 'issue_type_id', next)} help="必须引用已启用的 Issue 类型。" />
+          <label>标题（可选）<input value={effect.title || ''} onChange={event => update(index, 'title', event.target.value)} /></label>
+          <label>紧迫度<select value={effect.urgency || 'normal'} onChange={event => update(index, 'urgency', event.target.value)}><option value="low">low / 低</option><option value="normal">normal / 普通</option><option value="high">high / 高</option><option value="critical">critical / 紧急</option></select></label>
+          <label>处理期限（天，可选）<input type="number" min="0" max="3650" step="any" value={effect.deadline_days ?? ''} onChange={event => update(index, 'deadline_days', event.target.value)} /></label>
+          <label className="dlc-world-effect-wide">摘要（可选）<textarea rows="3" value={effect.summary || ''} onChange={event => update(index, 'summary', event.target.value)} /></label>
+          <JsonEffectField label="来源 JSON" value={effect._source_text} onChange={next => update(index, '_source_text', next)} help='例如 {"kind":"event","entity_id":"frontier_fort"}；空对象会由运行时补为 causal_event。' />
+          <JsonEffectField label="详情 JSON" value={effect._details_text} onChange={next => update(index, '_details_text', next)} />
+          <JsonEffectField label="证据 JSON 数组" value={effect._evidence_text} onChange={next => update(index, '_evidence_text', next)} help="必须是 JSON 数组，可放结构化证据对象。" />
+          <JsonEffectField label="Issue Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+        </div>}
+
+        {['declare_world_truth', 'set_actor_belief', 'reveal_information'].includes(effect.effect_type) && <div className="dlc-world-effect-grid">
+          <KnowledgeRecordEffectFields effect={effect} onField={(name, next) => update(index, name, next)} />
+        </div>}
+
+        {effect.effect_type === 'propagate_knowledge' && <div className="dlc-world-effect-grid">
+          <label>来源层<select value={effect.source_layer || 'world_truth'} onChange={event => changeMany(index, { source_layer: event.target.value, source_holder_id: event.target.value === 'world_truth' ? '' : effect.source_holder_id })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+          <label>目标层<select value={effect.target_layer || 'actor_belief'} onChange={event => changeMany(index, { target_layer: event.target.value, target_holder_id: event.target.value === 'world_truth' ? '' : effect.target_holder_id || (event.target.value === 'player_knowledge' ? 'player' : '') })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+          <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>知识 ID<input value={effect.knowledge_id || ''} onChange={event => update(index, 'knowledge_id', event.target.value)} placeholder="route_status" /></label>
+          {effect.source_layer !== 'world_truth' && <EffectReferenceInput label="来源 holder ID" value={effect.source_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'source_holder_id', next)} help="来源为 Actor 或玩家层时必填。" />}
+          {effect.target_layer !== 'world_truth' && <EffectReferenceInput label="目标 holder ID" value={effect.target_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'target_holder_id', next)} help="目标为 Actor 或玩家层时必填。" />}
+          <label>置信度倍率<input type="number" min="0" max="1" step="0.01" value={effect.confidence_multiplier ?? 1} onChange={event => update(index, 'confidence_multiplier', event.target.value)} /><small>0～1；目标置信度 = 来源置信度 × 倍率。</small></label>
+          <label>传播来源<input value={effect.source || 'knowledge_propagation'} onChange={event => update(index, 'source', event.target.value)} /></label>
+          <label>覆盖保密级别（可选）<select value={effect.secrecy_level || ''} onChange={event => update(index, 'secrecy_level', event.target.value)}><option value="">继承来源</option><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+          <label className="dlc-world-effect-wide"><span><input type="checkbox" checked={Boolean(effect._use_value_override)} onChange={event => update(index, '_use_value_override', event.target.checked)} /> 覆盖传播后的知识值</span><small>关闭时复制来源 value；开启后使用下方 JSON。</small></label>
+          {effect._use_value_override && <JsonEffectField label="覆盖知识值 JSON" value={effect._value_override_text} onChange={next => update(index, '_value_override_text', next)} help="只覆盖 value；来源链、provenance 与其余元数据仍会保留。" />}
+          <JsonEffectField label="传播失真 JSON" value={effect._distortion_text} onChange={next => update(index, '_distortion_text', next)} />
+          <JsonEffectField label="传播 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          <div className="dlc-condition-warning">传播会保留来源链并应用置信度倍率；已过期知识不能传播，非世界真相层必须指定 holder。</div>
+        </div>}
+
+        {effect.effect_type === 'start_investigation' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="调查 ID" value={effect.investigation_id} listId="dlc-effect-investigation-catalog" onChange={next => update(index, 'investigation_id', next)} help="规则内和后续规则都通过这个唯一 investigation ID 引用。" />
+          <EffectReferenceInput label="关联实体 ID（可选）" value={effect.entity_id} listId="dlc-effect-entity-catalog" onChange={next => update(index, 'entity_id', next)} />
+          <label>待核验知识 ID<input value={effect.knowledge_id || ''} onChange={event => update(index, 'knowledge_id', event.target.value)} placeholder="route_status" /></label>
+          <label>调查者层<select value={effect.investigator_layer || 'player_knowledge'} onChange={event => changeMany(index, { investigator_layer: event.target.value, investigator_id: event.target.value === 'player_knowledge' ? effect.investigator_id || 'player' : effect.investigator_id === 'player' ? '' : effect.investigator_id, _result_target_layer: event.target.value, _result_target_holder_id: event.target.value === 'player_knowledge' ? 'player' : '' })}><option value="player_knowledge">player_knowledge / 玩家</option><option value="actor_belief">actor_belief / Actor</option></select></label>
+          <EffectReferenceInput label="调查者 ID" value={effect.investigator_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, 'investigator_id', next)} help="玩家通常填写 player；Actor 调查填写 Actor / Agent holder。" />
+          <label>调查所需进度<input type="number" min="0" max="1000000" step="any" value={effect.required_progress ?? 1} onChange={event => update(index, 'required_progress', event.target.value)} /><small>必须大于 0。</small></label>
+          <JsonEffectField label="初始证据 JSON 数组" value={effect._evidence_text} onChange={next => update(index, '_evidence_text', next)} help="最多 64 项，可填写线索、证词或结构化发现。" />
+          <JsonEffectField label="调查 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} />
+          <label className="dlc-world-effect-wide"><span><input type="checkbox" checked={Boolean(effect._use_result_policy)} onChange={event => update(index, '_use_result_policy', event.target.checked)} /> 调查完成后自动投影知识</span><small>启用后，完成调查时按下方策略把来源记录写入目标层。</small></label>
+          {effect._use_result_policy && <>
+            <label>结果来源层<select value={effect._result_source_layer || 'world_truth'} onChange={event => changeMany(index, { _result_source_layer: event.target.value, _result_source_holder_id: event.target.value === 'world_truth' ? '' : effect._result_source_holder_id })}><option value="world_truth">world_truth / 世界真相</option><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+            <label>结果目标层<select value={effect._result_target_layer || effect.investigator_layer || 'player_knowledge'} onChange={event => update(index, '_result_target_layer', event.target.value)}><option value="actor_belief">actor_belief / Actor 认知</option><option value="player_knowledge">player_knowledge / 玩家知识</option></select></label>
+            {effect._result_source_layer !== 'world_truth' && <EffectReferenceInput label="来源 holder ID" value={effect._result_source_holder_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, '_result_source_holder_id', next)} />}
+            <EffectReferenceInput label="结果目标 holder ID" value={effect._result_target_holder_id || effect.investigator_id} listId="dlc-effect-knowledge-holder-catalog" onChange={next => update(index, '_result_target_holder_id', next)} />
+            <label>结果置信度倍率<input type="number" min="0" max="1" step="0.01" value={effect._result_confidence_multiplier ?? 1} onChange={event => update(index, '_result_confidence_multiplier', event.target.value)} /></label>
+            <label>结果来源说明（可选）<input value={effect._result_source || ''} onChange={event => update(index, '_result_source', event.target.value)} placeholder="默认生成 investigation:ID" /></label>
+            <label>覆盖结果保密级别<select value={effect._result_secrecy_level || ''} onChange={event => update(index, '_result_secrecy_level', event.target.value)}><option value="">继承来源</option><option value="public">public / 公开</option><option value="restricted">restricted / 受限</option><option value="confidential">confidential / 机密</option><option value="secret">secret / 秘密</option><option value="top_secret">top_secret / 绝密</option></select></label>
+            <JsonEffectField label="结果失真 JSON" value={effect._result_distortion_text} onChange={next => update(index, '_result_distortion_text', next)} />
+            <JsonEffectField label="结果策略扩展 JSON" value={effect._result_policy_text} onChange={next => update(index, '_result_policy_text', next)} help="可填 metadata、reason 或 value_override；可视化字段会覆盖同名扩展字段。" />
+          </>}
+          <div className="dlc-condition-warning">调查记录本身不会向 Agent 泄露世界真相；只有完成后的结果策略才会写入指定认知层。</div>
+        </div>}
+
+        {effect.effect_type === 'advance_investigation' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="调查 ID" value={effect.investigation_id} listId="dlc-effect-investigation-catalog" onChange={next => update(index, 'investigation_id', next)} />
+          <label>推进模式<select value={effect.mode || 'adjust'} onChange={event => changeMany(index, event.target.value === 'adjust' ? { mode: 'adjust', amount: effect.amount ?? effect.progress ?? 1 } : { mode: 'set', progress: effect.progress ?? effect.amount ?? 0 })}><option value="adjust">adjust / 增量</option><option value="set">set / 直接设定</option></select></label>
+          <label>{effect.mode === 'set' ? '目标进度' : '进度增量'}<input type="number" min="0" max="1000000" step="any" value={effect.mode === 'set' ? effect.progress ?? 0 : effect.amount ?? 1} onChange={event => update(index, effect.mode === 'set' ? 'progress' : 'amount', event.target.value)} /><small>必须大于等于 0；达到 required_progress 时自动完成。</small></label>
+          <label>调查状态（可选）<select value={effect.status || ''} onChange={event => update(index, 'status', event.target.value)}><option value="">由进度自动决定</option><option value="active">active / 进行中</option><option value="paused">paused / 暂停</option><option value="completed">completed / 完成</option><option value="cancelled">cancelled / 取消</option></select></label>
+          <JsonEffectField label="追加证据 JSON 数组" value={effect._evidence_text} onChange={next => update(index, '_evidence_text', next)} help="新增证据会追加，最多保留 64 项。" />
+        </div>}
+
+        {effect.effect_type === 'advance_objective' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="Objective ID" value={effect.objective_id} listId="dlc-effect-objective-catalog" onChange={next => update(index, 'objective_id', next)} />
+          <label>推进模式<select value={effect.mode || 'adjust'} onChange={event => changeMany(index, event.target.value === 'adjust' ? { mode: 'adjust', amount: effect.amount ?? effect.progress ?? 1 } : { mode: 'set', progress: effect.progress ?? effect.amount ?? 0 })}><option value="adjust">adjust / 增量调整</option><option value="set">set / 直接设定</option></select></label>
+          <label>{effect.mode === 'set' ? '目标进度' : '进度增量'}<input type="number" step="any" value={effect.mode === 'set' ? effect.progress ?? 0 : effect.amount ?? 1} onChange={event => update(index, effect.mode === 'set' ? 'progress' : 'amount', event.target.value)} /><small>{effect.mode === 'set' ? '直接覆盖 progress。' : '在当前 progress 上增加，可为负数。'}</small></label>
+          <label>目标状态（可选）<input value={effect.status || ''} onChange={event => update(index, 'status', event.target.value)} placeholder="completed" /></label>
+        </div>}
+
+        {effect.effect_type === 'unlock_action' && <div className="dlc-world-effect-grid">
+          <EffectReferenceInput label="行动 ID" value={effect.action_id} listId="dlc-effect-action-catalog" onChange={next => update(index, 'action_id', next)} help="必须引用 DLC 的行动目录。" />
+          <EffectReferenceInput label="作用域 ID（可选）" value={effect.scope_id} listId="dlc-effect-scope-catalog" onChange={next => update(index, 'scope_id', next)} help="留空表示全局解锁；可填写实体、Actor 或 Agent ID。" />
+        </div>}
+
+        {effect.effect_type === 'switch_phase' && <div className="dlc-world-effect-grid">
+          <label>阶段 ID<input value={effect.phase_id || ''} onChange={event => update(index, 'phase_id', event.target.value)} placeholder="counterattack" /><small>稳定 ID；后续 phase 条件可直接比较。</small></label>
+          <JsonEffectField label="阶段 Metadata JSON" value={effect._metadata_text} onChange={next => update(index, '_metadata_text', next)} help="记录章节、解锁来源或 UI 提示等扩展信息。" />
+        </div>}
+
+        <label className="dlc-world-effect-reason">原因 / 审计说明（可选）<input value={effect.reason || ''} onChange={event => update(index, 'reason', event.target.value)} placeholder="说明为什么应用该效果" /><small>会写入命令计划和审计记录，最长 512 字符。</small></label>
+      </article>
+    })}
   </section>
 }
 
@@ -607,7 +937,13 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const items = content[kind] || []
   const entities = content.entities || []
   const agents = content.agents || []
+  const actors = content.actors || []
+  const objectives = content.objectives || []
+  const issueTypes = content.issue_types || []
+  const actions = content.actions || []
+  const ongoingEvents = content.ongoing_events || []
   const resources = content.resources || []
+  const relationshipTypes = effectiveRelationshipTypes(content)
   const causalTemplates = content.causal_rule_templates || []
   const causalConditionGroups = content.causal_condition_groups || []
   const assetResources = resources.filter(item => item.kind === 'asset')
@@ -770,6 +1106,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
     onSaveContent({ ...content, [kind]: items.filter((_, index) => index !== selectedIndex) }, `${TITLES[kind]} deleted`)
   }
 
+  const relationshipDefinition = relationshipTypes.find(item => item.relationship_type_id === form.rel_type) || relationshipTypes[0]
   const inventoryResource = assetResources.find(item => item.name === form.item_name)
   const anchoredValue = Number(form.quantity || 0) * Number(inventoryResource?.anchor_rate || 0)
 
@@ -796,9 +1133,15 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
       </>}
 
       {kind === 'relations' && <>
-        <div className="dlc-row"><EntitySelect label={T.parent} value={form.parent_id} entities={entities} onChange={value => set('parent_id', value)} /><EntitySelect label={T.child} value={form.child_id} entities={entities} onChange={value => set('child_id', value)} /></div>
-        <label>{T.relationType}<select value={form.rel_type || 'subordinate'} onChange={event => set('rel_type', event.target.value)}><option value="subordinate">subordinate</option><option value="affiliated">affiliated</option></select></label>
+        <div className="dlc-editor-callout">{relationshipDefinition?.description || '关系边会按当前 DLC 关系契约校验强度、可见性、期限和多维值。'}</div>
+        <div className="dlc-row"><EntitySelect label={relationshipDefinition?.direction === 'undirected' ? '实体 A' : T.parent} value={form.parent_id} entities={entities} onChange={value => set('parent_id', value)} /><EntitySelect label={relationshipDefinition?.direction === 'undirected' ? '实体 B' : T.child} value={form.child_id} entities={entities} onChange={value => set('child_id', value)} /></div>
+        <label>{T.relationType}<select value={form.rel_type || relationshipTypes[0]?.relationship_type_id || 'subordinate'} onChange={event => { const definition = relationshipTypes.find(item => item.relationship_type_id === event.target.value); setForm(current => ({ ...current, rel_type: event.target.value, strength: definition?.default_strength ?? current.strength ?? 0, visibility: definition?.default_visibility || current.visibility || 'public', expires_at: definition?.allow_expiry ? current.expires_at : '', values: Object.fromEntries((definition?.dimensions || []).map(item => [item.dimension_id, item.default ?? 0])), _values_text: jsonText(Object.fromEntries((definition?.dimensions || []).map(item => [item.dimension_id, item.default ?? 0]))) })) }}><option value="">--</option>{relationshipTypes.map(item => <option key={item.relationship_type_id} value={item.relationship_type_id}>{item.display_name || item.relationship_type_id} ({item.relationship_type_id})</option>)}</select></label>
+        <div className="dlc-row three"><label>{T.strength}<input type="number" step="any" min={relationshipDefinition?.minimum_strength} max={relationshipDefinition?.maximum_strength} value={form.strength ?? relationshipDefinition?.default_strength ?? 0} onChange={event => set('strength', event.target.value)} /><small>{relationshipDefinition?.minimum_strength ?? '-'} ~ {relationshipDefinition?.maximum_strength ?? '-'}</small></label><label>{T.visibility}<select value={form.visibility || relationshipDefinition?.default_visibility || 'public'} onChange={event => set('visibility', event.target.value)}><option value="public">公开</option><option value="limited">有限公开</option><option value="private">私有</option><option value="secret">秘密</option></select></label><label>方向<input value={relationshipDefinition?.direction === 'undirected' ? '无向' : '有向'} disabled /></label></div>
+        <div className="dlc-row"><label>{T.startsAt}<input type="number" step="any" value={form.starts_at ?? 0} onChange={event => set('starts_at', event.target.value)} /></label><label>{T.expiresAt}<input type="number" step="any" disabled={!relationshipDefinition?.allow_expiry} value={form.expires_at ?? ''} onChange={event => set('expires_at', event.target.value)} placeholder={relationshipDefinition?.allow_expiry ? '留空表示不到期' : '该类型不允许到期'} /></label></div>
+        {!!relationshipDefinition?.dimensions?.length && <fieldset className="relationship-dimensions compact"><legend>{T.dimensionValues}</legend>{relationshipDefinition.dimensions.map(dimension => { let values = {}; try { values = JSON.parse(form._values_text || '{}') } catch { /* keep raw editor error for save */ } return <label key={dimension.dimension_id}>{dimension.display_name || dimension.dimension_id}<input type="number" step="any" min={dimension.minimum} max={dimension.maximum} value={values[dimension.dimension_id] ?? dimension.default ?? 0} onChange={event => { const next = { ...values, [dimension.dimension_id]: Number(event.target.value) }; setForm(current => ({ ...current, values: next, _values_text: jsonText(next) })) }} /><small>{dimension.dimension_id}: {dimension.minimum} ~ {dimension.maximum}</small></label> })}</fieldset>}
+        <label>{T.dimensionValues} JSON<textarea className="dlc-json-field" rows="6" spellCheck="false" value={form._values_text || '{}'} onChange={event => set('_values_text', event.target.value)} /></label>
         <label>{T.note}<textarea rows="3" value={form.note || ''} onChange={event => set('note', event.target.value)} /></label>
+        <label>{T.metadata}<textarea className="dlc-json-field" rows="5" spellCheck="false" value={form._metadata_text || '{}'} onChange={event => set('_metadata_text', event.target.value)} /></label>
         {form.parent_id && form.parent_id === form.child_id && <EditorError>A relation cannot point to itself.</EditorError>}
       </>}
 
@@ -822,7 +1165,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
       {kind === 'causal_condition_groups' && <>
         <div className="dlc-row"><label>Group ID<input value={form.group_id || ''} onChange={event => set('group_id', event.target.value)} placeholder="treasury_ready" /></label><label>{T.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /></label></div>
         <label>{T.description}<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
-        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} actors={actors} agents={agents} relationshipTypes={relationshipTypes} objectives={objectives} ongoingEvents={ongoingEvents} eventTypes={eventTypes} onChange={value => set('conditions', value)} />
       </>}
 
       {kind === 'causal_rule_templates' && <>
@@ -846,10 +1189,10 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
           <AgentTargets value={form.target_agents || []} agents={agents} onChange={value => set('target_agents', value)} />
           <div className="dlc-editor-callout">No target selected means inherit the source event targets. Anchored inventory conditions compare quantity * anchor_rate in base-value units.</div>
           <label>Inherit payload keys<input value={form._inherit_keys_text || ''} onChange={event => set('_inherit_keys_text', event.target.value)} placeholder="region, crop" /></label>
-          <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} onChange={value => set('world_effects', value)} />
+          <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} agents={agents} actors={actors} relationshipTypes={relationshipTypes} issueTypes={issueTypes} objectives={objectives} actions={actions} onChange={value => set('world_effects', value)} />
           <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
         </>}
-        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} actors={actors} agents={agents} relationshipTypes={relationshipTypes} objectives={objectives} ongoingEvents={ongoingEvents} eventTypes={eventTypes} onChange={value => set('conditions', value)} />
         <CausalDryRunPanel
           report={previewReport}
           replayComparison={replayComparison}
@@ -1006,5 +1349,5 @@ export function PromptEditor({ content, selected, onSelect, onSaveContent, busy 
     onSaveContent({ ...content, prompts: next }, `${T.prompt} deleted`)
   }
 
-  return <div className="dlc-content-grid dlc-prompt-grid"><div className="dlc-item-list"><button className="dlc-new" onClick={() => onSelect('')}>{T.add}{T.prompt}</button>{names.map(key => { const prompt = normalizePrompt(prompts[key]); return <button key={key} className={selected === key ? 'active' : ''} onClick={() => onSelect(key)}><strong>{key}</strong><small>v{prompt.version} \u00b7 {prompt.blocks.length} blocks</small></button> })}</div><div className="dlc-form dlc-prompt-form"><div className="dlc-form-title"><h3>{selected ? T.edit : T.add}{T.prompt}</h3>{selected && <code>{selected}</code>}</div><div className="dlc-row"><label>{T.name}<input value={name} disabled={Boolean(selected)} onChange={event => setName(event.target.value)} placeholder="official_template" /></label><label>{T.version}<input value={form.version} onChange={event => set('version', event.target.value)} /></label></div><label>{T.maxChars}<input type="number" min="1" value={form.max_chars} onChange={event => set('max_chars', event.target.value)} placeholder="12000" /></label><label>{T.metadata}<textarea className="dlc-json-field" rows="4" spellCheck="false" value={form._metadata_text} onChange={event => set('_metadata_text', event.target.value)} /></label><div className="dlc-prompt-help"><strong>Agent variables</strong><code>{'{id} {name} {rank} {rank_title} {location} {personality} {superior} {role} {agent_type}'}</code></div><section className="dlc-blocks"><div className="dlc-blocks-header"><h4>{T.promptBlocks}</h4><button onClick={addBlock}>{T.add} block</button></div>{form.blocks.map((block, index) => <article className="dlc-prompt-block" key={`${index}-${block.name}`}><div className="dlc-block-toolbar"><strong>#{index + 1}</strong><label className="dlc-check"><input type="checkbox" checked={block.enabled !== false} onChange={event => setBlock(index, 'enabled', event.target.checked)} /> enabled</label><button className="danger" disabled={form.blocks.length <= 1} onClick={() => removeBlock(index)}>{T.delete}</button></div><div className="dlc-row"><label>{T.name}<input value={block.name} onChange={event => setBlock(index, 'name', event.target.value)} /></label><label>Priority<input type="number" value={block.priority} onChange={event => setBlock(index, 'priority', event.target.value)} /></label></div><label>{T.requiredVariables}<input value={(block.required_variables || []).join(', ')} onChange={event => setBlock(index, 'required_variables', event.target.value.split(',').map(item => item.trim()).filter(Boolean))} /></label><label>{T.template}<textarea rows="9" value={block.template} onChange={event => setBlock(index, 'template', event.target.value)} /></label></article>)}</section><section className="dlc-prompt-preview"><div><h4>{T.promptPreview}</h4><small>{preview.length} chars \u00b7 ~{Math.ceil(preview.length / 2)} tokens</small></div><pre>{preview || 'Empty prompt'}</pre></section><EditorError>{error}</EditorError><div className="dlc-form-actions">{selected && <button className="danger" disabled={busy} onClick={remove}>{T.delete}</button>}<button className="primary" disabled={busy || !name.trim()} onClick={save}>{T.save}{T.prompt}</button></div></div></div>
+  return <div className="dlc-content-grid dlc-prompt-grid"><div className="dlc-item-list"><button className="dlc-new" onClick={() => onSelect('')}>{T.add}{T.prompt}</button>{names.map(key => { const prompt = normalizePrompt(prompts[key]); return <button key={key} className={selected === key ? 'active' : ''} onClick={() => onSelect(key)}><strong>{key}</strong><small>v{prompt.version} \u00b7 {prompt.blocks.length} blocks</small></button> })}</div><div className="dlc-form dlc-prompt-form"><div className="dlc-form-title"><h3>{selected ? T.edit : T.add}{T.prompt}</h3>{selected && <code>{selected}</code>}</div><div className="dlc-row"><label>{T.name}<input value={name} disabled={Boolean(selected)} onChange={event => setName(event.target.value)} placeholder="official_template" /></label><label>{T.version}<input value={form.version} onChange={event => set('version', event.target.value)} /></label></div><label>{T.maxChars}<input type="number" min="1" value={form.max_chars} onChange={event => set('max_chars', event.target.value)} placeholder="12000" /></label><label>{T.metadata}<textarea className="dlc-json-field" rows="4" spellCheck="false" value={form._metadata_text} onChange={event => set('_metadata_text', event.target.value)} /></label><div className="dlc-prompt-help"><strong>Agent variables</strong><code>{'{id} {name} {rank} {rank_title} {location} {personality} {superior} {role} {agent_type} {actor} {actor_id} {actor_type} {actor_entity_id} {actor_attributes} {actor_traits} {actor_needs} {actor_goals} {actor_capabilities} {actor_identities} {actor_memberships} {actor_states}'}</code><small className="dlc-field-help">actor 变量会以安全 JSON 注入 Prompt；可使用 attributes、needs、goals、states 等字段。Generation 归档会保留这些 Actor 定义；Metadata 默认不会注入提示词。</small></div><section className="dlc-blocks"><div className="dlc-blocks-header"><h4>{T.promptBlocks}</h4><button onClick={addBlock}>{T.add} block</button></div>{form.blocks.map((block, index) => <article className="dlc-prompt-block" key={`${index}-${block.name}`}><div className="dlc-block-toolbar"><strong>#{index + 1}</strong><label className="dlc-check"><input type="checkbox" checked={block.enabled !== false} onChange={event => setBlock(index, 'enabled', event.target.checked)} /> enabled</label><button className="danger" disabled={form.blocks.length <= 1} onClick={() => removeBlock(index)}>{T.delete}</button></div><div className="dlc-row"><label>{T.name}<input value={block.name} onChange={event => setBlock(index, 'name', event.target.value)} /></label><label>Priority<input type="number" value={block.priority} onChange={event => setBlock(index, 'priority', event.target.value)} /></label></div><label>{T.requiredVariables}<input value={(block.required_variables || []).join(', ')} onChange={event => setBlock(index, 'required_variables', event.target.value.split(',').map(item => item.trim()).filter(Boolean))} /></label><label>{T.template}<textarea rows="9" value={block.template} onChange={event => setBlock(index, 'template', event.target.value)} /></label></article>)}</section><section className="dlc-prompt-preview"><div><h4>{T.promptPreview}</h4><small>{preview.length} chars \u00b7 ~{Math.ceil(preview.length / 2)} tokens</small></div><pre>{preview || 'Empty prompt'}</pre></section><EditorError>{error}</EditorError><div className="dlc-form-actions">{selected && <button className="danger" disabled={busy} onClick={remove}>{T.delete}</button>}<button className="primary" disabled={busy || !name.trim()} onClick={save}>{T.save}{T.prompt}</button></div></div></div>
 }

@@ -485,7 +485,13 @@ class IssueManager:
         context = {"$source": source_id, "$source_id": source_id, "$issue": issue_id, "$case": case_id, "$payload": copy.deepcopy(dict(data))}
         requests: list[dict[str, Any]] = []
         for template in definition["decision_requests"]:
-            request_id = f"decision_{uuid.uuid4().hex[:16]}"
+            if data.get("deterministic_ids"):
+                digest = hashlib.sha256(
+                    f"{issue_id}\0{template['request_id']}".encode("utf-8")
+                ).hexdigest()[:16]
+                request_id = f"decision_{digest}"
+            else:
+                request_id = f"decision_{uuid.uuid4().hex[:16]}"
             request_deadline = sim_time + template["deadline_days"] * DAY if template["deadline_days"] is not None else deadline_at
             request = {
                 "decision_request_id": request_id,
@@ -543,6 +549,28 @@ class IssueManager:
             self._external_receipts[external_id] = {"hash": request_hash, "issue_id": issue_id}
         self._trim_locked()
         return {"ok": True, "replayed": False, "issue": copy.deepcopy(issue), "case": copy.deepcopy(case), "decision_requests": copy.deepcopy(requests)}
+
+    def project_effect_issues(
+        self,
+        payloads: Iterable[Mapping[str, Any]],
+        *,
+        sim_time: float,
+    ) -> list[dict[str, Any]]:
+        """Idempotently materialize SQLite-authoritative causal issues."""
+        results: list[dict[str, Any]] = []
+        for payload in payloads:
+            if not isinstance(payload, Mapping):
+                continue
+            created_at = payload.get("created_at", sim_time)
+            try:
+                issue_time = float(created_at)
+            except (TypeError, ValueError, OverflowError):
+                issue_time = float(sim_time)
+            normalized_payload = copy.deepcopy(dict(payload))
+            if not str(normalized_payload.get("title", "")).strip():
+                normalized_payload.pop("title", None)
+            results.append(self.open_issue(normalized_payload, sim_time=issue_time))
+        return results
 
     def _trim_locked(self) -> None:
         while len(self._decision_order) > MAX_RECORDS:

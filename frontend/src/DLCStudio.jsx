@@ -4,6 +4,8 @@ import { PersonaEditor, PromptEditor, StructuredContentEditor } from './DLCConte
 import ModelPromotionWorkbench from './ModelPromotionWorkbench.jsx'
 import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
 import UIManifestEditor from './UIManifestEditor.jsx'
+import ActorEditor from './ActorEditor.jsx'
+import RelationshipTypeEditor from './RelationshipTypeEditor.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -142,7 +144,7 @@ function normalizeModelBindings(value) {
 }
 
 const emptyEntity = { id: '', type: 'location', name: '', description: '', current_status: '' }
-const emptyAgent = { id: '', name: '', rank: 1, location_id: '', role: 'official', agent_type: 'official', superior_id: '', personality_seed: '', model_profile: '', enabled: true, extra_prompt: '' }
+const emptyAgent = { id: '', actor_id: '', name: '', rank: 1, location_id: '', role: 'official', agent_type: 'official', superior_id: '', personality_seed: '', model_profile: '', enabled: true, extra_prompt: '' }
 const emptyResource = { name: '', unit: '', kind: 'asset', default_quantity: 0, min_quantity: 0, max_quantity: null, anchor_rate: 1 }
 
 function Badge({ children, tone = '' }) {
@@ -158,7 +160,7 @@ function ProfileSelect({ value = '', profiles, onChange, disabled = false, inher
   )
 }
 
-function ItemEditor({ kind, items, selected, onSelect, onSave, onDelete, entities, agents, modelProfiles }) {
+function ItemEditor({ kind, items, selected, onSelect, onSave, onDelete, entities, actors, agents, modelProfiles }) {
   const templates = { entities: emptyEntity, agents: emptyAgent, resources: emptyResource }
   const keyName = kind === 'resources' ? 'name' : 'id'
   const title = { entities: UI.entities, agents: UI.agents, resources: UI.resources }[kind]
@@ -190,7 +192,8 @@ function ItemEditor({ kind, items, selected, onSelect, onSave, onDelete, entitie
           <label>{UI.description}<textarea rows="5" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
         </>}
         {kind === 'agents' && <>
-          <div className="dlc-row"><label>{UI.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /></label><label>{UI.rank}<input type="number" value={form.rank ?? 1} onChange={event => set('rank', Number(event.target.value))} /></label></div>
+          <label>Actor 绑定<select value={form.actor_id || ''} onChange={event => set('actor_id', event.target.value)}><option value="">兼容模式：Actor ID = Agent ID</option>{actors.map(actor => <option key={actor.actor_id || actor.id} value={actor.actor_id || actor.id}>{actor.display_name || actor.name || actor.actor_id} ({actor.actor_id || actor.id})</option>)}</select><small className="dlc-field-help">Agent 负责调用 LLM；Actor 保存角色属性、需求、目标和动态状态。选择当前 DLC 中已定义的 Actor；留空时会自动投影同 ID Actor。Actor 可以独立存在，不必绑定 Agent。</small></label>
+          <div className="dlc-row"><label>{UI.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /><small className="dlc-field-help">未填写时可从绑定的 Actor 显示名称继承。</small></label><label>{UI.rank}<input type="number" value={form.rank ?? 1} onChange={event => set('rank', Number(event.target.value))} /><small className="dlc-field-help">用于 CourtGraph 兼容排序；角色通用属性请优先写入 Actor attributes.rank。</small></label></div>
           <div className="dlc-row"><label>{UI.agentType}<select value={form.agent_type || 'official'} onChange={event => set('agent_type', event.target.value)}><option value="official">official</option><option value="institution">institution</option></select></label><label>{UI.role}<select value={form.role || 'official'} onChange={event => set('role', event.target.value)}><option value="official">official</option><option value="player">player</option><option value="eunuch">eunuch</option></select></label></div>
           <label>{UI.entityLocation}<input list="dlc-entities" value={form.location_id || ''} onChange={event => set('location_id', event.target.value)} /><datalist id="dlc-entities">{entities.map(item => <option key={item.id} value={item.id} />)}</datalist></label>
           <label>{UI.superior}<input list="dlc-agents" value={form.superior_id || ''} onChange={event => set('superior_id', event.target.value)} /><datalist id="dlc-agents">{agents.map(item => <option key={item.id} value={item.id} />)}</datalist></label>
@@ -412,11 +415,13 @@ export default function DLCStudio() {
   const content = contentHistory.present
   const counts = useMemo(() => ({
     entities: content.entities?.length || 0,
+    actors: content.actors?.length || 0,
     agents: content.agents?.length || 0,
     resources: content.resources?.length || 0,
     inventory: content.inventory?.length || 0,
     entity_values: content.entity_values?.length || 0,
     relations: content.relations?.length || 0,
+    relationship_types: content.relationship_types?.length || 0,
     initial_events: content.initial_events?.length || 0,
     ongoing_events: content.ongoing_events?.length || 0,
     random_events: content.random_events?.length || 0,
@@ -598,11 +603,13 @@ export default function DLCStudio() {
 
   const tabs = [
     { key: 'entities', label: `${UI.entities} ${counts.entities}` },
+    { key: 'actors', label: `Actor / 角色组件 ${counts.actors}` },
     { key: 'agents', label: `${UI.agents} ${counts.agents}` },
     { key: 'resources', label: `${UI.resources} ${counts.resources}` },
     { key: 'inventory', label: `\u5e93\u5b58 ${counts.inventory}` },
     { key: 'entity_values', label: `\u6307\u6807 ${counts.entity_values}` },
-    { key: 'relations', label: `\u5173\u7cfb ${counts.relations}` },
+    { key: 'relationship_types', label: `关系类型 ${counts.relationship_types}` },
+    { key: 'relations', label: `关系边 ${counts.relations}` },
     { key: 'initial_events', label: `\u521d\u59cb\u4e8b\u4ef6 ${counts.initial_events}` },
     { key: 'ongoing_events', label: `\u6301\u7eed\u4e8b\u4ef6 ${counts.ongoing_events}` },
     { key: 'random_events', label: `\u968f\u673a\u4e8b\u4ef6 ${counts.random_events}` },
@@ -652,7 +659,9 @@ export default function DLCStudio() {
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
-                : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} agents={content.agents || []} modelProfiles={modelProfiles} />
+                : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} actors={content.actors || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'objectives' ? <ObjectiveEditor key={`objectives:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'endings' ? <EndingEditor key={`endings:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                     : tab === 'personas' ? <PersonaEditor key={`personas:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />

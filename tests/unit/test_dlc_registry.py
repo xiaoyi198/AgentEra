@@ -736,3 +736,221 @@ def test_action_validation_reports_cross_reference_and_permission_errors(registr
         "action.cost.unknown_entity",
         "action.result.unknown_agent",
     } <= codes
+
+
+
+def _generic_causal_reference_content() -> dict:
+    content = valid_content()
+    content["entities"].extend([
+        {"id": "fort", "type": "location", "name": "Fort"},
+        {"id": "council", "type": "organization", "name": "Council"},
+    ])
+    content["actors"] = [{
+        "actor_id": "mayor",
+        "display_name": "Mayor",
+        "actor_type": "person",
+        "entity_id": "place",
+        "attributes": {"influence": 75},
+        "states": {"mood": "focused"},
+        "traits": [{"trait_id": "careful", "display_name": "Careful"}],
+        "memberships": [{"organization_id": "council", "role": "leader"}],
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "allied",
+        "display_name": "Allied",
+        "direction": "undirected",
+        "minimum_strength": 0,
+        "maximum_strength": 100,
+        "default_strength": 50,
+        "default_visibility": "public",
+    }]
+    content["objectives"] = [{
+        "objective_id": "secure_frontier",
+        "display_name": "Secure Frontier",
+        "completion": {"kind": "sim_day", "operator": "gte", "value": 30},
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "generic_references",
+        "source_event_types": ["seed"],
+        "child_event_type": "follow_up",
+        "target_agents": ["agent"],
+        "conditions": [
+            {"kind": "actor_attribute", "entity_id": "mayor", "name": "influence", "operator": "gte", "value": 50},
+            {"kind": "actor_state", "entity_id": "mayor", "name": "mood", "operator": "eq", "value": "focused"},
+            {"kind": "actor_trait", "entity_id": "mayor", "name": "careful", "operator": "eq", "value": True},
+            {"kind": "actor_membership", "entity_id": "mayor", "name": "council", "field": "role", "operator": "eq", "value": "leader"},
+            {"kind": "relationship", "entity_id": "place", "target_entity_id": "fort", "name": "allied", "field": "strength", "operator": "gte", "value": 20},
+            {"kind": "objective_progress", "entity_id": "secure_frontier", "field": "progress", "operator": "gte", "value": 0},
+            {"kind": "aggregate_metric", "field": "anchored_inventory", "name": "coin", "aggregate": "sum", "operator": "gte", "value": 1},
+            {"kind": "aggregate_metric", "field": "actor_attribute", "entity_id": "mayor", "name": "influence", "aggregate": "avg", "operator": "gte", "value": 50},
+            {"kind": "aggregate_metric", "field": "relation", "name": "allied", "aggregate": "count", "operator": "gte", "value": 0},
+        ],
+    }]
+    return content
+
+
+def test_generic_causal_condition_cross_references_accept_valid_actor_relationship_objective_and_aggregate(registry: DLCRegistry):
+    registry.create(manifest("generic-valid"))
+    registry.save_content("generic-valid", _generic_causal_reference_content())
+
+    assert registry.validate("generic-valid") == []
+
+
+def test_generic_causal_condition_cross_references_report_missing_components_and_invalid_aggregate_kind(registry: DLCRegistry):
+    registry.create(manifest("generic-broken"))
+    content = _generic_causal_reference_content()
+    conditions = content["causal_event_rules"][0]["conditions"]
+    conditions.extend([
+        {"kind": "actor_attribute", "entity_id": "missing_actor", "name": "influence", "operator": "gte", "value": 1},
+        {"kind": "actor_state", "entity_id": "mayor", "name": "missing_state", "operator": "eq", "value": "ready"},
+        {"kind": "relationship", "entity_id": "missing_place", "target_entity_id": "fort", "name": "missing_relation", "operator": "exists"},
+        {"kind": "objective_progress", "entity_id": "missing_objective", "operator": "gte", "value": 0},
+        {"kind": "aggregate_metric", "field": "metric", "name": "coin", "aggregate": "sum", "operator": "gte", "value": 1},
+    ])
+    registry.save_content("generic-broken", content)
+
+    codes = {issue.code for issue in registry.validate("generic-broken")}
+
+    assert {
+        "causal_event.missing_actor",
+        "causal_event.missing_actor_component",
+        "causal_event.missing_entity",
+        "causal_event.missing_relationship_type",
+        "causal_event.missing_objective",
+        "causal_event.invalid_resource_kind",
+    } <= codes
+
+
+def test_generic_causal_effect_cross_references_and_rule_local_entities(registry: DLCRegistry):
+    registry.create(manifest("generic-effects"))
+    content = valid_content()
+    content["relationship_types"] = [
+        {"relationship_type_id": "route", "display_name": "Route", "direction": "directed"},
+    ]
+    content["causal_event_rules"] = [{
+        "rule_id": "spawn_then_change",
+        "source_event_types": ["seed"],
+        "child_event_type": "changed",
+        "world_effects": [
+            {
+                "effect_type": "create_entity", "entity_id": "new_place",
+                "entity_type": "location", "name": "New Place", "resources": {"coin": 5},
+            },
+            {"effect_type": "move_entity", "entity_id": "new_place", "region": "north"},
+            {"effect_type": "modify_relationship", "parent_id": "place", "child_id": "new_place", "rel_type": "route"},
+            {"effect_type": "reveal_information", "entity_id": "new_place", "knowledge_id": "known"},
+        ],
+    }]
+    registry.save_content("generic-effects", content)
+
+    codes = {issue.code for issue in registry.validate("generic-effects")}
+
+    assert "causal_event.effect_missing_entity" not in codes
+    assert "causal_event.effect_missing_resource" not in codes
+    assert "causal_event.effect_missing_relationship_type" not in codes
+
+
+def test_generic_causal_effect_registry_reports_all_reference_kinds(registry: DLCRegistry):
+    registry.create(manifest("generic-effect-errors"))
+    content = valid_content()
+    content["causal_event_rules"] = [{
+        "rule_id": "broken_effects",
+        "source_event_types": ["seed"],
+        "child_event_type": "broken",
+        "world_effects": [
+            {"effect_type": "create_entity", "entity_id": "place", "entity_type": "location", "name": "Duplicate"},
+            {"effect_type": "create_entity", "entity_id": "twice", "entity_type": "location", "name": "First"},
+            {"effect_type": "create_entity", "entity_id": "twice", "entity_type": "location", "name": "Second", "resources": {"missing": 1}},
+            {"effect_type": "move_entity", "entity_id": "missing_entity", "region": "north"},
+            {"effect_type": "enable_agent", "agent_id": "missing_agent", "actor_id": "missing_actor"},
+            {"effect_type": "modify_relationship", "parent_id": "place", "child_id": "missing_entity", "rel_type": "missing_relation"},
+            {"effect_type": "modify_membership", "actor_id": "missing_actor", "organization_id": "missing_org"},
+            {"effect_type": "create_issue", "issue_type_id": "missing_issue"},
+            {"effect_type": "reveal_information", "entity_id": "missing_entity", "knowledge_id": "secret"},
+            {"effect_type": "advance_objective", "objective_id": "missing_objective", "amount": 1},
+            {"effect_type": "unlock_action", "action_id": "missing_action", "scope_id": "missing_scope"},
+        ],
+    }]
+    registry.save_content("generic-effect-errors", content)
+
+    codes = {issue.code for issue in registry.validate("generic-effect-errors")}
+
+    assert {
+        "causal_event.effect_duplicate_entity",
+        "causal_event.effect_missing_resource",
+        "causal_event.effect_missing_entity",
+        "causal_event.effect_missing_agent",
+        "causal_event.effect_missing_actor",
+        "causal_event.effect_missing_relationship_type",
+        "causal_event.effect_missing_issue_type",
+        "causal_event.effect_missing_objective",
+        "causal_event.effect_missing_action",
+        "causal_event.effect_missing_scope",
+    } <= codes
+
+def test_knowledge_conditions_and_effects_validate_theme_neutral_references(registry: DLCRegistry):
+    registry.create(manifest("knowledge-valid"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(
+        conditions=[
+            {"kind": "world_truth", "entity_id": "place", "name": "route", "operator": "exists"},
+            {
+                "kind": "actor_belief", "entity_id": "place", "name": "route",
+                "target_entity_id": "agent", "operator": "not_exists",
+            },
+            {
+                "kind": "knowledge_confidence", "entity_id": "place", "name": "route",
+                "target_entity_id": "agent", "filters": {"layer": "actor_belief"},
+                "operator": "gte", "value": 0.5,
+            },
+        ],
+        world_effects=[
+            {"effect_type": "declare_world_truth", "entity_id": "place", "knowledge_id": "route", "value": "north"},
+            {"effect_type": "set_actor_belief", "holder_id": "agent", "entity_id": "place", "knowledge_id": "route", "value": "east"},
+            {
+                "effect_type": "propagate_knowledge", "source_layer": "world_truth",
+                "target_layer": "player_knowledge", "target_holder_id": "player",
+                "entity_id": "place", "knowledge_id": "route",
+            },
+            {
+                "effect_type": "start_investigation", "investigation_id": "inspect-route",
+                "entity_id": "place", "knowledge_id": "route",
+                "investigator_layer": "actor_belief", "investigator_id": "agent",
+                "result_policy": {
+                    "source_layer": "world_truth", "target_layer": "actor_belief",
+                    "target_holder_id": "agent",
+                },
+            },
+            {"effect_type": "advance_investigation", "investigation_id": "inspect-route", "amount": 1},
+        ],
+    )]
+    registry.save_content("knowledge-valid", content)
+
+    assert not registry.validate("knowledge-valid")
+
+
+def test_knowledge_registry_reports_unknown_actor_holders_without_treating_belief_as_component(registry: DLCRegistry):
+    registry.create(manifest("knowledge-invalid"))
+    content = valid_content()
+    content["causal_event_rules"] = [causal_rule(
+        conditions=[
+            {
+                "kind": "actor_belief", "entity_id": "place", "name": "route",
+                "target_entity_id": "missing-holder", "operator": "exists",
+            },
+        ],
+        world_effects=[
+            {"effect_type": "set_actor_belief", "holder_id": "missing-holder", "entity_id": "place", "knowledge_id": "route", "value": "east"},
+            {
+                "effect_type": "propagate_knowledge", "source_layer": "actor_belief",
+                "source_holder_id": "missing-holder", "target_layer": "player_knowledge",
+                "target_holder_id": "player", "entity_id": "place", "knowledge_id": "route",
+            },
+        ],
+    )]
+    registry.save_content("knowledge-invalid", content)
+
+    codes = {issue.code for issue in registry.validate("knowledge-invalid")}
+    assert "causal_event.missing_knowledge_holder" in codes
+    assert "causal_event.effect_missing_knowledge_holder" in codes
+    assert "causal_event.missing_actor_component" not in codes

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import _state as state
 from multiagent_framework.time_simulator import TimeSimulator
+from multiagent_framework.relationship_contract import RelationshipContractError
 
 router = APIRouter(prefix="/api", tags=["worldstate"])
 
@@ -26,6 +27,27 @@ def _ws():
     if not state.orchestrator:
         return None
     return getattr(state.orchestrator, "world_state", None)
+
+
+@router.get("/actors")
+async def list_actors():
+    """返回当前 DLC Generation 的安全 Actor 定义与运行状态。"""
+    orchestrator = state.orchestrator
+    if orchestrator is None or not hasattr(orchestrator, "actor_manager"):
+        return {"error": "actor runtime not initialized", "configured": False, "actors": []}
+    return orchestrator.actors_public_state()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: str):
+    """按 Actor ID 返回单个安全定义与运行状态。"""
+    orchestrator = state.orchestrator
+    if orchestrator is None or not hasattr(orchestrator, "actor_manager"):
+        raise HTTPException(status_code=503, detail="actor runtime not initialized")
+    actor = orchestrator.actor_manager.get(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="actor not found")
+    return actor
 
 
 @router.get("/world-state")
@@ -214,32 +236,58 @@ async def delete_inventory_item_api(entity_id: str, category: str, item_name: st
 
 # ── 关系图 ──
 
-@router.get("/relations")
-async def list_relations():
-    """返回整张关系图：所有实体（轻量）+ 所有边。"""
+@router.get("/relationship-types")
+async def list_relationship_types():
+    """Return the safe relationship contract for the active DLC Generation."""
     ws = _ws()
     if ws is None:
-        return {"error": "world_state not initialized"}
+        raise HTTPException(status_code=503, detail="world_state not initialized")
+    loader = getattr(state.orchestrator, "dlc_loader", None)
+    generation = int(getattr(loader, "generation", 0))
+    return ws.relationship_types_public_state(generation=generation)
+
+
+@router.get("/relationship-types/{relationship_type_id}")
+async def get_relationship_type(relationship_type_id: str):
+    ws = _ws()
+    if ws is None:
+        raise HTTPException(status_code=503, detail="world_state not initialized")
+    definition = ws.relationship_catalog.get(relationship_type_id)
+    if definition is None:
+        raise HTTPException(status_code=404, detail="relationship type not found")
+    return definition.to_dict()
+
+
+@router.get("/relations")
+async def list_relations():
+    """Return entities, type definitions, and all relationship edges."""
+    ws = _ws()
+    if ws is None:
+        raise HTTPException(status_code=503, detail="world_state not initialized")
     entities = ws.get_all_entities()
+    loader = getattr(state.orchestrator, "dlc_loader", None)
+    generation = int(getattr(loader, "generation", 0))
+    sim_time = float(getattr(state.orchestrator, "sim_time", 0.0))
     return {
-        "entities": [
-            {"id": e.id, "type": e.type, "name": e.name}
-            for e in entities
-        ],
-        "relations": ws.get_all_relations(),
+        "generation": generation,
+        "relationship_types": ws.relationship_catalog.definitions(),
+        "entities": [{"id": e.id, "type": e.type, "name": e.name} for e in entities],
+        "relations": ws.get_all_relations(sim_time=sim_time),
     }
 
 
 @router.get("/world-state/{entity_id}/relations")
 async def get_entity_relations(entity_id: str):
-    """返回单个实体的 parents / children / siblings."""
+    """Return directed parents/children, siblings, and undirected neighbors."""
     ws = _ws()
     if ws is None:
-        return {"error": "world_state not initialized"}
+        raise HTTPException(status_code=503, detail="world_state not initialized")
+    sim_time = float(getattr(state.orchestrator, "sim_time", 0.0))
     return {
-        "parents": ws.get_parents(entity_id),
-        "children": ws.get_children(entity_id),
+        "parents": ws.get_parents(entity_id, sim_time=sim_time),
+        "children": ws.get_children(entity_id, sim_time=sim_time),
         "siblings": ws.get_siblings(entity_id),
+        "neighbors": ws.get_neighbors(entity_id, sim_time=sim_time),
     }
 
 
@@ -247,35 +295,56 @@ class RelationRequest(BaseModel):
     parent_id: str
     child_id: str
     rel_type: str
+    strength: float | None = None
+    visibility: Literal["public", "limited", "private", "secret"] | None = None
+    starts_at: float = 0.0
+    expires_at: float | None = None
+    values: dict[str, float] = Field(default_factory=dict)
     note: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/relations")
 async def upsert_relation(req: RelationRequest):
-    """创建或覆盖一条边。"""
-    from multiagent_framework.world_state import RELATION_TYPES
+    """Create or overwrite an edge after contract validation."""
     ws = _ws()
     if ws is None:
-        return {"error": "world_state not initialized"}
-    if req.rel_type not in RELATION_TYPES:
-        return {"error": f"非法关系类型: {req.rel_type}", "valid": sorted(RELATION_TYPES)}
-    if req.parent_id == req.child_id:
-        return {"error": "parent_id 与 child_id 不能相同"}
-    ws.add_relation(req.parent_id, req.child_id, req.rel_type, req.note)
-    return {"status": "ok"}
+        raise HTTPException(status_code=503, detail="world_state not initialized")
+    try:
+        relation = ws.add_relation(
+            req.parent_id,
+            req.child_id,
+            req.rel_type,
+            req.note,
+            strength=req.strength,
+            visibility=req.visibility,
+            starts_at=req.starts_at,
+            expires_at=req.expires_at,
+            values=req.values,
+            metadata=req.metadata,
+        )
+    except RelationshipContractError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc), "path": exc.path},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    sim_time = float(getattr(state.orchestrator, "sim_time", 0.0))
+    return {"status": "ok", "relation": {**relation, "active": ws.relationship_catalog.is_active(relation, sim_time)}}
 
 
 @router.delete("/relations")
 async def delete_relation(parent_id: str, child_id: str, rel_type: str):
-    """删除一条边。通过查询参数 ?parent_id=...&child_id=...&rel_type=... 传入。"""
+    """Delete an edge; undirected endpoint order is normalized automatically."""
     ws = _ws()
     if ws is None:
-        return {"error": "world_state not initialized"}
+        raise HTTPException(status_code=503, detail="world_state not initialized")
     ok = ws.remove_relation(parent_id, child_id, rel_type)
-    return {"status": "ok" if ok else "not_found"}
+    if not ok:
+        raise HTTPException(status_code=404, detail="relationship not found")
+    return {"status": "ok"}
 
-
-# ── 正在发生的事情（OngoingEvent） ──
 
 @router.get("/world-state/{entity_id}/events")
 async def list_entity_events(entity_id: str):
