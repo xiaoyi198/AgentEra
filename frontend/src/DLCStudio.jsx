@@ -7,6 +7,7 @@ import UIManifestEditor from './UIManifestEditor.jsx'
 import ActorEditor from './ActorEditor.jsx'
 import RelationshipTypeEditor from './RelationshipTypeEditor.jsx'
 import DerivedMetricEditor from './DerivedMetricEditor.jsx'
+import TemporalSystemEditor from './TemporalSystemEditor.jsx'
 import {
   commitContentHistory,
   createContentExport,
@@ -439,6 +440,7 @@ export default function DLCStudio() {
     personas: Object.keys(content.personas || {}).length,
     prompts: Object.keys(content.prompts || {}).length,
     ui_manifest: Object.keys(content.ui_manifest || {}).length,
+    time_system: (content.time_system?.cycles?.length || 0) + (content.time_system?.boundary_events?.length || 0) + (content.time_system?.auto_pause_conditions?.length || 0),
   }), [content])
   const modelProfiles = useMemo(() => Object.keys(modelConfig?.models || {}).sort(), [modelConfig])
 
@@ -618,6 +620,7 @@ export default function DLCStudio() {
     { key: 'causal_condition_groups', label: `\u6761\u4ef6\u7ec4 ${counts.causal_condition_groups}` },
     { key: 'causal_rule_templates', label: `\u56e0\u679c\u6a21\u677f ${counts.causal_rule_templates}` },
     { key: 'causal_event_rules', label: `\u56e0\u679c\u4e8b\u4ef6\u94fe ${counts.causal_event_rules}` },
+    { key: 'time_system', label: `\u5386\u6cd5\u4e0e\u5468\u671f ${counts.time_system}` },
     { key: 'time_rules', label: `\u8017\u65f6\u89c4\u5219 ${counts.time_rules}` },
     { key: 'actions', label: `\u884c\u52a8 ${counts.actions}` },
     { key: 'capabilities', label: `\u80fd\u529b ${counts.capabilities}` },
@@ -662,7 +665,8 @@ export default function DLCStudio() {
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
-                : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                : tab === 'time_system' ? <TemporalSystemEditor key={`time_system:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'derived_metrics' ? <DerivedMetricEditor key={`derived_metrics:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} actors={content.actors || []} agents={content.agents || []} modelProfiles={modelProfiles} />

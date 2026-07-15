@@ -77,6 +77,19 @@ async def resume_simulation():
 # ── 时间倍率 ──
 
 
+@router.get("/time-system")
+async def get_time_system():
+    """Return the active DLC calendar, season, cycles, and safe pause receipts."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "enabled": False, "generation": 0,
+            "calendar": None, "current_date": None, "current_season": None,
+            "cycles": [], "auto_pause_conditions": [],
+            "recent_auto_pauses": [], "auto_pause": None,
+        }
+    return state.orchestrator.time_system_public_state()
+
+
 @router.get("/time-scale")
 async def get_time_scale():
     if not state.orchestrator:

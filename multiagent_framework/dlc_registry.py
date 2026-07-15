@@ -41,6 +41,9 @@ from .derived_metrics import (
     normalize_derived_metric_document,
 )
 from .ui_manifest import validate_ui_manifest_document
+from .temporal_contract import (
+    TemporalContract, TemporalContractError, normalize_time_system_document,
+)
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -416,7 +419,7 @@ class DLCRegistry:
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
                 raise DLCRegistryError(f"DLC content field {key!r} must be a list")
-        for key in ("personas", "prompts", "ui_manifest"):
+        for key in ("personas", "prompts", "ui_manifest", "time_system"):
             value = normalized.setdefault(key, {})
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
@@ -429,6 +432,7 @@ class DLCRegistry:
             normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
             normalized["derived_metrics"] = normalize_derived_metric_document(normalized.get("derived_metrics", []))
+            normalized["time_system"] = normalize_time_system_document(normalized.get("time_system", {}))
             normalized["objectives"] = normalize_objective_document(normalized.get("objectives", []))
             normalized["endings"] = normalize_ending_document(normalized.get("endings", []))
         except TypeError as exc:
@@ -752,6 +756,44 @@ class DLCRegistry:
         ):
             add(issue.code, issue.message, issue.path)
         issue_type_ids = {str(item.get("issue_type_id", "")) for item in content["issue_types"] if item.get("issue_type_id")}
+        temporal_contract: TemporalContract | None = None
+        try:
+            temporal_contract = TemporalContract.from_mapping(content.get("time_system", {}))
+        except TemporalContractError as exc:
+            add(exc.code, exc.code, exc.path or "time_system")
+        if temporal_contract is not None:
+            for index, definition in enumerate(temporal_contract.boundary_events):
+                path = f"time_system.boundary_events[{index}]"
+                for target in definition.target_agents:
+                    if target not in agent_ids:
+                        add("time_system.missing_agent", f"Unknown target agent: {target}", path + ".target_agents")
+                if definition.issue_type_id and definition.issue_type_id not in issue_type_ids:
+                    add("time_system.missing_issue_type", f"Unknown issue type: {definition.issue_type_id}", path + ".issue_type_id")
+            for pause_index, pause in enumerate(temporal_contract.auto_pause_conditions):
+                for condition_index, condition in enumerate(pause.conditions):
+                    path = f"time_system.auto_pause_conditions[{pause_index}].conditions[{condition_index}]"
+                    if condition.kind in {"anchored_inventory", "metric", "parameter", "entity_field", "entity_tag", "entity_state", "ongoing_event", "world_truth", "actor_belief", "player_knowledge", "knowledge_confidence", "knowledge_freshness", "knowledge_secrecy"} and condition.entity_id and condition.entity_id not in entity_ids:
+                        add("time_system.missing_entity", f"Unknown entity: {condition.entity_id}", path + ".entity_id")
+                    if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(condition.name)
+                        expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                        if resource is None:
+                            add("time_system.missing_resource", f"Unknown resource: {condition.name}", path + ".name")
+                        elif resource.get("kind") != expected_kind:
+                            add("time_system.invalid_resource_kind", f"Condition requires resource kind {expected_kind}", path + ".kind")
+                    if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"} and condition.entity_id not in actor_ids:
+                        add("time_system.missing_actor", f"Unknown actor: {condition.entity_id}", path + ".entity_id")
+                    if condition.kind == "relationship":
+                        for field_name in ("entity_id", "target_entity_id"):
+                            entity_id = getattr(condition, field_name)
+                            if entity_id and entity_id not in entity_ids:
+                                add("time_system.missing_entity", f"Unknown relationship endpoint: {entity_id}", path + "." + field_name)
+                        if condition.name and condition.name not in relationship_type_ids:
+                            add("time_system.missing_relationship_type", f"Unknown relationship type: {condition.name}", path + ".name")
+                    if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                        add("time_system.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
+                    if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                        add("time_system.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
         for objective_issue in validate_objective_definitions(
             content["objectives"], content["endings"], entity_ids=entity_ids,
             resources=action_resources, action_ids=action_ids,

@@ -1551,3 +1551,16 @@ This checkpoint completes P1.6:
 The v0.31.0 release gate: The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
 
 The persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete. The next phase is **P2.1: DLC calendars, seasons, turn/meeting/task cycles, and automatic pause conditions**. P2 is not complete.
+
+## Phase checkpoint: DLC calendars, cycles, and automatic pause (v0.32.0, 2026-07-15)
+
+P2.1 is complete:
+
+- introduced a Generation-bound temporal contract for custom calendars, non-uniform months, weekdays, normal/cross-year seasons and concurrent turn/meeting/task/custom cycles;
+- added deterministic day/week/month/year/season/cycle boundary polling, boundary Event/Issue/Agent projection, snapshot/restore and hot-reload receipt preservation without replaying old boundaries;
+- added condition- and boundary-triggered automatic pauses with `all/any`, cooldown, once and rising-edge semantics while keeping hidden condition values out of public state;
+- exposed a safe time-system API and Tick projection, main-screen DLC date/season/cycle display and a Chinese pause notice that never resumes implicitly;
+- added a detailed Chinese DLC Studio time editor with calendar, season, cycle, boundary, Agent/Issue reference, JSON payload and causal-condition authoring;
+- upgraded `example_frontier` to v1.11.0 and synchronized AgentEra to v0.32.0.
+
+The persistent gameplay-framework goal remains **active**. P0, P1.1-P1.6 and P2.1 are complete; P2.2 dynamic lifecycle, P2.3 pacing director and P2.4 understandable outcome feedback remain open.

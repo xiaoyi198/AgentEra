@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.31.0**
+> 当前版本：**v0.32.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -360,6 +360,19 @@ DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时�
 
 `example_frontier` v1.10.0 的“边境综合战备度”按 55% 哨站警戒度、25% 守备 Actor 警觉属性和 20% 边境银券统一锚定库存价值计算，供玩家、界面、Agent、因果规则和目标共同读取。
 
+## DLC 日历、季节、玩法周期与自动暂停 (v0.32.0)
+
+DLC 可在 `content.json.time_system` 声明完整的题材历法和长期玩法节奏，框架只负责解释、调度和安全展示，不写死朝代、月份、星期或回合文案。
+
+- 历法支持自定义纪元、起始年/月/日/星期、1-64 个非均匀月份和自定义星期循环；当前日期由权威 `sim_time` 确定性换算。
+- 季节支持普通与跨年区间；Registry 拒绝越界或重叠定义。
+- `turn`、`meeting`、`task`、`custom` 周期分别配置周期、持续时长和偏移，可同时激活并向主界面公开进度。
+- 日/周/月/年、季节开始/结束、周期开始/结束均可生成确定性边界事件，选择 Agent 唤醒目标、Issue Type 和安全 Payload。
+- 自动暂停既可复用通用因果条件，也可绑定时间边界，并支持 `all/any`、冷却天数、仅一次和上升沿语义；暂停提示可关闭，但不会隐式恢复模拟。
+- `GET /api/time-system` 与 Tick WebSocket 返回当前日期、季节、周期和脱敏暂停回执，不公开条件值或隐藏事实引用。DLC Studio 的“历法与周期”页提供完整中文编辑、引用检查、JSON Payload、Diff、History 和导入导出。
+
+`example_frontier` v1.11.0 演示 360 天边境驻防历、四季、7 天指挥回合、30 天联席会议、14 天巡防任务、回合报告事件、会议自动暂停和战备度低于 30 的上升沿告警。
+
 ## 测试
 
 ```powershell
@@ -404,6 +417,16 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.32.0 发布说明
+
+- 新增 Generation-bound `TemporalContract` 与 `TemporalRuntime`，支持 DLC 自定义历法、非均匀月份、星期、普通/跨年季节和回合/会议/任务/自定义周期。
+- 新增八类时间边界、确定性事件 ID、Agent/Issue 投影，以及条件型和边界型自动暂停；暂停回执支持冷却、仅一次、上升沿、存档恢复和热重载继承，公开状态不泄露隐藏条件值。
+- 新增 `GET /api/time-system` 和 Tick 时间投影；主界面显示 DLC 日期、季节、活跃周期与明显的中文自动暂停原因，保留旧模拟时间作为兼容信息。
+- DLC Studio 新增“历法与周期”详细中文编辑器，覆盖月份排序、跨年季节、周期、边界事件、Issue/Agent 引用、Payload JSON、自动暂停和通用因果条件，并纳入导入导出、Diff、History 与撤销/重做。
+- `example_frontier` 升级到 `1.11.0`；AgentEra 四处产品版本同步到 `0.32.0`。
+
+长期 Goal 继续保持 active；P0、P1.1-P1.6 与 P2.1 已完成，下一阶段进入 P2.2 动态生命周期。P2.2-P2.4 尚未完成。
 
 ## v0.31.0 发布说明
 

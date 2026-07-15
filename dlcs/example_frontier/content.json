@@ -1876,5 +1876,211 @@
         }
       ]
     }
-  ]
+  ],
+  "time_system": {
+    "enabled": true,
+    "calendar": {
+      "calendar_id": "frontier_garrison_calendar",
+      "display_name": "边境驻防历",
+      "epoch_label": "驻防纪元",
+      "start_year": 1,
+      "start_month_id": "snowmelt",
+      "start_day": 1,
+      "weekdays": [
+        "巡一日",
+        "巡二日",
+        "巡三日",
+        "巡四日",
+        "巡五日",
+        "整备日",
+        "议事日"
+      ],
+      "start_weekday": "巡一日",
+      "months": [
+        {
+          "month_id": "snowmelt",
+          "display_name": "融雪月",
+          "days": 30
+        },
+        {
+          "month_id": "sprouting",
+          "display_name": "萌芽月",
+          "days": 30
+        },
+        {
+          "month_id": "springwatch",
+          "display_name": "春巡月",
+          "days": 30
+        },
+        {
+          "month_id": "longlight",
+          "display_name": "长昼月",
+          "days": 30
+        },
+        {
+          "month_id": "highsun",
+          "display_name": "烈阳月",
+          "days": 30
+        },
+        {
+          "month_id": "thunder",
+          "display_name": "雷雨月",
+          "days": 30
+        },
+        {
+          "month_id": "harvest",
+          "display_name": "收获月",
+          "days": 30
+        },
+        {
+          "month_id": "windwatch",
+          "display_name": "风巡月",
+          "days": 30
+        },
+        {
+          "month_id": "frost",
+          "display_name": "霜降月",
+          "days": 30
+        },
+        {
+          "month_id": "firstsnow",
+          "display_name": "初雪月",
+          "days": 30
+        },
+        {
+          "month_id": "longnight",
+          "display_name": "长夜月",
+          "days": 30
+        },
+        {
+          "month_id": "yearguard",
+          "display_name": "岁守月",
+          "days": 30
+        }
+      ]
+    },
+    "seasons": [
+      {
+        "season_id": "thaw",
+        "display_name": "融雪季",
+        "start_day": 1,
+        "end_day": 90,
+        "description": "冰雪消退，商路与巡防线逐步恢复。",
+        "color": "#78a98b"
+      },
+      {
+        "season_id": "high_sun",
+        "display_name": "盛阳季",
+        "start_day": 91,
+        "end_day": 180,
+        "description": "长昼利于远程巡逻，但补给消耗上升。",
+        "color": "#d5a24a"
+      },
+      {
+        "season_id": "harvest_watch",
+        "display_name": "秋防季",
+        "start_day": 181,
+        "end_day": 270,
+        "description": "边贸与收获并行，哨站进入重点警戒期。",
+        "color": "#b47a45"
+      },
+      {
+        "season_id": "frozen_watch",
+        "display_name": "封冻季",
+        "start_day": 271,
+        "end_day": 360,
+        "description": "道路封冻，守军依靠库存与固定哨线过冬。",
+        "color": "#668fa8"
+      }
+    ],
+    "cycles": [
+      {
+        "cycle_id": "frontier_command_turn",
+        "display_name": "边境指挥回合",
+        "kind": "turn",
+        "period_days": 7,
+        "duration_days": 7,
+        "offset_days": 0,
+        "description": "每七天汇总战备、边情与补给，形成一轮指挥决策。",
+        "color": "#c9a84c",
+        "enabled": true
+      },
+      {
+        "cycle_id": "frontier_joint_meeting",
+        "display_name": "边境联席会议",
+        "kind": "meeting",
+        "period_days": 30,
+        "duration_days": 2,
+        "offset_days": 6,
+        "description": "每三十天召开一次、持续两天的指挥与守备联席会议。",
+        "color": "#b57373",
+        "enabled": true
+      },
+      {
+        "cycle_id": "frontier_patrol_task",
+        "display_name": "双周巡防任务",
+        "kind": "task",
+        "period_days": 14,
+        "duration_days": 14,
+        "offset_days": 0,
+        "description": "以十四天为周期滚动安排瞭望、巡逻与补给检查。",
+        "color": "#6693a2",
+        "enabled": true
+      }
+    ],
+    "boundary_events": [
+      {
+        "boundary_event_id": "frontier_turn_start_report",
+        "trigger": "cycle_start",
+        "cycle_id": "frontier_command_turn",
+        "event_type": "frontier_command_turn_started",
+        "severity": 4,
+        "target_agents": [
+          "边境指挥官",
+          "哨站守备官"
+        ],
+        "issue_type_id": "frontier_security_report",
+        "payload": {
+          "title": "新一轮边境指挥回合",
+          "summary": "请汇总当前战备、补给、巡防与边境风险，并形成安全报告。",
+          "source": "time_system"
+        },
+        "enabled": true
+      }
+    ],
+    "auto_pause_conditions": [
+      {
+        "pause_id": "frontier_joint_meeting_pause",
+        "display_name": "边境联席会议开始",
+        "trigger": "cycle_start",
+        "cycle_id": "frontier_joint_meeting",
+        "reason": "联席会议议程已经开启，需要玩家确认边境指挥安排。",
+        "mode": "all",
+        "conditions": [],
+        "cooldown_days": 0,
+        "once": false,
+        "edge_triggered": false,
+        "enabled": true
+      },
+      {
+        "pause_id": "frontier_readiness_alert",
+        "display_name": "边境战备告警",
+        "trigger": "condition",
+        "reason": "边境综合战备度低于 30，需要玩家立即检查风险与补给。",
+        "mode": "all",
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "frontier_readiness",
+            "operator": "lt",
+            "value": 30
+          }
+        ],
+        "cooldown_days": 7,
+        "once": false,
+        "edge_triggered": true,
+        "enabled": true
+      }
+    ]
+  }
 }

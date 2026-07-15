@@ -181,6 +181,8 @@ class TickResult:
     agent_errors: list[dict[str, Any]] = field(default_factory=list)
     generated_events: list[dict[str, Any]] = field(default_factory=list)
     objective_transitions: list[dict[str, Any]] = field(default_factory=list)
+    time_system: dict[str, Any] = field(default_factory=dict)
+    auto_pause: dict[str, Any] | None = None
     token_usage: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

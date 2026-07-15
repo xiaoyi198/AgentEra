@@ -2236,3 +2236,23 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 
 - The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
 - P1.6 is complete while the persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete; the next phase is P2.1 DLC calendars, seasons, turn/meeting/task cycles and automatic pause conditions. P2 remains open.
+
+## Release architecture note: DLC temporal contracts and runtime cycles (v0.32.0)
+
+### Contract and validation boundary
+
+- `content.json.time_system` is normalized and parsed by `multiagent_framework/temporal_contract.py`. A contract owns one optional calendar, seasons, cycles, boundary-event projections and automatic-pause definitions; topic-specific names and descriptions remain DLC data.
+- Calendars support non-uniform month lengths, custom weekday loops and arbitrary epoch/start dates. Seasons are day-of-year ranges and may cross the year boundary, but the Registry rejects overlaps. Cycles use stable IDs plus `kind`, `period_days`, `duration_days` and `offset_days`.
+- Cross-reference validation covers cycle/season/month filters, boundary target Agent IDs, projected Issue Type IDs and `derived_metric` pause conditions. The time contract is part of the active expanded DLC plan and therefore changes atomically with its Generation.
+
+### Runtime ownership and deterministic boundaries
+
+- `TemporalRuntime` converts authoritative game seconds to DLC dates and polls day boundaries in deterministic order. Supported markers are `day_start`, `week_start`, `month_start`, `year_start`, `season_start`, `season_end`, `cycle_start` and `cycle_end`.
+- Boundary events use stable IDs derived from the boundary definition and marker identity. Dense-day polling is atomic and bounded, so snapshot cursors never skip the tail of a partially processed day. Generated events continue through the framework-owned Event/Issue/Agent pipeline; DLC data never supplies executable Python.
+- Automatic pauses can be condition-based or marker-based, reuse the causal condition evaluator, and support `all/any`, cooldown, once and edge-triggered receipts. Snapshot/restore persists the poll cursor, receipts and recent safe pause summaries. Hot reload preserves receipts with stable pause IDs and advances the cursor to the current time, preventing historical boundary replay.
+
+### Public state and authoring surfaces
+
+- `TickResult.time_system` and `GET /api/time-system` expose only the current calendar date, current season, enabled cycle states, authored public pause descriptions and bounded receipts. Condition trees, threshold values and hidden fact references are excluded. `TickResult.auto_pause` carries only the fired public reason and safe marker summary.
+- The main React application normalizes that projection through `TemporalStateTools.js`, displays the DLC date/season and active cycle progress, and keeps an auto-pause notice separate from the resume action. `TemporalSystemEditor.jsx` provides the detailed Chinese Studio authoring surface and serializes through `TemporalSystemTools.js`.
+- `example_frontier` v1.11.0 is the reference package for calendars, four seasons, concurrent command/meeting/task cycles, boundary Issue projection and condition/boundary pauses. AgentEra v0.32.0 completes P2.1; the persistent gameplay-framework goal remains active for P2.2-P2.4.

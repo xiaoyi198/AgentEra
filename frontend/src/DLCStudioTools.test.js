@@ -49,6 +49,7 @@ const base = {
   personas: {},
   prompts: {},
   ui_manifest: {},
+  time_system: {},
 }
 
 test('content export is secret-free and can be imported from its envelope', () => {
@@ -70,6 +71,7 @@ test('import normalization fills missing collections and rejects wrong shapes', 
   assert.deepEqual(normalized.prompts, {})
   assert.deepEqual(normalized.inventory, [])
   assert.deepEqual(normalized.relationship_types, [])
+  assert.deepEqual(normalized.time_system, {})
   assert.throws(() => normalizeImportedContent({ entities: {} }), /entities must be an array/)
   assert.throws(() => normalizeImportedContent({ prompts: [] }), /prompts must be an object/)
   assert.throws(

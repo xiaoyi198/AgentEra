@@ -30,6 +30,7 @@ from .types import EventObject
 from .relationship_contract import RelationshipCatalog
 from .gameplay_contract import GameplayContract
 from .ui_manifest import UIManifest
+from .temporal_contract import TemporalContract
 from .world_state import (
     Entity,
     EntityValue,
@@ -71,6 +72,11 @@ class DLCLoadReport:
     random_events: int = 0
     causal_event_rules: int = 0
     time_rules: int = 0
+    time_system_configured: bool = False
+    seasons: int = 0
+    cycles: int = 0
+    boundary_events: int = 0
+    auto_pause_conditions: int = 0
     actions: int = 0
     capabilities: int = 0
     issue_types: int = 0
@@ -104,6 +110,7 @@ class DLCReloadPlan:
     capabilities_changed: bool = False
     relationship_types_changed: bool = False
     derived_metrics_changed: bool = False
+    time_system_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -142,6 +149,7 @@ class _DLCMaterializedSnapshot:
     random_event_templates: list[dict[str, Any]]
     causal_event_rules: list[dict[str, Any]]
     time_rules: list[dict[str, Any]]
+    time_system_contract: TemporalContract
     action_definitions: list[dict[str, Any]]
     capability_definitions: list[dict[str, Any]]
     issue_definitions: list[dict[str, Any]]
@@ -607,6 +615,11 @@ class DLCBundleLoader:
             random_events=len(content["random_events"]),
             causal_event_rules=len(content["causal_event_rules"]),
             time_rules=len(content["time_rules"]),
+            time_system_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content["time_system"].get("enabled", False)),
+            seasons=len(content["time_system"].get("seasons", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            cycles=len(content["time_system"].get("cycles", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            boundary_events=len(content["time_system"].get("boundary_events", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            auto_pause_conditions=len(content["time_system"].get("auto_pause_conditions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
             actions=len(content["actions"]),
             capabilities=len(content["capabilities"]),
             issue_types=len(content["issue_types"]),
@@ -650,6 +663,7 @@ class DLCBundleLoader:
         causal_event_rules: list[dict[str, Any]] = []
         causal_rule_ids: set[str] = set()
         time_rules: list[dict[str, Any]] = []
+        time_system_contract = TemporalContract.from_mapping({})
         action_definitions: list[dict[str, Any]] = []
         action_ids: set[str] = set()
         capability_definitions: list[dict[str, Any]] = []
@@ -696,6 +710,7 @@ class DLCBundleLoader:
                     package_name=package.manifest.name,
                 )
                 gameplay_contract = package_gameplay
+                time_system_contract = TemporalContract.from_mapping(content.get("time_system", {}))
                 ui_manifest = UIManifest.from_content(
                     content.get("ui_manifest", {}),
                     package_id=package.manifest.id,
@@ -898,6 +913,7 @@ class DLCBundleLoader:
             random_event_templates=random_event_templates,
             causal_event_rules=causal_event_rules,
             time_rules=time_rules,
+            time_system_contract=time_system_contract,
             action_definitions=action_definitions,
             capability_definitions=capability_definitions,
             issue_definitions=issue_definitions,
@@ -991,6 +1007,10 @@ class DLCBundleLoader:
                 current is None
                 or current.derived_metric_definitions != candidate.derived_metric_definitions
             ),
+            time_system_changed=(
+                current is None
+                or current.time_system_contract.fingerprint() != candidate.time_system_contract.fingerprint()
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -1002,6 +1022,10 @@ class DLCBundleLoader:
                 "random_event_templates": len(candidate.random_event_templates),
                 "causal_event_rules": len(candidate.causal_event_rules),
                 "time_rules": len(candidate.time_rules),
+                "seasons": len(candidate.time_system_contract.seasons),
+                "cycles": len(candidate.time_system_contract.cycles),
+                "boundary_events": len(candidate.time_system_contract.boundary_events),
+                "auto_pause_conditions": len(candidate.time_system_contract.auto_pause_conditions),
                 "actions": len(candidate.action_definitions),
                 "capabilities": len(candidate.capability_definitions),
                 "issue_types": len(candidate.issue_definitions),
@@ -1073,6 +1097,7 @@ class DLCBundleLoader:
             "random_event_templates": copy.deepcopy(snapshot.random_event_templates),
             "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
             "time_rules": copy.deepcopy(snapshot.time_rules),
+            "time_system_contract": snapshot.time_system_contract.to_dict(),
             "action_definitions": copy.deepcopy(snapshot.action_definitions),
             "capability_definitions": copy.deepcopy(snapshot.capability_definitions),
             "issue_definitions": copy.deepcopy(snapshot.issue_definitions),
@@ -1306,6 +1331,7 @@ class DLCBundleLoader:
                 dict(item) for item in blueprint.get("causal_event_rules", [])
             ],
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
+            time_system_contract=TemporalContract.from_mapping(blueprint.get("time_system_contract", {})),
             action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
             capability_definitions=[dict(item) for item in blueprint.get("capability_definitions", [])],
             issue_definitions=[dict(item) for item in blueprint.get("issue_definitions", [])],
@@ -1399,6 +1425,7 @@ class DLCBundleLoader:
             random_event_templates=copy.deepcopy(snapshot.random_event_templates),
             causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
             time_rules=copy.deepcopy(snapshot.time_rules),
+            time_system_contract=copy.deepcopy(snapshot.time_system_contract),
             action_definitions=copy.deepcopy(snapshot.action_definitions),
             capability_definitions=copy.deepcopy(snapshot.capability_definitions),
             issue_definitions=copy.deepcopy(snapshot.issue_definitions),
@@ -1720,6 +1747,11 @@ class DLCBundleLoader:
                     self.orchestrator.configure_causal_events(candidate.causal_event_rules)
                 if hasattr(self.orchestrator, "configure_time_rules"):
                     self.orchestrator.configure_time_rules(candidate.time_rules)
+                if hasattr(self.orchestrator, "configure_time_system"):
+                    self.orchestrator.configure_time_system(
+                        candidate.time_system_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
                 if hasattr(self.orchestrator, "configure_gameplay_contract"):
                     self.orchestrator.configure_gameplay_contract(
                         candidate.gameplay_contract, generation=target_generation
@@ -1976,6 +2008,11 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "time_rule_status")
                 else {"rule_count": len(snapshot.time_rules) if snapshot else 0}
             ),
+            "time_system": (
+                self.orchestrator.time_system_public_state()
+                if hasattr(self.orchestrator, "time_system_public_state")
+                else snapshot.time_system_contract.public_state(0.0, generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
+            ),
             "runtime_bindings": (
                 self.orchestrator.runtime_bindings_public_state()
                 if hasattr(self.orchestrator, "runtime_bindings_public_state")
@@ -2026,6 +2063,11 @@ class DLCBundleLoader:
             )
         if hasattr(self.orchestrator, "configure_time_rules"):
             self.orchestrator.configure_time_rules(candidate.time_rules)
+        if hasattr(self.orchestrator, "configure_time_system"):
+            self.orchestrator.configure_time_system(
+                candidate.time_system_contract, generation=self.generation,
+                preserve_state=False,
+            )
         if hasattr(self.orchestrator, "configure_gameplay_contract"):
             self.orchestrator.configure_gameplay_contract(
                 candidate.gameplay_contract, generation=self.generation

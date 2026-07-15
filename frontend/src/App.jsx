@@ -9,6 +9,10 @@ import DerivedMetricPanel from './DerivedMetricPanel'
 import CapabilityPanel from './CapabilityPanel'
 import { normalizeCapabilityResponse } from './CapabilityTools.js'
 import { normalizeDerivedMetricResponse } from './DerivedMetricTools.js'
+import {
+  activeTemporalCycles, formatAutoPauseNotice, formatCycleProgress,
+  formatSeason, formatTemporalDate, normalizeTimeSystemState,
+} from './TemporalStateTools.js'
 import { normalizeUIManifestResponse, visibleNavigation, visibleWidgets } from './UIManifestTools.js'
 import './App.css'
 
@@ -193,6 +197,8 @@ function App() {
   })
   const [derivedMetricState, setDerivedMetricState] = useState(() => normalizeDerivedMetricResponse(null))
   const [uiManifest, setUIManifest] = useState(() => normalizeUIManifestResponse(null))
+  const [timeSystemState, setTimeSystemState] = useState(() => normalizeTimeSystemState(null))
+  const [autoPauseNotice, setAutoPauseNotice] = useState(null)
   const objectiveRefreshAt = useRef(0)
   const derivedMetricRefreshAt = useRef(0)
 
@@ -222,6 +228,16 @@ function App() {
     } catch { /* capability registry remains empty while backend is unavailable */ }
   }, [])
 
+  const refreshTimeSystem = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/time-system`)
+      if (!response.ok) return
+      const normalized = normalizeTimeSystemState(await response.json())
+      setTimeSystemState(normalized)
+      if (normalized.auto_pause) setAutoPauseNotice(formatAutoPauseNotice(normalized.auto_pause))
+    } catch { /* keep the last capability-safe calendar snapshot */ }
+  }, [])
+
   const refreshDerivedMetrics = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/derived-metrics`)
@@ -240,6 +256,11 @@ function App() {
     setSimTime(data.sim_time)
     setInTransit(data.in_transit || [])
     setTokenUsage(data.token_usage || {})
+    if (data.time_system) setTimeSystemState(normalizeTimeSystemState(data.time_system))
+    if (data.auto_pause) {
+      setAutoPauseNotice(formatAutoPauseNotice(data.auto_pause))
+      setPaused(true)
+    }
     if (data.objective_transitions?.length > 0 || Date.now() - objectiveRefreshAt.current > 5000) refreshObjectives()
     if (Date.now() - derivedMetricRefreshAt.current > 5000) refreshDerivedMetrics()
     if (data.new_issues?.length > 0) {
@@ -285,6 +306,11 @@ function App() {
   }, [objectiveState.generation, refreshCapabilities])
 
   useEffect(() => {
+    const initial = window.setTimeout(refreshTimeSystem, 0)
+    return () => window.clearTimeout(initial)
+  }, [objectiveState.generation, refreshTimeSystem])
+
+  useEffect(() => {
     const initial = window.setTimeout(refreshDerivedMetrics, 0)
     const timer = window.setInterval(refreshDerivedMetrics, 5000)
     return () => { window.clearTimeout(initial); window.clearInterval(timer) }
@@ -318,7 +344,7 @@ function App() {
     if (!res.error) { setRunning(true); setPaused(false) }
   }
   const handlePause = async () => { await apiPost('/pause'); setPaused(true) }
-  const handleResume = async () => { await apiPost('/resume'); setPaused(false) }
+  const handleResume = async () => { await apiPost('/resume'); setPaused(false); setAutoPauseNotice(null) }
 
   const handleSave = async () => {
     const simDay = Math.floor(simTime / 86400)
@@ -351,11 +377,13 @@ function App() {
     setIssues([])
     setDecisionRequests([])
     setSelectedIssue(null)
+    setAutoPauseNotice(null)
     window.setTimeout(() => {
       refreshObjectives()
       refreshUIManifest()
       refreshCapabilities()
       refreshDerivedMetrics()
+      refreshTimeSystem()
       Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
         .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
         .catch(() => {})
@@ -516,6 +544,9 @@ function App() {
   }
 
   const renderRegion = (region) => visibleWidgets(uiManifest, region).map(renderDashboardWidget)
+  const temporalDate = formatTemporalDate(timeSystemState)
+  const temporalSeason = formatSeason(timeSystemState)
+  const activeCycles = activeTemporalCycles(timeSystemState)
 
   return (
     <div className="app">
@@ -528,19 +559,43 @@ function App() {
           </div>
         </div>
         <div className="header-info">
-          <span className="day-counter">{timeStrFull(simTime)}</span>
-          {gameplay.configured && (
-            <span
-              className="player-identity"
-              title={controlledObjects.map(item => `${item.kind}:${item.id} (${item.mode})`).join(' / ')}
-            >
-              <strong>{playerDisplayName}</strong>
-              <small>{controlledObjects.length} controls</small>
+          <div className={`temporal-clock ${timeSystemState.configured ? 'configured' : 'fallback'}`}>
+            <div className="temporal-date-row">
+              <span className="day-counter">{temporalDate || timeStrFull(simTime)}</span>
+              {temporalSeason && <span className="temporal-season">{temporalSeason}</span>}
+            </div>
+            {timeSystemState.configured && activeCycles.length > 0 && (
+              <div className="temporal-cycle-list" aria-label="当前活跃周期">
+                {activeCycles.map(cycle => (
+                  <span
+                    key={cycle.cycle_id}
+                    className={`temporal-cycle-chip ${cycle.kind || 'custom'}`}
+                    title={cycle.description || formatCycleProgress(cycle)}
+                  >
+                    <strong>{cycle.display_name || cycle.cycle_id}</strong>
+                    <small>{formatCycleProgress(cycle)}</small>
+                  </span>
+                ))}
+              </div>
+            )}
+            {timeSystemState.configured && (
+              <small className="legacy-sim-time">模拟时间：{timeStrFull(simTime)}</small>
+            )}
+          </div>
+          <div className="header-meta-row">
+            {gameplay.configured && (
+              <span
+                className="player-identity"
+                title={controlledObjects.map(item => `${item.kind}:${item.id} (${item.mode})`).join(' / ')}
+              >
+                <strong>{playerDisplayName}</strong>
+                <small>{controlledObjects.length} controls</small>
+              </span>
+            )}
+            <span className={`ws-status ${connected ? 'on' : 'off'}`}>
+              <i aria-hidden="true" />{connected ? '世界已连接' : '世界离线'}
             </span>
-          )}
-          <span className={`ws-status ${connected ? 'on' : 'off'}`}>
-            <i aria-hidden="true" />{connected ? '世界已连接' : '世界离线'}
-          </span>
+          </div>
         </div>
         <div className="header-controls">
           {!running ? (
@@ -594,6 +649,26 @@ function App() {
           </div>
         )}
       </header>
+
+      {autoPauseNotice && (
+        <aside className="auto-pause-notice" role="alert" aria-live="assertive">
+          <span className="auto-pause-icon" aria-hidden="true">Ⅱ</span>
+          <div className="auto-pause-copy">
+            <strong>{autoPauseNotice.display_name || '时间系统已自动暂停'}</strong>
+            <p>{autoPauseNotice.reason || 'DLC 定义的时间条件已经满足。'}</p>
+            {autoPauseNotice.detail && <small>{autoPauseNotice.detail}</small>}
+            {autoPauseNotice.request_count > 1 && <small>本次同时触发 {autoPauseNotice.request_count} 项暂停规则</small>}
+          </div>
+          <span className="auto-pause-guidance">模拟保持暂停，请确认后手动继续</span>
+          <button
+            type="button"
+            className="auto-pause-dismiss"
+            onClick={() => setAutoPauseNotice(null)}
+            aria-label="关闭自动暂停提示"
+            title="仅关闭提示，不会恢复模拟"
+          >×</button>
+        </aside>
+      )}
 
       {activeView === 'debug' ? (
         <GodView />

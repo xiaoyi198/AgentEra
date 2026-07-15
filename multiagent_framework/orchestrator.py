@@ -36,6 +36,7 @@ from .fc_handlers import (
 )
 from .router import RouterAgent, MAX_HOPS
 from .time_simulator import TimeSimulator
+from .temporal_contract import TemporalContract, TemporalRuntime
 from .runtime_persistor import RuntimePersistor
 from .runtime_bindings import (
     ACTION_TASK,
@@ -158,6 +159,8 @@ class Orchestrator:
         self.time_simulator = (
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
+        self.temporal_runtime = TemporalRuntime()
+        self._auto_pause_reason: dict[str, Any] | None = None
         self._last_real_time: float = 0.0
         self._running = False
         self._pausing = False
@@ -885,6 +888,25 @@ class Orchestrator:
             "enabled_count": sum(1 for rule in self.time_simulator.rules if rule.enabled),
         }
 
+    def configure_time_system(
+        self, contract: TemporalContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish the primary DLC calendar without replaying pre-activation boundaries."""
+        self.temporal_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        self._auto_pause_reason = None
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def time_system_public_state(self) -> dict[str, Any]:
+        """Return capability-safe current calendar/cycle state."""
+        return self.temporal_runtime.public_state(
+            self._sim_time, auto_pause_reason=self._auto_pause_reason,
+        )
+
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
         causal_scheduled = self.causal_event_engine.observe(
@@ -934,12 +956,14 @@ class Orchestrator:
 
     async def pause(self) -> None:
         """请求暂停 — 等所有正在进行的 Agent 任务完成后生效."""
+        self._auto_pause_reason = None
         self._pausing = True
         logger.info("Pause requested, waiting for %d agent tasks...", len(self._agent_tasks))
 
     def resume(self) -> None:
         self._paused = False
         self._pausing = False
+        self._auto_pause_reason = None
         self._last_real_time = time.monotonic()
         logger.info("Simulation resumed at sim_time=%.1f", self._sim_time)
 
@@ -960,6 +984,8 @@ class Orchestrator:
             "random_events": self.random_event_generator.snapshot(),
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
+            "time_system_runtime": self.temporal_runtime.snapshot(),
+            "auto_pause_reason": self._auto_pause_reason,
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
             "objective_runtime": self.objective_manager.snapshot(),
@@ -990,6 +1016,13 @@ class Orchestrator:
         self.objective_manager.restore(
             state.get("objective_runtime", {}), sim_time=self._sim_time
         )
+        temporal_state = state.get("time_system_runtime")
+        if isinstance(temporal_state, dict):
+            self.temporal_runtime.restore(temporal_state, sim_time=self._sim_time)
+        else:
+            self.temporal_runtime.last_polled_time = self._sim_time
+        auto_pause_reason = state.get("auto_pause_reason")
+        self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
         # 恢复 Agent 记忆
         agent_memories = state.get("agent_memories", {})
@@ -1105,6 +1138,52 @@ class Orchestrator:
         # 清理已完成的后台任务
         done = {t for t in self._agent_tasks if t.done()}
         self._agent_tasks -= done
+
+        # DLC-authored time boundaries are resolved before random and causal events.
+        temporal_poll = self.temporal_runtime.poll(
+            self._sim_time,
+            condition_context=CausalConditionContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                objective_manager=self.objective_manager,
+                event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+                derived_metric_provider=self.derived_metric_catalog,
+                knowledge_provider=self.player_knowledge_provider,
+                issue_manager=self.issue_manager,
+                action_catalog=self.action_catalog,
+            ),
+        )
+        for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+            self.inject_event(event)
+            result.generated_events.append(dict(event_metadata))
+            issue_type_id = str(event_metadata.get("issue_type_id", ""))
+            if issue_type_id:
+                payload = dict(event.initial_payload)
+                try:
+                    opened = self.open_issue({
+                        "external_id": f"time_system:{event.event_id}",
+                        "issue_type_id": issue_type_id,
+                        "type": event.event_type,
+                        "source": {"kind": "system", "id": "time_system", "display_name": "时间系统"},
+                        "title": str(payload.get("title", event.event_type)),
+                        "summary": str(payload.get("summary", payload.get("description", event.event_type))),
+                        "details": {"temporal_boundary": payload.get("temporal_boundary", {}), "payload": payload},
+                        "urgency": payload.get("urgency", "normal"),
+                        "metadata": {"event_id": event.event_id, "boundary_event_id": payload.get("boundary_event_id", "")},
+                    })
+                    result.new_issues.append(opened["issue"])
+                    result.new_cases.append(opened["case"])
+                    result.new_decision_requests.extend(opened["decision_requests"])
+                except IssueContractError as exc:
+                    result.agent_errors.append({"agent_id": "time_system", "error": "issue_contract_rejected", "code": exc.code, "event_id": event.event_id})
+        if temporal_poll.pause_requests:
+            requests = [dict(item) for item in temporal_poll.pause_requests]
+            self._auto_pause_reason = {**requests[0], "requests": requests}
+            self._pausing = True
+            result.auto_pause = dict(self._auto_pause_reason)
+        result.time_system = self.time_system_public_state()
+        if (temporal_poll.markers or temporal_poll.events or temporal_poll.pause_requests) and self.persistor:
+            self.persistor.mark_state_dirty()
 
         # 1. 检查到期定时器 → 加入待唤醒队列
         random_poll = self.random_event_generator.poll(self._sim_time)

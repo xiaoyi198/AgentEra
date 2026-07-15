@@ -3114,3 +3114,56 @@ npm run build
 ```
 
 外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；未注入 URL/Key 时必须 skip。不得把实际值、响应正文、Provider 原始异常或连接地址写入源码、配置、文档、命令记录、日志或 Git。
+
+## DLC 时间系统开发指南 (v0.32.0)
+
+### 最小配置
+
+`content.json` 可增加：
+
+```json
+{
+  "time_system": {
+    "enabled": true,
+    "calendar": {
+      "calendar_id": "campaign_calendar",
+      "display_name": "远征历",
+      "epoch_label": "远征纪元",
+      "start_year": 1,
+      "start_month_id": "month_1",
+      "start_day": 1,
+      "weekdays": ["一", "二", "三", "四", "五", "六", "日"],
+      "start_weekday": "一",
+      "months": [{"month_id": "month_1", "display_name": "启程月", "days": 30}]
+    },
+    "seasons": [],
+    "cycles": [{
+      "cycle_id": "command_turn",
+      "display_name": "指挥回合",
+      "kind": "turn",
+      "period_days": 7,
+      "duration_days": 7,
+      "offset_days": 0,
+      "enabled": true
+    }],
+    "boundary_events": [],
+    "auto_pause_conditions": []
+  }
+}
+```
+
+### Authoring rules
+
+1. Month, season, cycle, boundary-event and pause IDs must be stable ASCII identifiers. Month lengths are positive integers; the sum defines `year_days`. The start month/day/weekday must exist in the same calendar.
+2. Seasons use inclusive day-of-year bounds. A season with `start_day > end_day` crosses the year boundary. Do not overlap seasons; use Studio validation before Registry validation.
+3. Cycle `duration_days` must be between 1 and `period_days`. `offset_days` is the first start day index. Keep gameplay cadence in DLC data instead of adding topic branches to Orchestrator.
+4. Boundary events may filter by cycle, season, month or day and may wake known Agents or project a known Issue Type. Payload must remain safe JSON and should carry narrative data, not instructions for executing code.
+5. Condition pauses use the common causal condition shape. A derived metric pause requires the metric to grant the `rule` audience. Boundary pauses may leave `conditions` empty. Use `edge_triggered` for thresholds that should fire only when transitioning from false to true, and `cooldown_days` to suppress rapid retriggers.
+
+### Runtime and UI checklist
+
+- Reload the active Generation after editing and inspect `GET /api/time-system`; never read raw DLC time definitions directly from feature components.
+- Preserve `time_system_runtime` in saves. Do not reset receipts during ordinary hot reload; only same-ID receipts are eligible for preservation.
+- Public UI code must use the safe projection and must not copy authored condition trees. Closing an auto-pause banner is not equivalent to calling `POST /api/resume`.
+- Add or update `TemporalSystemTools.test.js` for authoring behavior and `TemporalStateTools.test.js` for public formatting. Backend contract/runtime changes require `test_temporal_contract.py`, `test_temporal_runtime.py` and Generation integration coverage.
+- `frontend/dist/`, `runtime/` and `.pytest_cache/` are generated/runtime artifacts and must not be committed.

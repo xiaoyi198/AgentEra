@@ -466,7 +466,7 @@ function conditionNameLabel(kind) {
   }[kind] || '名称'
 }
 
-function CausalConditionBuilder({ value, entities, resources, actors, agents, relationshipTypes, objectives, derivedMetrics, ongoingEvents, eventTypes, onChange }) {
+export function CausalConditionBuilder({ value, entities, resources, actors, agents, relationshipTypes, objectives, derivedMetrics, ongoingEvents, eventTypes, onChange }) {
   const conditions = (Array.isArray(value) ? value : []).map(normalizeCausalConditionForEditor)
   const actorOptions = effectiveActorOptions(actors, agents)
   const catalogs = { entities, resources, actors: actorOptions, relationshipTypes, objectives, derivedMetrics, ongoingEvents, eventTypes }

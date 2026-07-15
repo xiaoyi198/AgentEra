@@ -1,9 +1,9 @@
 {
   "id": "example_frontier",
   "name": "边境哨站示例",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "schema_version": "1.0",
-  "description": "标准 bundle-v1 示例 DLC，演示通用 Actor 组件、Actor-only 角色、统一价值锚定、可扩展关系契约、三层知识与调查传播、通用多阶段因果条件与世界效果、DLC 派生指标与聚合公式、Generation 能力注册表、Agent、Action、Issue、目标、结局与可配置界面。",
+  "description": "标准 bundle-v1 示例 DLC，演示通用 Actor 组件、Actor-only 角色、统一价值锚定、可扩展关系契约、三层知识与调查传播、通用多阶段因果条件与世界效果、DLC 派生指标与聚合公式、自定义历法、季节、回合/会议/任务周期、时间边界事件与自动暂停、Generation 能力注册表、Agent、Action、Issue、目标、结局与可配置界面。",
   "enabled": false,
   "status": "published",
   "format": "bundle-v1",
