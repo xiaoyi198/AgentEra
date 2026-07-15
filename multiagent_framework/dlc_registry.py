@@ -23,6 +23,7 @@ from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RELATION_TYPES, RESOURCE_TOKENS
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
+from .capability_contract import normalize_capability_document, validate_capability_definitions
 from .issue_contract import normalize_issue_document, validate_issue_definitions
 from .objective_contract import (
     normalize_ending_document, normalize_objective_document,
@@ -396,7 +397,7 @@ class DLCRegistry:
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
             "agents", "initial_events", "ongoing_events", "random_events",
-            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "issue_types", "objectives", "endings",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
@@ -410,6 +411,7 @@ class DLCRegistry:
                 normalized.get("gameplay", {})
             )
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
+            normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
             normalized["objectives"] = normalize_objective_document(normalized.get("objectives", []))
             normalized["endings"] = normalize_ending_document(normalized.get("endings", []))
@@ -673,6 +675,14 @@ class DLCRegistry:
         ):
             add(action_issue.code, action_issue.message, action_issue.path)
         action_ids = {str(item.get("action_id", "")) for item in content["actions"] if item.get("action_id")}
+        for capability_issue in validate_capability_definitions(
+            content["capabilities"], action_ids=action_ids,
+            entity_ids=entity_ids, agent_ids=agent_ids,
+        ):
+            add(
+                capability_issue.code, capability_issue.message,
+                capability_issue.path, capability_issue.severity,
+            )
         for issue in validate_issue_definitions(
             content["issue_types"], action_ids=action_ids, entity_ids=entity_ids,
             agent_ids=agent_ids, gameplay=gameplay_contract,
@@ -1021,10 +1031,21 @@ class DLCRegistry:
                 other_content = self.load_content(other.manifest.id)
             except DLCRegistryError:
                 continue
+            own_capability_ids = {
+                str(identifier)
+                for item in content["capabilities"]
+                for identifier in [item.get("capability_id", ""), *(item.get("aliases", []) or [])]
+            }
+            other_capability_ids = {
+                str(identifier)
+                for item in other_content["capabilities"]
+                for identifier in [item.get("capability_id", ""), *(item.get("aliases", []) or [])]
+            }
             comparisons = (
                 ("entity", entity_ids, {str(item.get("id", "")) for item in other_content["entities"]}),
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
+                ("capability", own_capability_ids, other_capability_ids),
             )
             for kind, own_ids, other_ids in comparisons:
                 for conflict in sorted((own_ids & other_ids) - {""}):

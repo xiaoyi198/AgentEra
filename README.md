@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.24.0**
+> 当前版本：**v0.25.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -18,6 +18,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **DLC Studio**：编辑 DLC、实体、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
+- **Generation 能力注册表**：玩家、普通 Agent 与 Router 共用 DLC `capability_id`；框架以稳定工具解释执行 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类安全 handler，并随热重载、归档、回滚和重启恢复切换。
 - **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
@@ -341,6 +342,21 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.25.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P0.6，并完成 P0 阶段：
+
+- 新增 Generation-bound DLC 能力注册表，`content.json.capabilities` 成为玩家、普通 Agent 与 Router 的共同权威来源；能力 ID、别名、受众、目标、参数和 Action 引用均由 Registry 验证。
+- 普通 Agent 通过稳定工具 `invoke_capability` 调用能力，Router LLM 通过 `route_capability` 完成目标消歧；框架内部使用 `INVOKE_CAPABILITY` 协议，不允许 DLC 注入 Python、React、函数名或任意 handler。
+- 支持 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类白名单 handler；玩家消息目标会在入队前整体校验，未知能力进入独立 dead letter，不产生隐式旧工具回退。
+- 新增 `GET /api/capabilities` 与 `POST /api/capabilities/{capability_id}/invoke`；主界面新增动态能力面板，根据当前 Generation 自动生成目标和参数表单。
+- DLC Studio 新增详细中文“能力”编辑器，覆盖 handler、受众、目标选择、参数、Action 引用、别名和说明，并保留高级 JSON、即时校验、Diff、撤销/重做与导入导出工作流。
+- 能力目录进入 Generation 发布、加密 archive、热重载、rollback 与 restart recovery；无能力目录的旧 DLC 保持兼容，有能力目录时不再恢复旧 Agent 写工具。
+- `example_frontier` 升级到 v1.4.0，示范等待、报告、广播命令、世界操作和契约巡逻五类能力。
+- 发布版本统一升级为 `0.25.0`。发布门禁通过 567 个 Python 测试（另有 2 个外部 API 环境门禁测试因当前进程未注入凭据而按设计跳过）、32 个前端测试、Python 编译、ESLint、生产构建、示例 DLC Registry 校验、凭据扫描与 Git 差异检查。
+
+长期 Goal 继续保持 active；P0 已完成，后续进入 P1 通用 Actor、关系、规则表达和知识层建设。
 
 ## v0.24.0 发布说明
 

@@ -37,6 +37,7 @@ class FakeOrchestrator:
         self.events = []
         self.time_rule_configurations = []
         self.objective_configurations = []
+        self.capability_configurations = []
         self.ui_manifest_configurations = []
 
     def register_agent(self, agent) -> None:
@@ -58,6 +59,9 @@ class FakeOrchestrator:
 
     def configure_time_rules(self, rules) -> None:
         self.time_rule_configurations.append(rules)
+
+    def configure_capability_catalog(self, definitions, *, generation=0) -> None:
+        self.capability_configurations.append((definitions, generation))
 
     def configure_objective_catalog(
         self, objectives, endings, *, generation=0, gameplay=None
@@ -385,3 +389,47 @@ def test_generation_archive_persists_ui_manifest_and_old_blueprint_falls_back(tm
     assert legacy_public["configured"] is False
     assert legacy_public["package_id"] == "sample"
     assert legacy_public["title"] == "sample"
+
+
+
+def _archived_capability(display_name: str) -> dict:
+    return {
+        "capability_id": "archive_report",
+        "display_name": display_name,
+        "description": "Archived capability fixture.",
+        "handler": "message",
+        "audiences": ["player", "agent", "router"],
+        "aliases": ["report_archive"],
+        "target": {"kind": "agent", "mode": "required", "allowed_ids": ["mayor"]},
+        "parameters": [],
+        "input": {"content_required": True, "content_label": "Report"},
+    }
+
+
+def test_generation_archive_persists_capabilities_for_restart_rollback(tmp_path: Path):
+    registry = _registry(tmp_path)
+    content = registry.load_content("sample")
+    content["capabilities"] = [_archived_capability("Generation One Capability")]
+    registry.save_content("sample", content)
+
+    first = _loader(tmp_path, registry, FakeOrchestrator())
+    first.load_active(seed_world=True)
+    content = registry.load_content("sample")
+    content["capabilities"] = [_archived_capability("Generation Two Capability")]
+    registry.save_content("sample", content)
+    asyncio.run(first.reload_active())
+
+    records = first._generation_archive.load_all().records
+    assert records[0].blueprint["capability_definitions"][0]["display_name"] == "Generation One Capability"
+    assert records[1].blueprint["capability_definitions"][0]["display_name"] == "Generation Two Capability"
+
+    restarted_orchestrator = FakeOrchestrator()
+    restarted = _loader(tmp_path, registry, restarted_orchestrator)
+    restarted.load_active(seed_world=False)
+    assert restarted.public_runtime()["capabilities"]["capabilities"][0]["display_name"] == "Generation Two Capability"
+
+    result = asyncio.run(restarted.rollback_active(1))
+    assert result["source_generation"] == 1
+    restored, generation = restarted_orchestrator.capability_configurations[-1]
+    assert restored[0]["display_name"] == "Generation One Capability"
+    assert generation == restarted.generation

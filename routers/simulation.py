@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from multiagent_framework.action_contract import ActionContractError
+from multiagent_framework.capability_contract import CapabilityContractError
 from multiagent_framework.issue_contract import IssueContractError
 from multiagent_framework.types import PlayerAction, PlayerActionType
 
@@ -159,6 +160,68 @@ async def get_ui_manifest():
         from multiagent_framework.ui_manifest import UIManifest
         return {**UIManifest.from_content({}).to_dict(), "generation": 0}
     return state.orchestrator.ui_manifest_public_state()
+
+class CapabilityInvocationRequest(BaseModel):
+    invocation_id: str = ""
+    expected_generation: int | None = None
+    source_id: str = ""
+    content: str = ""
+    target_id: str = ""
+    target_ids: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    urgency: str = ""
+    actor_id: str = ""
+    control_object_id: str = ""
+    executor_id: str = ""
+    location: str = ""
+
+
+def _capability_http_error(exc: Exception) -> HTTPException:
+    code = str(getattr(exc, "code", "capability.execution_failed"))
+    status_code = 400
+    if code in {"capability.not_found", "action.not_found"}:
+        status_code = 404
+    elif code in {
+        "capability.generation_conflict", "capability.invocation.conflict",
+        "action.generation_conflict", "action.invocation.conflict",
+        "action.not_ready", "action.world_command_failed",
+    }:
+        status_code = 409
+    return HTTPException(status_code=status_code, detail={
+        "code": code,
+        "message": str(exc),
+        "path": str(getattr(exc, "path", "") or ""),
+        "details": dict(getattr(exc, "details", {}) or {}),
+    })
+
+
+@router.get("/capabilities")
+async def get_capabilities(audience: str = "player"):
+    """Return the active generation's DLC-authored capability registry."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "generation": 0, "fingerprint": "",
+            "audience": audience or "player", "capabilities": [],
+        }
+    selected_audience = audience if audience in {"player", "agent", "router"} else "player"
+    return state.orchestrator.capabilities_public_state(selected_audience)
+
+
+@router.post("/capabilities/{capability_id}/invoke")
+async def invoke_capability(capability_id: str, req: CapabilityInvocationRequest):
+    if not state.orchestrator:
+        raise HTTPException(status_code=503, detail={"code": "capability.orchestrator_unavailable"})
+    payload = req.model_dump()
+    try:
+        return await state.orchestrator.invoke_capability(
+            capability_id,
+            payload,
+            audience="player",
+            source_id=req.source_id,
+        )
+    except (CapabilityContractError, ActionContractError) as exc:
+        raise _capability_http_error(exc) from exc
+
 
 class DLCActionInvocationRequest(BaseModel):
     invocation_id: str = ""

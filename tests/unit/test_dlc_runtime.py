@@ -30,6 +30,7 @@ class FakeOrchestrator:
         self.operations = []
         self.gameplay_configurations = []
         self.action_configurations = []
+        self.capability_configurations = []
         self.issue_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
@@ -57,6 +58,10 @@ class FakeOrchestrator:
     def configure_action_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("actions", [item["action_id"] for item in definitions]))
         self.action_configurations.append((definitions, generation, gameplay))
+
+    def configure_capability_catalog(self, definitions, *, generation=0) -> None:
+        self.operations.append(("capabilities", [item["capability_id"] for item in definitions]))
+        self.capability_configurations.append((definitions, generation))
 
     def configure_issue_catalog(self, definitions, *, generation=0, gameplay=None) -> None:
         self.operations.append(("issues", [item["issue_type_id"] for item in definitions]))
@@ -1086,3 +1091,46 @@ def test_primary_dlc_owns_ui_manifest_across_reload_and_rollback(tmp_path: Path)
     manifest, generation = orchestrator.ui_manifest_configurations[-1]
     assert manifest.to_dict()["title"] == "Primary Command v1"
     assert generation == 3
+
+
+
+def _runtime_capability(display_name: str) -> dict:
+    return {
+        "capability_id": "city_report",
+        "display_name": display_name,
+        "description": "Report city status.",
+        "handler": "message",
+        "audiences": ["player", "agent", "router"],
+        "aliases": ["report_city"],
+        "target": {"kind": "agent", "mode": "required", "allowed_ids": ["mayor"]},
+        "parameters": [],
+        "input": {"content_required": True, "content_label": "Report"},
+    }
+
+
+def test_runtime_publishes_capabilities_across_reload_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["capabilities"] = [_runtime_capability("Generation One Report")]
+    registry.save_content("sample", content)
+
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active(seed_world=True)
+    first_definitions, first_generation = orchestrator.capability_configurations[-1]
+    assert first_generation == 1
+    assert first_definitions[0]["display_name"] == "Generation One Report"
+
+    content = registry.load_content("sample")
+    content["capabilities"] = [_runtime_capability("Generation Two Report")]
+    registry.save_content("sample", content)
+    asyncio.run(loader.reload_active())
+    assert orchestrator.capability_configurations[-1][0][0]["display_name"] == "Generation Two Report"
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    assert rollback["source_generation"] == 1
+    assert orchestrator.capability_configurations[-1][0][0]["display_name"] == "Generation One Report"
+    assert loader.public_runtime()["capabilities"]["capabilities"][0]["capability_id"] == "city_report"

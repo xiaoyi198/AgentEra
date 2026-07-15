@@ -2011,3 +2011,40 @@ Status: **implemented and locally verified**.
 - `frontend/src/UIManifestEditor.jsx` provides Chinese descriptions for brand/title, 30 terminology entries, both navigation surfaces, dashboard layout/widgets, Issue list/detail fields, and entity detail sections.
 - The editor includes immediate allowlist/duplicate/visibility checks, advanced JSON parsing feedback, and security guidance. `DLCStudioTools` preserves `ui_manifest` through normalization, import/export, keyed Content Diff, undo, and redo before Registry publication.
 - `example_frontier` v1.3.0 demonstrates a complete frontier-themed manifest while hiding resolved Issues and the entity `parameters` section, proving that content controls presentation without changing framework code.
+
+
+## Release architecture note: Generation-bound DLC capability registry (v0.25.0)
+
+### Canonical capability contract
+
+- `multiagent_framework/capability_contract.py` 定义题材无关能力 Schema、白名单 handler、受众、目标模式、参数类型和 Action 引用约束。
+- `CapabilityCatalog` 是当前 Generation 的只读能力视图；权威内容来自各已启用 DLC 的 `content.json.capabilities`，Registry 在发布前检查包内及跨包 ID/alias 冲突。
+- DLC 只能声明 `noop`、`message`、`world_action`、`contract_action`、`broadcast`，不能提供 Python/React/Function Calling 实现名，也不能绕过框架校验注册任意 handler。
+
+### Shared player, Agent and Router protocol
+
+- 玩家 API、普通 Agent 和 Router 始终使用稳定的 `capability_id`；alias 只用于输入兼容，执行前会解析回规范 ID。
+- 普通 Agent 的写能力收敛为 `invoke_capability`；工具 Schema 由本轮固定的 Generation 目录动态生成。只要目录存在，就不会退回旧 `submit_action`/`request_action` 写工具。
+- Router LLM 使用 `route_capability` 做自然语言目标消歧，随后生成内部 `RouterCommandType.INVOKE_CAPABILITY`。Router 不得替换来源能力 ID，未知能力进入 `unknown_capability` dead letter。
+- 没有任何能力目录的旧 DLC 继续使用兼容工具与旧 Router 路由；这是整个目录为空时的唯一兼容路径。
+
+### Handler execution paths
+
+- `noop`：记录成功但不修改世界。
+- `message`：向一个已启用目标 Agent 投递消息；玩家入口会在入队前验证目标，失败时不产生部分副作用。
+- `broadcast`：向多个已启用目标 Agent 原子验证后广播。
+- `world_action`：生成并提交框架白名单世界命令，沿用 WorldCommandBus 的权限、事务和回执语义。
+- `contract_action`：通过当前 Generation 的 ActionCatalog 执行顶层 `action_id`，传递调用 Agent 身份、目标和参数，复用成本、耗时、冷却、幂等与组合结果。
+
+### Generation lifecycle and recovery
+
+- DLC Runtime 在 prepare 阶段构造能力目录，在 commit 后一次性发布给 Orchestrator、Agent 工具和 Router；在途 Turn 保持开始时的 Generation 语义。
+- 能力定义随加密 Generation archive 保存，可由 rollback 恢复为新的递增 Generation，也可在进程重启时恢复；旧 archive 缺少能力字段时按空目录兼容。
+- `example_frontier` v1.4.0 提供五种 handler 的完整示例，并作为 Registry、reload、archive、rollback 与 restart recovery 的集成夹具。
+
+### API and frontend surfaces
+
+- `GET /api/capabilities?audience=player` 返回当前 Generation 对玩家可见的脱敏目录。
+- `POST /api/capabilities/{capability_id}/invoke` 校验目标、参数和 Generation 后调用 Orchestrator，响应采用结构化成功/错误码。
+- React `CapabilityPanel` 从 API 动态构建能力、目标和参数表单；Generation 更新后重新读取目录。
+- DLC Studio 的“能力”页签提供完整中文字段说明、白名单选择、参数与目标编辑、即时验证、Content Diff、导入导出及撤销/重做。

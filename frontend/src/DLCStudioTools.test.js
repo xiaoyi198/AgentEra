@@ -39,6 +39,7 @@ const base = {
   causal_event_rules: [],
   time_rules: [],
   actions: [],
+  capabilities: [],
   issue_types: [],
   objectives: [],
   endings: [],
@@ -510,6 +511,37 @@ test('objective and ending sections normalize, export and diff by stable IDs', (
   ])
 })
 
+
+
+test('capability sections normalize export and diff by stable capability IDs', () => {
+  const source = { ...base }
+  delete source.capabilities
+  assert.deepEqual(normalizeImportedContent(source).capabilities, [])
+  assert.throws(() => normalizeImportedContent({ ...base, capabilities: {} }), /capabilities must be an array/)
+
+  const capability = {
+    capability_id: 'frontier_report',
+    display_name: 'Frontier report',
+    description: 'Report current conditions.',
+    handler: 'message',
+    audiences: ['player', 'agent', 'router'],
+    aliases: ['report'],
+    target: { kind: 'agent', mode: 'optional', allowed_ids: ['guard'] },
+    parameters: [],
+    action_id: '',
+    default_urgency: 'normal',
+    input: { content_required: true, content_label: 'Report', content_placeholder: '' },
+    enabled: true,
+  }
+  const exported = createContentExport({ id: 'frontier' }, { ...base, capabilities: [capability] })
+  assert.deepEqual(normalizeImportedContent(exported).capabilities, [capability])
+
+  const changed = { ...base, capabilities: [{ ...capability, description: 'Updated report contract.' }] }
+  assert.deepEqual(
+    summarizeContentDiff({ ...base, capabilities: [capability] }, changed).entries.filter(item => item.section === 'capabilities'),
+    [{ section: 'capabilities', key: 'frontier_report', type: 'changed' }],
+  )
+})
 
 test('UI manifest participates in import export diff and history', () => {
   const uiManifest = {

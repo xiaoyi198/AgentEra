@@ -83,6 +83,7 @@ const EMPTY = {
   causal_event_rules: { rule_id: '', source_event_types: ['*'], child_event_type: 'follow_up', target_agents: [], delay_days: 1, probability: 1, severity_delta: 0, initial_payload: {}, inherit_payload_keys: [], conditions: [], world_effects: [], max_depth: 4, max_fires_per_chain: 1, priority: 0, enabled: true },
   time_rules: { rule_id: '', action_types: ['*'], base_days: 0, min_days: 0.1, max_days: 365, severity_factor: 0, workload_factor: 1, resource_factor: 0, distance_factor: 1, success_factor: 1, priority: 0, enabled: true },
   actions: { action_id: '', display_name: '', description: '', parameters: [], target: { kind: 'none' }, permissions: {}, preconditions: [], costs: [], duration: {}, cooldown: {}, result: { mode: 'world_commands', effects: [] }, enabled: true },
+  capabilities: { capability_id: '', display_name: '', description: '', handler: 'message', audiences: ['player', 'agent', 'router'], aliases: [], target: { kind: 'agent', mode: 'optional', allowed_ids: [] }, parameters: [], action_id: '', default_urgency: 'normal', input: { content_required: true, content_label: '\u5185\u5bb9', content_placeholder: '' }, enabled: true },
   issue_types: { issue_type_id: '', display_name: '', description: '', category: 'report', default_urgency: 'normal', default_deadline_days: 3, source: { allowed_kinds: ['agent', 'system', 'event', 'player'] }, match: { payload_types: [], source_ids: [], default_for_player_reports: false }, evidence: [], decision_requests: [], metadata: {}, enabled: true },
 }
 
@@ -98,6 +99,7 @@ const TITLES = {
   causal_event_rules: T.causalEvents,
   time_rules: T.timeRules,
   actions: '行动',
+  capabilities: '\u80fd\u529b',
   issue_types: 'Issue 类型',
 }
 
@@ -157,6 +159,19 @@ function normalizedListForm(kind, value) {
   if (kind === 'actions') {
     for (const field of ['parameters', 'preconditions', 'costs']) source[`_${field}_text`] = JSON.stringify(Array.isArray(source[field]) ? source[field] : [], null, 2)
     for (const field of ['target', 'permissions', 'duration', 'cooldown', 'result']) source[`_${field}_text`] = jsonText(source[field])
+  }
+  if (kind === 'capabilities') {
+    source.audiences = Array.isArray(source.audiences) ? source.audiences : []
+    source.aliases = Array.isArray(source.aliases) ? source.aliases : []
+    source.target = source.target && typeof source.target === 'object' && !Array.isArray(source.target) ? source.target : { kind: 'none', mode: 'none', allowed_ids: [] }
+    source.target.allowed_ids = Array.isArray(source.target.allowed_ids) ? source.target.allowed_ids : []
+    source.input = source.input && typeof source.input === 'object' && !Array.isArray(source.input) ? source.input : {}
+    source.input.content_required = Boolean(source.input.content_required)
+    source.input.content_label = String(source.input.content_label || '\u5185\u5bb9')
+    source.input.content_placeholder = String(source.input.content_placeholder || '')
+    source._aliases_text = source.aliases.join(', ')
+    source._allowed_ids_text = source.target.allowed_ids.join(', ')
+    source._parameters_text = JSON.stringify(Array.isArray(source.parameters) ? source.parameters : [], null, 2)
   }
   return source
 }
@@ -293,6 +308,43 @@ function serializeListForm(kind, form) {
     }
     data.enabled = Boolean(data.enabled)
   }
+  if (kind === 'capabilities') {
+    data.capability_id = String(data.capability_id || '').trim()
+    data.display_name = String(data.display_name || '').trim()
+    data.description = String(data.description || '').trim()
+    data.handler = String(data.handler || 'noop').trim()
+    data.audiences = [...new Set((data.audiences || []).map(value => String(value).trim()).filter(Boolean))]
+    data.aliases = [...new Set(String(data._aliases_text || '').split(',').map(value => value.trim()).filter(Boolean))]
+    data.parameters = parseArray(data._parameters_text, '\u80fd\u529b\u53c2\u6570')
+    data.action_id = String(data.action_id || '').trim()
+    data.default_urgency = String(data.default_urgency || 'normal').trim()
+    data.target = {
+      kind: String(data.target?.kind || 'none').trim(),
+      mode: String(data.target?.mode || 'none').trim(),
+      allowed_ids: [...new Set(String(data._allowed_ids_text || '').split(',').map(value => value.trim()).filter(Boolean))],
+    }
+    data.input = {
+      content_required: Boolean(data.input?.content_required),
+      content_label: String(data.input?.content_label || '\u5185\u5bb9').trim(),
+      content_placeholder: String(data.input?.content_placeholder || '').trim(),
+    }
+    data.enabled = Boolean(data.enabled)
+    for (const field of ['_aliases_text', '_allowed_ids_text', '_parameters_text']) delete data[field]
+    const safeId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
+    if (!safeId.test(data.capability_id)) throw new Error('\u80fd\u529b ID \u5fc5\u987b\u662f 1-64 \u4f4d\u5b89\u5168\u6807\u8bc6\u7b26\uff0c\u4ec5\u4f7f\u7528\u5b57\u6bcd\u3001\u6570\u5b57\u3001. _ : -\u3002')
+    if (!data.display_name) throw new Error('\u663e\u793a\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002')
+    if (!['noop', 'message', 'broadcast', 'world_action', 'contract_action'].includes(data.handler)) throw new Error('\u8bf7\u9009\u62e9\u6846\u67b6\u652f\u6301\u7684 handler\u3002')
+    if (!data.audiences.length || data.audiences.some(value => !['player', 'agent', 'router'].includes(value))) throw new Error('\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u53ef\u7528\u5bf9\u8c61\u3002')
+    if (data.aliases.some(value => !safeId.test(value)) || data.aliases.includes(data.capability_id)) throw new Error('\u522b\u540d\u5fc5\u987b\u662f\u5b89\u5168\u6807\u8bc6\u7b26\uff0c\u4e14\u4e0d\u80fd\u4e0e\u80fd\u529b ID \u76f8\u540c\u3002')
+    if (!['none', 'agent', 'entity'].includes(data.target.kind) || !['none', 'optional', 'required', 'multiple'].includes(data.target.mode)) throw new Error('\u76ee\u6807\u7c7b\u578b\u6216\u9009\u62e9\u6a21\u5f0f\u65e0\u6548\u3002')
+    if ((data.target.kind === 'none') !== (data.target.mode === 'none')) throw new Error('\u65e0\u76ee\u6807\u7c7b\u578b\u5fc5\u987b\u642d\u914d none \u6a21\u5f0f\uff1bAgent/\u5b9e\u4f53\u76ee\u6807\u4e0d\u80fd\u4f7f\u7528 none \u6a21\u5f0f\u3002')
+    if (data.handler === 'noop' && (data.target.kind !== 'none' || data.input.content_required || data.parameters.length)) throw new Error('\u7a7a\u64cd\u4f5c\u80fd\u529b\u4e0d\u80fd\u8981\u6c42\u76ee\u6807\u3001\u5185\u5bb9\u6216\u53c2\u6570\u3002')
+    if (['message', 'broadcast'].includes(data.handler) && data.target.kind !== 'agent') throw new Error('\u6d88\u606f\u4e0e\u5e7f\u64ad\u80fd\u529b\u7684\u76ee\u6807\u7c7b\u578b\u5fc5\u987b\u662f Agent\u3002')
+    if (data.handler === 'contract_action' && !safeId.test(data.action_id)) throw new Error('\u5951\u7ea6 Action \u80fd\u529b\u5fc5\u987b\u9009\u62e9\u6709\u6548 Action ID\u3002')
+    if (data.handler !== 'contract_action') data.action_id = ''
+    if (!['normal', 'urgent', 'critical'].includes(data.default_urgency)) throw new Error('\u9ed8\u8ba4\u7d27\u6025\u5ea6\u65e0\u6548\u3002')
+    if (!data.input.content_label) throw new Error('\u5185\u5bb9\u5b57\u6bb5\u6807\u7b7e\u4e0d\u80fd\u4e3a\u7a7a\u3002')
+  }
   if (kind === 'time_rules') {
     data.action_types = [...new Set(String(data._action_types_text || '').split(',').map(value => value.trim()).filter(Boolean))]
     delete data._action_types_text
@@ -332,6 +384,7 @@ function listLabel(kind, item) {
   if (kind === 'causal_event_rules') return [item.rule_id || T.ruleId, `${(item.source_event_types || []).join(', ')} \u2192 ${item.child_event_type || ''}`]
   if (kind === 'time_rules') return [item.rule_id || T.ruleId, `${(item.action_types || []).join(', ')} \u00b7 p${item.priority || 0}`]
   if (kind === 'actions') return [item.display_name || item.action_id || '行动', item.action_id || '']
+  if (kind === 'capabilities') return [item.display_name || item.capability_id || '\u80fd\u529b', `${item.capability_id || ''} \u00b7 ${item.handler || 'noop'}`]
   if (kind === 'issue_types') return [item.display_name || item.issue_type_id || 'Issue 类型', `${item.issue_type_id || ''} · ${item.default_urgency || 'normal'}`]
   return [item.event_id || T.eventId, `${item.entity_id || ''} \u00b7 ${item.event_type || ''}`]
 }
@@ -348,6 +401,7 @@ function requiredKey(kind, form) {
   if (kind === 'causal_event_rules') return form.rule_id && form.child_event_type && String(form._source_types_text || '').trim()
   if (kind === 'time_rules') return form.rule_id && String(form._action_types_text || '').trim()
   if (kind === 'actions') return form.action_id && form.display_name
+  if (kind === 'capabilities') return form.capability_id && form.display_name && (form.audiences || []).length && (form.handler !== 'contract_action' || form.action_id)
   if (kind === 'issue_types') return form.issue_type_id && form.display_name
   return false
 }
@@ -575,6 +629,35 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   }, [content, form, kind])
 
   const set = (name, value) => setForm(current => ({ ...current, [name]: value }))
+  const setCapabilityHandler = handler => setForm(current => {
+    const next = { ...current, handler, action_id: handler === 'contract_action' ? current.action_id || '' : '' }
+    if (handler === 'noop') {
+      next.target = { kind: 'none', mode: 'none', allowed_ids: [] }
+      next.input = { ...(current.input || {}), content_required: false }
+      next.parameters = []
+      next._parameters_text = '[]'
+    } else if (handler === 'message' || handler === 'broadcast') {
+      const mode = current.target?.mode && current.target.mode !== 'none' ? current.target.mode : 'optional'
+      next.target = { ...(current.target || {}), kind: 'agent', mode }
+      next.input = { ...(current.input || {}), content_required: true }
+    } else if (current.target?.kind === 'none') {
+      next.target = { kind: 'none', mode: 'none', allowed_ids: [] }
+    }
+    return next
+  })
+  const setCapabilityTargetKind = targetKind => setForm(current => ({
+    ...current,
+    target: targetKind === 'none'
+      ? { kind: 'none', mode: 'none', allowed_ids: [] }
+      : { ...(current.target || {}), kind: targetKind, mode: current.target?.mode === 'none' ? 'optional' : current.target?.mode || 'optional' },
+    _allowed_ids_text: targetKind === 'none' ? '' : current._allowed_ids_text || '',
+  }))
+  const toggleCapabilityAudience = audience => setForm(current => {
+    const selected = new Set(current.audiences || [])
+    if (selected.has(audience)) selected.delete(audience)
+    else selected.add(audience)
+    return { ...current, audiences: [...selected] }
+  })
   const formForSerialization = () => {
     if (kind !== 'causal_event_rules' || !form._inherit_template_defaults) return form
     const expanded = expandCausalRuleDraft(content, form)
@@ -792,6 +875,21 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
         <label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}</label>
         {[['source', 'Source 约束（JSON object）'], ['match', '匹配规则（JSON object）'], ['evidence', '证据定义（JSON array）'], ['decision_requests', '决策请求（JSON array）'], ['metadata', 'Metadata（JSON object）']].map(([field, label]) => <label key={field}>{label}<textarea className="dlc-json-field" rows={field === 'decision_requests' ? 16 : 7} spellCheck="false" value={form[`_${field}_text`] || ''} onChange={event => set(`_${field}_text`, event.target.value)} /></label>)}
         <div className="dlc-editor-callout">一个 Case 可聚合多个 Issue；决策选项可引用行动 ID，并继承行动权限、成本、耗时与世界效果。</div>
+      </>}
+
+      {kind === 'capabilities' && <>
+        <div className="dlc-editor-callout">DLC \u80fd\u529b\u662f\u73a9\u5bb6\u3001Agent \u548c Router \u5171\u7528\u7684\u7a33\u5b9a\u64cd\u4f5c\u5165\u53e3\u3002\u53ea\u80fd\u9009\u62e9\u6846\u67b6\u9884\u7f6e handler\uff0c\u4e0d\u4f1a\u6ce8\u5165\u4efb\u610f Python/React \u51fd\u6570\u3002</div>
+        <div className="dlc-row"><label>\u80fd\u529b ID<input value={form.capability_id || ''} onChange={event => set('capability_id', event.target.value)} placeholder="frontier_report" /><small>\u53d1\u5e03\u540e\u4f5c\u4e3a API\u3001Agent \u5de5\u5177\u4e0e Router \u8def\u7531\u7684\u7a33\u5b9a\u6807\u8bc6\uff1b\u5efa\u8bae\u4e0d\u518d\u6539\u540d\u3002</small></label><label>\u663e\u793a\u540d\u79f0<input value={form.display_name || ''} onChange={event => set('display_name', event.target.value)} placeholder="\u4e0a\u62a5\u60c5\u51b5" /><small>\u5728\u73a9\u5bb6\u80fd\u529b\u9762\u677f\u548c\u8c03\u8bd5\u754c\u9762\u663e\u793a\u7684\u4e2d\u6587\u540d\u79f0\u3002</small></label></div>
+        <label>\u4e2d\u6587\u8bf4\u660e<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} placeholder="\u8bf4\u660e\u8c01\u53ef\u4ee5\u5728\u4ec0\u4e48\u573a\u666f\u4f7f\u7528\uff0c\u4f1a\u4ea7\u751f\u4ec0\u4e48\u6548\u679c\u3002" /><small>\u8fd9\u6bb5\u6587\u5b57\u4f1a\u8fdb\u5165\u73a9\u5bb6 UI \u4e0e Agent/Router \u5de5\u5177\u63cf\u8ff0\uff0c\u8bf7\u5199\u6e05\u8f93\u5165\u3001\u76ee\u6807\u548c\u7ea6\u675f\u3002</small></label>
+        <div className="dlc-row"><label>Handler<select value={form.handler || 'message'} onChange={event => setCapabilityHandler(event.target.value)}><option value="noop">\u7a7a\u64cd\u4f5c\uff08noop\uff09</option><option value="message">\u5355\u76ee\u6807\u6d88\u606f\uff08message\uff09</option><option value="broadcast">\u591a\u76ee\u6807\u5e7f\u64ad\uff08broadcast\uff09</option><option value="world_action">\u4e16\u754c\u884c\u52a8\uff08world_action\uff09</option><option value="contract_action">\u5951\u7ea6 Action\uff08contract_action\uff09</option></select><small>\u51b3\u5b9a\u6846\u67b6\u5982\u4f55\u6267\u884c\u8be5\u80fd\u529b\uff1bnoop \u4ec5\u8868\u793a\u7b49\u5f85\uff0ccontract_action \u4f1a\u59d4\u6258\u7ed9 Action Catalog\u3002</small></label><label>\u9ed8\u8ba4\u7d27\u6025\u5ea6<select value={form.default_urgency || 'normal'} onChange={event => set('default_urgency', event.target.value)}><option value="normal">\u666e\u901a</option><option value="urgent">\u7d27\u6025</option><option value="critical">\u5371\u6025</option></select><small>\u8c03\u7528\u65b9\u672a\u6307\u5b9a urgency \u65f6\u4f7f\u7528\u6b64\u503c\u3002</small></label></div>
+        <fieldset className="dlc-targets"><legend>\u53ef\u7528\u5bf9\u8c61 Audiences</legend>{[['player', '\u73a9\u5bb6'], ['agent', '\u666e\u901a Agent'], ['router', 'Router LLM']].map(([value, label]) => <label key={value}><input type="checkbox" checked={(form.audiences || []).includes(value)} onChange={() => toggleCapabilityAudience(value)} /><span>{label}</span><code>{value}</code></label>)}<small>player \u51b3\u5b9a\u662f\u5426\u51fa\u73b0\u5728\u73a9\u5bb6\u9762\u677f\uff1bagent/router \u51b3\u5b9a\u662f\u5426\u8fdb\u5165\u5bf9\u5e94 LLM \u7684\u52a8\u6001\u5de5\u5177\u3002</small></fieldset>
+        <label>\u522b\u540d Aliases<input value={form._aliases_text || ''} onChange={event => set('_aliases_text', event.target.value)} placeholder="report, send_report" /><small>\u9017\u53f7\u5206\u9694\uff0c\u7528\u4e8e\u517c\u5bb9\u65e7\u6307\u4ee4\u6216\u66f4\u53cb\u597d\u7684\u81ea\u7136\u8bed\u8a00\u6807\u8bc6\uff1b\u5168\u5c40\u4e0d\u5f97\u4e0e\u5176\u4ed6 ID/\u522b\u540d\u51b2\u7a81\u3002</small></label>
+        <div className="dlc-row"><label>\u76ee\u6807\u7c7b\u578b<select value={form.target?.kind || 'none'} disabled={form.handler === 'noop' || ['message', 'broadcast'].includes(form.handler)} onChange={event => setCapabilityTargetKind(event.target.value)}><option value="none">\u65e0\u76ee\u6807</option><option value="agent">Agent</option><option value="entity">\u5b9e\u4f53</option></select><small>message/broadcast \u56fa\u5b9a\u4e3a Agent\uff1bnoop \u56fa\u5b9a\u4e3a\u65e0\u76ee\u6807\u3002</small></label><label>\u76ee\u6807\u9009\u62e9\u6a21\u5f0f<select value={form.target?.mode || 'none'} disabled={form.target?.kind === 'none'} onChange={event => setForm(current => ({ ...current, target: { ...(current.target || {}), mode: event.target.value } }))}><option value="none">\u4e0d\u63a5\u53d7\u76ee\u6807</option><option value="optional">\u53ef\u9009\u5355\u76ee\u6807</option><option value="required">\u5fc5\u586b\u5355\u76ee\u6807</option><option value="multiple">\u5fc5\u586b\u591a\u76ee\u6807</option></select><small>multiple \u8981\u6c42\u81f3\u5c11\u4e00\u4e2a\u76ee\u6807\uff1boptional/required \u6700\u591a\u4e00\u4e2a\u3002</small></label></div>
+        <label>\u5141\u8bb8\u7684\u76ee\u6807 ID<input value={form._allowed_ids_text || ''} disabled={form.target?.kind === 'none'} onChange={event => set('_allowed_ids_text', event.target.value)} placeholder="guard, station" /><small>\u9017\u53f7\u5206\u9694\u3002\u7559\u7a7a\u8868\u793a\u4e0d\u5728 DLC \u5b9a\u4e49\u5c42\u9650\u5b9a\uff1b\u586b\u5199\u540e Registry \u4f1a\u6821\u9a8c ID \u5b58\u5728\u4e14\u8c03\u7528\u4e0d\u80fd\u8d8a\u754c\u3002</small></label>
+        {form.handler === 'contract_action' && <label>\u7ed1\u5b9a Action ID<select value={form.action_id || ''} onChange={event => set('action_id', event.target.value)}><option value="">-- \u8bf7\u9009\u62e9 --</option>{(content.actions || []).map(action => <option key={action.action_id} value={action.action_id}>{action.display_name || action.action_id} ({action.action_id})</option>)}</select><small>\u5fc5\u987b\u5f15\u7528\u5f53\u524d Generation \u4e2d\u5b58\u5728\u7684 DLC Action\uff0c\u6267\u884c\u65f6\u590d\u7528\u6743\u9650\u3001\u6210\u672c\u3001\u8017\u65f6\u548c\u51b7\u5374\u5951\u7ea6\u3002</small></label>}
+        <label>\u80fd\u529b\u53c2\u6570\uff08JSON \u6570\u7ec4\uff09<textarea className="dlc-json-field" rows="10" spellCheck="false" value={form._parameters_text || ''} disabled={form.handler === 'noop'} onChange={event => set('_parameters_text', event.target.value)} /><small>\u6bcf\u9879\u652f\u6301 name\u3001type(string/integer/number/boolean)\u3001display_name\u3001description\u3001required\u3001default\u3001minimum\u3001maximum\u3001options\u3002contract_action \u8fd8\u53ef\u900f\u4f20 Action \u53c2\u6570\u3002</small></label>
+        <div className="dlc-row"><label className="dlc-checkbox"><input type="checkbox" checked={Boolean(form.input?.content_required)} disabled={form.handler === 'noop'} onChange={event => setForm(current => ({ ...current, input: { ...(current.input || {}), content_required: event.target.checked } }))} />\u5185\u5bb9\u5fc5\u586b<small>\u5f00\u542f\u540e\uff0cAPI \u4e0e Agent \u8c03\u7528\u5fc5\u987b\u63d0\u4f9b\u975e\u7a7a content\u3002</small></label><label className="dlc-checkbox"><input type="checkbox" checked={form.enabled !== false} onChange={event => set('enabled', event.target.checked)} />{T.enabled}<small>\u505c\u7528\u540e\u4fdd\u7559\u5b9a\u4e49\uff0c\u4f46\u4e0d\u4f1a\u66b4\u9732\u7ed9\u73a9\u5bb6\u6216 LLM\u3002</small></label></div>
+        <div className="dlc-row"><label>\u5185\u5bb9\u5b57\u6bb5\u6807\u7b7e<input value={form.input?.content_label || ''} onChange={event => setForm(current => ({ ...current, input: { ...(current.input || {}), content_label: event.target.value } }))} placeholder="\u547d\u4ee4\u5185\u5bb9" /><small>\u73a9\u5bb6\u9762\u677f\u7684\u8f93\u5165\u6846\u6807\u9898\u3002</small></label><label>\u5185\u5bb9\u5360\u4f4d\u63d0\u793a<input value={form.input?.content_placeholder || ''} onChange={event => setForm(current => ({ ...current, input: { ...(current.input || {}), content_placeholder: event.target.value } }))} placeholder="\u8bf7\u8f93\u5165\u8be6\u7ec6\u547d\u4ee4..." /><small>\u7528\u6765\u5f15\u5bfc\u73a9\u5bb6\u6216\u7f16\u8f91\u8005\u5199\u51fa\u6709\u6548\u8f93\u5165\u3002</small></label></div>
       </>}
 
       {kind === 'actions' && <>

@@ -88,6 +88,7 @@ class RouterCommandType(str, Enum):
     EXECUTE_POLICY = "execute_policy"
     RELAY_DECREE = "relay_decree"
     BROADCAST = "broadcast"
+    INVOKE_CAPABILITY = "invoke_capability"
     NO_OP = "no_op"
 
 

@@ -456,50 +456,50 @@
     }
   ],
   "ui_manifest": {
-    "title": "??????",
-    "subtitle": "??????????????",
+    "title": "边境哨站指挥台",
+    "subtitle": "守住道路、调度巡逻并处理边境态势",
     "brand": {
-      "short_mark": "?"
+      "short_mark": "境"
     },
     "terminology": {
-      "player": "???",
-      "issue": "????",
-      "issue_plural": "???????",
-      "case": "????",
-      "decision": "????",
-      "evidence": "????",
-      "source": "????",
-      "deadline": "????",
-      "message": "??",
-      "in_transit": "????",
-      "world": "????",
-      "entity": "??",
-      "entities": "??",
-      "relations": "????",
-      "objective": "????",
-      "objectives": "????",
-      "dashboard": "???",
-      "debug": "????",
-      "status": "??",
-      "content": "??",
-      "urgency": "?????",
-      "created_at": "????",
-      "issue_type": "????",
-      "inventory": "????",
-      "metrics": "????",
-      "parameters": "????",
-      "ongoing_events": "????",
-      "location": "????",
-      "search": "????",
-      "publish_message": "????"
+      "player": "边境指挥官",
+      "issue": "边境事项",
+      "issue_plural": "边境事项列表",
+      "case": "处置档案",
+      "decision": "处置决定",
+      "evidence": "态势证据",
+      "source": "报告来源",
+      "deadline": "处置期限",
+      "message": "边境消息",
+      "in_transit": "传递途中",
+      "world": "边境世界",
+      "entity": "实体",
+      "entities": "实体列表",
+      "relations": "关系网络",
+      "objective": "战略目标",
+      "objectives": "战略目标列表",
+      "dashboard": "指挥台",
+      "debug": "运行诊断",
+      "status": "当前状态",
+      "content": "详细内容",
+      "urgency": "紧急程度",
+      "created_at": "创建时间",
+      "issue_type": "事项类型",
+      "inventory": "库存与价值",
+      "metrics": "状态指标",
+      "parameters": "行动参数",
+      "ongoing_events": "进行中事件",
+      "location": "所在地点",
+      "search": "搜索边境信息",
+      "publish_message": "发布边境消息"
     },
     "navigation": [
       {
         "nav_id": "frontier_dashboard",
         "surface": "main",
         "view": "dashboard",
-        "label": "???",
-        "icon": "?",
+        "label": "指挥台",
+        "icon": "⌂",
         "order": 0,
         "visible": true
       },
@@ -507,8 +507,8 @@
         "nav_id": "frontier_world",
         "surface": "main",
         "view": "world",
-        "label": "????",
-        "icon": "?",
+        "label": "边境世界",
+        "icon": "◎",
         "order": 10,
         "visible": true
       },
@@ -516,8 +516,8 @@
         "nav_id": "frontier_relations",
         "surface": "main",
         "view": "relations",
-        "label": "????",
-        "icon": "?",
+        "label": "关系网络",
+        "icon": "◇",
         "order": 20,
         "visible": true
       },
@@ -525,8 +525,8 @@
         "nav_id": "frontier_debug",
         "surface": "main",
         "view": "debug",
-        "label": "????",
-        "icon": "?",
+        "label": "运行诊断",
+        "icon": "⚙",
         "order": 30,
         "visible": true
       },
@@ -534,8 +534,8 @@
         "nav_id": "frontier_gameplay",
         "surface": "shell",
         "view": "gameplay",
-        "label": "????",
-        "icon": "?",
+        "label": "进入模拟",
+        "icon": "▶",
         "order": 0,
         "visible": true
       },
@@ -543,8 +543,8 @@
         "nav_id": "frontier_editor",
         "surface": "shell",
         "view": "editor",
-        "label": "????",
-        "icon": "?",
+        "label": "世界编辑器",
+        "icon": "✎",
         "order": 10,
         "visible": true
       },
@@ -552,8 +552,8 @@
         "nav_id": "frontier_dlc",
         "surface": "shell",
         "view": "dlc_studio",
-        "label": "DLC ??",
-        "icon": "?",
+        "label": "DLC 工作室",
+        "icon": "▦",
         "order": 20,
         "visible": true
       },
@@ -561,8 +561,8 @@
         "nav_id": "frontier_assistant",
         "surface": "shell",
         "view": "assistant",
-        "label": "????",
-        "icon": "?",
+        "label": "天机助手",
+        "icon": "✦",
         "order": 30,
         "visible": true
       }
@@ -643,5 +643,170 @@
         "metrics"
       ]
     }
-  }
+  },
+  "capabilities": [
+    {
+      "capability_id": "frontier_wait",
+      "display_name": "等待并观察",
+      "description": "结束当前意图而不修改世界状态，适合暂无可靠行动时保持观察。",
+      "handler": "noop",
+      "audiences": [
+        "player",
+        "agent",
+        "router"
+      ],
+      "aliases": [
+        "wait_frontier"
+      ],
+      "target": {
+        "kind": "none",
+        "mode": "none",
+        "allowed_ids": []
+      },
+      "parameters": [],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": false,
+        "content_label": "观察备注",
+        "content_placeholder": "可选：记录本轮暂不行动的原因。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "frontier_report",
+      "display_name": "发送边境报告",
+      "description": "玩家向守备官发送一条经过目标校验的单点报告。",
+      "handler": "message",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "report_frontier"
+      ],
+      "target": {
+        "kind": "agent",
+        "mode": "required",
+        "allowed_ids": [
+          "哨站守备官"
+        ]
+      },
+      "parameters": [],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": true,
+        "content_label": "报告内容",
+        "content_placeholder": "说明需要守备官关注的边境情况。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "frontier_command",
+      "display_name": "广播边境命令",
+      "description": "向一个或多个已注册守备 Agent 广播命令；示例包当前仅开放守备官。",
+      "handler": "broadcast",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "command_frontier"
+      ],
+      "target": {
+        "kind": "agent",
+        "mode": "multiple",
+        "allowed_ids": [
+          "哨站守备官"
+        ]
+      },
+      "parameters": [],
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": true,
+        "content_label": "命令内容",
+        "content_placeholder": "输入需要立即传达的边境命令。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "frontier_operation",
+      "display_name": "执行边境行动",
+      "description": "由当前 Agent 或玩家指定边境哨站，交给世界行动执行链处理。",
+      "handler": "world_action",
+      "audiences": [
+        "player",
+        "agent",
+        "router"
+      ],
+      "aliases": [
+        "operate_frontier"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "边境哨站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "operation_type",
+          "type": "string",
+          "display_name": "行动类型",
+          "description": "用于审计和提示世界模拟器的行动分类。",
+          "required": false,
+          "default": "inspection",
+          "options": [
+            "inspection",
+            "repair",
+            "supply"
+          ]
+        }
+      ],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": true,
+        "content_label": "行动说明",
+        "content_placeholder": "详细描述要在边境哨站执行的行动。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "launch_frontier_patrol",
+      "display_name": "发起边境巡逻",
+      "description": "调用 frontier_patrol 契约 Action，统一执行权限、价值锚成本、冷却、结果和事件。",
+      "handler": "contract_action",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "patrol_frontier"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "边境哨站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "alert_gain",
+          "type": "number",
+          "display_name": "警戒提升",
+          "description": "巡逻完成后计划提升的警戒度，范围 1 到 20。",
+          "required": false,
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20
+        }
+      ],
+      "action_id": "frontier_patrol",
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": false,
+        "content_label": "巡逻备注",
+        "content_placeholder": "可选：补充本次巡逻重点。"
+      },
+      "enabled": true
+    }
+  ]
 }

@@ -66,6 +66,7 @@ class DLCLoadReport:
     causal_event_rules: int = 0
     time_rules: int = 0
     actions: int = 0
+    capabilities: int = 0
     issue_types: int = 0
     objectives: int = 0
     endings: int = 0
@@ -93,6 +94,7 @@ class DLCReloadPlan:
     runtime_model_profiles: dict[str, str] = field(default_factory=dict)
     gameplay_changed: bool = False
     ui_manifest_changed: bool = False
+    capabilities_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -128,6 +130,7 @@ class _DLCMaterializedSnapshot:
     causal_event_rules: list[dict[str, Any]]
     time_rules: list[dict[str, Any]]
     action_definitions: list[dict[str, Any]]
+    capability_definitions: list[dict[str, Any]]
     issue_definitions: list[dict[str, Any]]
     objective_definitions: list[dict[str, Any]]
     ending_definitions: list[dict[str, Any]]
@@ -540,6 +543,7 @@ class DLCBundleLoader:
             causal_event_rules=len(content["causal_event_rules"]),
             time_rules=len(content["time_rules"]),
             actions=len(content["actions"]),
+            capabilities=len(content["capabilities"]),
             issue_types=len(content["issue_types"]),
             objectives=len(content["objectives"]),
             endings=len(content["endings"]),
@@ -576,6 +580,8 @@ class DLCBundleLoader:
         time_rules: list[dict[str, Any]] = []
         action_definitions: list[dict[str, Any]] = []
         action_ids: set[str] = set()
+        capability_definitions: list[dict[str, Any]] = []
+        capability_ids: set[str] = set()
         issue_definitions: list[dict[str, Any]] = []
         issue_type_ids: set[str] = set()
         objective_definitions: list[dict[str, Any]] = []
@@ -726,6 +732,17 @@ class DLCBundleLoader:
                     raise DLCRegistryError(f"Duplicate active action id: {action_id}")
                 action_ids.add(action_id)
                 action_definitions.append(copy.deepcopy(action))
+            for capability in content["capabilities"]:
+                capability_id = str(capability.get("capability_id", ""))
+                aliases = [str(item) for item in capability.get("aliases", [])]
+                identifiers = [capability_id, *aliases]
+                duplicate = next((item for item in identifiers if item in capability_ids), "")
+                if duplicate:
+                    raise DLCRegistryError(
+                        f"Duplicate active capability id/alias: {duplicate}"
+                    )
+                capability_ids.update(identifiers)
+                capability_definitions.append(copy.deepcopy(capability))
             for issue_definition in content["issue_types"]:
                 issue_type_id = str(issue_definition.get("issue_type_id", ""))
                 if issue_type_id in issue_type_ids:
@@ -767,6 +784,7 @@ class DLCBundleLoader:
             causal_event_rules=causal_event_rules,
             time_rules=time_rules,
             action_definitions=action_definitions,
+            capability_definitions=capability_definitions,
             issue_definitions=issue_definitions,
             objective_definitions=objective_definitions,
             ending_definitions=ending_definitions,
@@ -844,6 +862,10 @@ class DLCBundleLoader:
                 current is None
                 or current.ui_manifest.to_dict() != candidate.ui_manifest.to_dict()
             ),
+            capabilities_changed=(
+                current is None
+                or current.capability_definitions != candidate.capability_definitions
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -855,6 +877,7 @@ class DLCBundleLoader:
                 "causal_event_rules": len(candidate.causal_event_rules),
                 "time_rules": len(candidate.time_rules),
                 "actions": len(candidate.action_definitions),
+                "capabilities": len(candidate.capability_definitions),
                 "issue_types": len(candidate.issue_definitions),
                 "objectives": len(candidate.objective_definitions),
                 "endings": len(candidate.ending_definitions),
@@ -904,6 +927,7 @@ class DLCBundleLoader:
             "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
             "time_rules": copy.deepcopy(snapshot.time_rules),
             "action_definitions": copy.deepcopy(snapshot.action_definitions),
+            "capability_definitions": copy.deepcopy(snapshot.capability_definitions),
             "issue_definitions": copy.deepcopy(snapshot.issue_definitions),
             "objective_definitions": copy.deepcopy(snapshot.objective_definitions),
             "ending_definitions": copy.deepcopy(snapshot.ending_definitions),
@@ -1099,6 +1123,7 @@ class DLCBundleLoader:
             ],
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
             action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
+            capability_definitions=[dict(item) for item in blueprint.get("capability_definitions", [])],
             issue_definitions=[dict(item) for item in blueprint.get("issue_definitions", [])],
             objective_definitions=[dict(item) for item in blueprint.get("objective_definitions", [])],
             ending_definitions=[dict(item) for item in blueprint.get("ending_definitions", [])],
@@ -1182,6 +1207,7 @@ class DLCBundleLoader:
             causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
             time_rules=copy.deepcopy(snapshot.time_rules),
             action_definitions=copy.deepcopy(snapshot.action_definitions),
+            capability_definitions=copy.deepcopy(snapshot.capability_definitions),
             issue_definitions=copy.deepcopy(snapshot.issue_definitions),
             objective_definitions=copy.deepcopy(snapshot.objective_definitions),
             ending_definitions=copy.deepcopy(snapshot.ending_definitions),
@@ -1511,6 +1537,10 @@ class DLCBundleLoader:
                         candidate.action_definitions, generation=target_generation,
                         gameplay=candidate.gameplay_contract,
                     )
+                if hasattr(self.orchestrator, "configure_capability_catalog"):
+                    self.orchestrator.configure_capability_catalog(
+                        candidate.capability_definitions, generation=target_generation
+                    )
                 if hasattr(self.orchestrator, "configure_issue_catalog"):
                     self.orchestrator.configure_issue_catalog(
                         candidate.issue_definitions, generation=target_generation,
@@ -1675,6 +1705,11 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "actions_public_state")
                 else {"configured": bool(snapshot and snapshot.action_definitions), "generation": self.generation, "actions": copy.deepcopy(snapshot.action_definitions) if snapshot else []}
             ),
+            "capabilities": (
+                self.orchestrator.capabilities_public_state()
+                if hasattr(self.orchestrator, "capabilities_public_state")
+                else {"configured": bool(snapshot and snapshot.capability_definitions), "generation": self.generation, "capabilities": copy.deepcopy(snapshot.capability_definitions) if snapshot else []}
+            ),
             "issues": (
                 self.orchestrator.issues_public_state()
                 if hasattr(self.orchestrator, "issues_public_state")
@@ -1754,6 +1789,10 @@ class DLCBundleLoader:
             self.orchestrator.configure_action_catalog(
                 candidate.action_definitions, generation=self.generation,
                 gameplay=candidate.gameplay_contract,
+            )
+        if hasattr(self.orchestrator, "configure_capability_catalog"):
+            self.orchestrator.configure_capability_catalog(
+                candidate.capability_definitions, generation=self.generation
             )
         if hasattr(self.orchestrator, "configure_issue_catalog"):
             self.orchestrator.configure_issue_catalog(
