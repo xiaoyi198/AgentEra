@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 
 import pytest
 
 from multiagent_framework.causal_events import (
+    CausalCondition,
+    CausalConditionContext,
     CausalEventEngine,
     CausalEventError,
     CausalEventRule,
+    compare_condition_value,
+    resolve_condition_value,
 )
 from multiagent_framework.event_generator import GAME_SECONDS_PER_DAY
 from multiagent_framework.types import EventObject
@@ -267,3 +272,188 @@ def test_invalid_source_event_fails_closed_without_partial_schedule(event):
     engine = CausalEventEngine([rule()])
     assert engine.observe(event, sim_time=0) == 0
     assert engine.public_status()["pending_count"] == 0
+
+
+class GenericWorld(FakeWorld):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entities = {
+            "city": {
+                "id": "city", "type": "settlement", "name": "Harbor",
+                "current_status": "alert", "metadata": {"tags": ["coastal", "trade"], "tier": "capital"},
+            },
+            "fort": {
+                "id": "fort", "type": "settlement", "name": "North Fort",
+                "current_status": "ready", "metadata": {"tags": ["military"]},
+            },
+        }
+        self.inventory["fort"] = [Inventory("grain", 2, 25)]
+        self.values["fort"] = [Value("morale", "metric", 60)]
+        self.relations = [{
+            "parent_id": "city", "child_id": "fort", "rel_type": "allied",
+            "strength": 72.0, "visibility": "public", "active": True,
+            "values": {"trust": 0.8}, "metadata": {},
+        }]
+        self.ongoing = [{
+            "event_id": "ongoing-1", "entity_id": "city", "event_type": "construction",
+            "start_time": 0.0, "end_time": 3 * GAME_SECONDS_PER_DAY,
+        }]
+
+        class Definition:
+            direction = "undirected"
+
+        class Catalog:
+            @staticmethod
+            def get(rel_type):
+                return Definition() if rel_type == "allied" else None
+
+        self.relationship_catalog = Catalog()
+
+    def get_entity(self, entity_id):
+        return self.entities.get(entity_id)
+
+    def get_all_entities(self):
+        return list(self.entities.values())
+
+    def get_all_relations(self, *, sim_time=0.0):
+        return list(self.relations)
+
+    def list_ongoing_events(self, entity_id=None):
+        return [item for item in self.ongoing if entity_id is None or item["entity_id"] == entity_id]
+
+
+class GenericActors:
+    actors = {
+        "mayor": {
+            "actor_id": "mayor", "actor_type": "person",
+            "traits": [{"trait_id": "careful"}],
+            "memberships": [{"organization_id": "council", "role": "leader", "status": "active", "rank": 2}],
+            "runtime": {"attributes": {"influence": 75.0}, "states": {"mood": "focused"}},
+        },
+        "captain": {
+            "actor_id": "captain", "actor_type": "person", "traits": [], "memberships": [],
+            "runtime": {"attributes": {"influence": 25.0}, "states": {"mood": "alert"}},
+        },
+    }
+
+    def get(self, actor_id):
+        return self.actors.get(actor_id)
+
+    def list(self):
+        return list(self.actors.values())
+
+
+class GenericObjectives:
+    def public_state(self, **_kwargs):
+        return {"objectives": [{"objective_id": "secure_frontier", "status": "active", "progress": 0.75}]}
+
+
+def test_generic_condition_context_resolves_world_actor_relationship_time_objective_and_aggregates():
+    world = GenericWorld()
+    context = CausalConditionContext(
+        world_state=world,
+        actor_manager=GenericActors(),
+        objective_manager=GenericObjectives(),
+        sim_time=2 * GAME_SECONDS_PER_DAY,
+    )
+    conditions = [
+        {"kind": "entity_field", "entity_id": "city", "field": "metadata.tier", "operator": "eq", "value": "capital"},
+        {"kind": "entity_tag", "entity_id": "city", "name": "coastal", "operator": "eq", "value": True},
+        {"kind": "entity_state", "entity_id": "city", "operator": "in", "value": ["alert", "ready"]},
+        {"kind": "actor_attribute", "entity_id": "mayor", "name": "influence", "operator": "gte", "value": 70},
+        {"kind": "actor_state", "entity_id": "mayor", "name": "mood", "operator": "eq", "value": "focused"},
+        {"kind": "actor_trait", "entity_id": "mayor", "name": "careful", "operator": "eq", "value": True},
+        {"kind": "actor_membership", "entity_id": "mayor", "name": "council", "field": "role", "operator": "eq", "value": "leader"},
+        {"kind": "relationship", "entity_id": "fort", "target_entity_id": "city", "name": "allied", "field": "strength", "operator": "gte", "value": 70},
+        {"kind": "relationship", "entity_id": "city", "target_entity_id": "fort", "name": "allied", "field": "values.trust", "operator": "gt", "value": 0.5},
+        {"kind": "ongoing_event", "entity_id": "city", "name": "construction", "operator": "gte", "value": 1},
+        {"kind": "time", "name": "sim_day", "operator": "eq", "value": 2},
+        {"kind": "objective_progress", "entity_id": "secure_frontier", "field": "progress", "operator": "gte", "value": 0.7},
+        {"kind": "aggregate_metric", "field": "metric", "name": "morale", "aggregate": "avg", "operator": "eq", "value": 50},
+        {"kind": "aggregate_metric", "field": "anchored_inventory", "name": "grain", "aggregate": "sum", "operator": "eq", "value": 150},
+        {"kind": "aggregate_metric", "field": "entity_count", "aggregate": "count", "filters": {"entity_type": "settlement"}, "operator": "eq", "value": 2},
+        {"kind": "aggregate_metric", "field": "actor_attribute", "name": "influence", "aggregate": "avg", "operator": "eq", "value": 50},
+    ]
+    parsed = [CausalCondition.from_mapping(item) for item in conditions]
+    assert all(compare_condition_value(resolve_condition_value(item, context), item.operator, item.value) for item in parsed)
+
+    engine = CausalEventEngine([rule(conditions=conditions)])
+    assert engine.observe(source(), sim_time=context.sim_time, condition_context=context) == 1
+
+
+def test_event_history_counts_current_event_and_survives_restart_without_payload_storage():
+    current_rule = rule(conditions=[{
+        "kind": "event_history", "name": "drought", "field": "count",
+        "operator": "gte", "value": 1, "window_days": 7,
+    }])
+    engine = CausalEventEngine([current_rule])
+    event = source(payload={"secret": "must-not-enter-history"})
+    assert engine.observe(event, sim_time=GAME_SECONDS_PER_DAY) == 1
+    snapshot = engine.snapshot()
+    assert snapshot["schema_version"] == "2.0"
+    assert snapshot["event_history"] == [{
+        "event_id": "evt-1", "event_type": "drought",
+        "generated_at": 10.0, "target_agents": ["mayor"],
+    }]
+    assert "secret" not in str(snapshot["event_history"])
+
+    restored = CausalEventEngine([rule(source_event_types=["rain"], conditions=[{
+        "kind": "event_history", "name": "drought", "operator": "gte", "value": 1,
+        "window_days": 7,
+    }])])
+    restored.restore(snapshot, sim_time=2 * GAME_SECONDS_PER_DAY)
+    assert restored.observe(source("evt-rain", event_type="rain"), sim_time=2 * GAME_SECONDS_PER_DAY) == 1
+
+
+def test_player_knowledge_fails_closed_without_provider_and_uses_only_provider_value():
+    condition = {
+        "kind": "player_knowledge", "entity_id": "city", "name": "hidden_route",
+        "operator": "eq", "value": "known",
+    }
+    without_provider = CausalEventEngine([rule(conditions=[condition])])
+    assert without_provider.observe(source(), sim_time=0, world_state=GenericWorld()) == 0
+
+    class Knowledge:
+        @staticmethod
+        def resolve_condition(_condition, _context):
+            return "known"
+
+    context = CausalConditionContext(world_state=GenericWorld(), knowledge_provider=Knowledge())
+    with_provider = CausalEventEngine([rule(conditions=[condition])])
+    assert with_provider.observe(source("evt-known"), sim_time=0, condition_context=context) == 1
+
+
+def test_generic_comparison_operators_and_missing_semantics_are_stable():
+    assert compare_condition_value(["a", "b"], "contains", "a") is True
+    assert compare_condition_value("a", "in", ("a", "b")) is True
+    assert compare_condition_value("a", "not_in", ("b", "c")) is True
+    assert compare_condition_value(True, "ne", False) is True
+    missing = CausalCondition.from_mapping({
+        "kind": "entity_field", "entity_id": "missing", "field": "name", "operator": "not_exists",
+    })
+    context = CausalConditionContext(world_state=GenericWorld())
+    assert compare_condition_value(resolve_condition_value(missing, context), missing.operator, missing.value) is True
+
+
+
+def test_condition_sequence_values_have_stable_json_round_trip_and_rule_fingerprint():
+    raw = {
+        "rule_id": "sequence_condition",
+        "source_event_types": ["seed"],
+        "child_event_type": "follow_up",
+        "conditions": [{
+            "kind": "entity_state",
+            "entity_id": "city",
+            "operator": "in",
+            "value": ["alert", "ready"],
+            "filters": {"allowed_states": ["alert", "ready"]},
+        }],
+    }
+
+    first = CausalEventRule.from_mapping(raw)
+    encoded = json.dumps(asdict(first), ensure_ascii=False, sort_keys=True)
+    second = CausalEventRule.from_mapping(json.loads(encoded))
+
+    assert first.conditions[0].value == ("alert", "ready")
+    assert second.conditions[0].filters["allowed_states"] == ("alert", "ready")
+    assert first.fingerprint() == second.fingerprint()

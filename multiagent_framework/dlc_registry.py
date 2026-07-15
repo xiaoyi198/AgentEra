@@ -22,7 +22,7 @@ from .causal_templates import CausalTemplateError, expand_causal_rule_document
 from .time_simulator import ActionTimeRule, TimeRuleError
 from .world_state import RESOURCE_TOKENS
 from .relationship_contract import (
-    normalize_relationship_type_document, validate_relationship_definitions,
+    RelationshipCatalog, validate_relationship_definitions,
 )
 from .gameplay_contract import GameplayContract, normalize_gameplay_document, validate_gameplay_document
 from .action_contract import normalize_action_document, validate_action_definitions
@@ -669,6 +669,10 @@ class DLCRegistry:
 
         entity_ids = {str(item.get("id", "")) for item in entities if item.get("id")}
         agent_ids = {str(item.get("id", "")) for item in agents if item.get("id")}
+        actor_ids = {str(item.get("actor_id", item.get("id", ""))) for item in actors if item.get("actor_id", item.get("id"))}
+        actor_map = {str(item.get("actor_id", item.get("id", ""))): item for item in actors if item.get("actor_id", item.get("id"))}
+        objective_ids = {str(item.get("objective_id", "")) for item in content["objectives"] if item.get("objective_id")}
+        relationship_type_ids = RelationshipCatalog(content["relationship_types"]).ids
         resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
         for gameplay_issue in validate_gameplay_document(
             content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
@@ -843,15 +847,59 @@ class DLCRegistry:
                     add("causal_event.missing_agent", f"Unknown target agent: {target}", f"{path}.target_agents")
             for condition_index, condition in enumerate(rule.conditions):
                 condition_path = f"{path}.conditions[{condition_index}]"
-                if condition.entity_id not in entity_ids:
+                entity_kinds = {
+                    "anchored_inventory", "metric", "parameter",
+                    "entity_field", "entity_tag", "entity_state",
+                }
+                if condition.kind in entity_kinds and condition.entity_id not in entity_ids:
                     add("causal_event.missing_entity", f"Unknown entity: {condition.entity_id}", f"{condition_path}.entity_id")
-                resource = resource_map.get(condition.name)
-                if resource is None:
-                    add("causal_event.missing_resource", f"Unknown resource: {condition.name}", f"{condition_path}.name")
-                elif condition.kind == "anchored_inventory" and resource.get("kind") != "asset":
-                    add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
-                elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
-                    add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+                if condition.kind in {"ongoing_event", "player_knowledge"} and condition.entity_id and condition.entity_id not in entity_ids:
+                    add("causal_event.missing_entity", f"Unknown entity: {condition.entity_id}", f"{condition_path}.entity_id")
+                if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                    resource = resource_map.get(condition.name)
+                    if resource is None:
+                        add("causal_event.missing_resource", f"Unknown resource: {condition.name}", f"{condition_path}.name")
+                    elif condition.kind == "anchored_inventory" and resource.get("kind") != "asset":
+                        add("causal_event.invalid_resource_kind", "anchored_inventory condition requires an asset", f"{condition_path}.kind")
+                    elif condition.kind in {"metric", "parameter"} and resource.get("kind") != condition.kind:
+                        add("causal_event.invalid_resource_kind", f"Condition requires resource kind {condition.kind}", f"{condition_path}.kind")
+                if condition.kind.startswith("actor_"):
+                    if condition.entity_id not in actor_ids:
+                        add("causal_event.missing_actor", f"Unknown actor: {condition.entity_id}", f"{condition_path}.entity_id")
+                    else:
+                        actor = actor_map[condition.entity_id]
+                        runtime_refs = {
+                            "actor_attribute": set(actor.get("attributes", {})),
+                            "actor_state": set(actor.get("states", {})),
+                            "actor_trait": {str(item.get("trait_id", "")) for item in actor.get("traits", [])},
+                            "actor_membership": {str(item.get("organization_id", "")) for item in actor.get("memberships", [])},
+                        }
+                        if condition.name not in runtime_refs[condition.kind]:
+                            add("causal_event.missing_actor_component", f"Unknown actor component: {condition.name}", f"{condition_path}.name")
+                if condition.kind == "relationship":
+                    for field_name, entity_id in (("entity_id", condition.entity_id), ("target_entity_id", condition.target_entity_id)):
+                        if entity_id not in entity_ids:
+                            add("causal_event.missing_entity", f"Unknown relationship endpoint: {entity_id}", f"{condition_path}.{field_name}")
+                    if condition.name not in relationship_type_ids:
+                        add("causal_event.missing_relationship_type", f"Unknown relationship type: {condition.name}", f"{condition_path}.name")
+                if condition.kind == "objective_progress":
+                    objective_id = condition.entity_id or condition.name
+                    if objective_id not in objective_ids:
+                        add("causal_event.missing_objective", f"Unknown objective: {objective_id}", f"{condition_path}.entity_id")
+                if condition.kind == "aggregate_metric":
+                    if condition.entity_id and condition.entity_id not in entity_ids and condition.field != "actor_attribute":
+                        add("causal_event.missing_entity", f"Unknown aggregate entity: {condition.entity_id}", f"{condition_path}.entity_id")
+                    if condition.field == "actor_attribute" and condition.entity_id and condition.entity_id not in actor_ids:
+                        add("causal_event.missing_actor", f"Unknown aggregate actor: {condition.entity_id}", f"{condition_path}.entity_id")
+                    if condition.field in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(condition.name)
+                        expected_kind = "asset" if condition.field == "anchored_inventory" else condition.field
+                        if resource is None:
+                            add("causal_event.missing_resource", f"Unknown aggregate resource: {condition.name}", f"{condition_path}.name")
+                        elif resource.get("kind") != expected_kind:
+                            add("causal_event.invalid_resource_kind", f"Aggregate requires resource kind {expected_kind}", f"{condition_path}.field")
+                    if condition.field == "relation" and condition.name and condition.name not in relationship_type_ids:
+                        add("causal_event.missing_relationship_type", f"Unknown aggregate relationship type: {condition.name}", f"{condition_path}.name")
             for effect_index, effect in enumerate(rule.world_effects):
                 effect_path = f"{path}.world_effects[{effect_index}]"
                 effect_type = str(effect.get("effect_type", ""))

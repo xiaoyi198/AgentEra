@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.27.0**
+> 当前版本：**v0.28.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -21,7 +21,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
 - **DLC 通用行动契约**：DLC 可声明参数、目标、控制权限、前置条件、锚定成本、权威耗时、冷却和组合结果；预览无副作用，执行采用原子世界命令与 invocation 幂等回放。
 - **Generation 能力注册表**：玩家、普通 Agent 与 Router 共用 DLC `capability_id`；框架以稳定工具解释执行 `noop`、`message`、`world_action`、`contract_action`、`broadcast` 五类安全 handler，并随热重载、归档、回滚和重启恢复切换。
-- **Causal rule workbench**: build typed conditions with entity/resource selectors, diagnose conflicts, and deterministically preview unsaved draft chains without changing live world state.
+- **通用因果条件**：17 种事实来源与 12 种比较操作符统一覆盖实体、Actor、关系、事件历史、持续事件、时间、目标、聚合指标和玩家知识；生产运行、Registry、静态分析与 Studio Dry Run 共用同一求值语义。
 - **Reusable causal authoring**: define package-local condition groups and rule templates, retain references or materialize explicit overrides in DLC Studio, and use identical expansion semantics for validation, Dry Run, reload, rollback, and production runtime.
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
 - **事务化因果世界效果**：因果规则可原子调整资源、状态、延迟事件和跨实体锚定价值转移；失败时整体回滚，重启重放保持幂等。
@@ -270,7 +270,7 @@ DLC 可以声明：
 - 行动耗时规则
 - 通用行动、Issue / Case / DecisionRequest 题型、目标、里程碑、失败条件与结局
 - DLC/Agent 显式模型绑定
-- 因果规则的结构化条件与事务化世界效果（资源、状态、ongoing event、锚值守恒转移）
+- 因果规则的通用条件（17 种事实来源、12 种操作符、多类型值与 Filter JSON）和事务化世界效果（资源、状态、ongoing event、锚值守恒转移）
 
 DLC Studio 支持草稿校验、发布、Generation 归档、热重载和回滚。运行时不会因为新版本发布而重算已经承诺的延迟结果。
 
@@ -318,6 +318,18 @@ Actor 组件包括：
 
 DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时校验、Actor-only 创建和 Agent 绑定选择。运行时提供 `GET /api/actors` 与 `GET /api/actors/{actor_id}`；Prompt 可使用 `{actor_id}`、`{actor_attributes}`、`{actor_traits}`、`{actor_needs}`、`{actor_goals}`、`{actor_capabilities}`、`{actor_identities}`、`{actor_memberships}` 和 `{actor_states}`。
 
+## 通用因果条件（v0.28.0）
+
+`content.json.causal_condition_groups[].conditions`、`causal_rule_templates[].rule.conditions` 与 `causal_event_rules[].conditions` 使用同一套通用条件契约：
+
+- 事实来源共 17 种：`anchored_inventory`、`metric`、`parameter`、`entity_field`、`entity_tag`、`entity_state`、`actor_attribute`、`actor_state`、`actor_trait`、`actor_membership`、`relationship`、`ongoing_event`、`event_history`、`time`、`objective_progress`、`aggregate_metric`、`player_knowledge`。
+- 操作符共 12 种：数值比较、相等/不等、包含/不包含、属于/不属于列表，以及存在/不存在；值支持数值、文本、布尔和 JSON 列表。
+- `aggregate_metric` 可对实体数量、锚定库存、指标、参数、Actor 属性、关系和持续事件执行 `sum/avg/min/max/count`，并用有界 Filter JSON 约束实体类型、状态、标签、Actor 类型、关系 active 状态或数值字段。
+- Runtime、生产 Orchestrator、Registry、静态分析和 DLC Studio Dry Run 调用 `multiagent_framework/causal_conditions.py` 的同一确定性求值器，避免预览与生产语义漂移。
+- 事件历史只保存有界、脱敏的事件类型、目标和生成时间，不保存 Payload；快照 Schema `2.0` 可恢复历史窗口。`player_knowledge` 只访问显式知识 Provider，没有 Provider 时按 fail-closed 处理，不回退读取世界真相。
+- DLC Studio 使用卡片式中文编辑器，按条件类型动态显示实体、Actor、关系、目标、聚合来源、字段、时间窗口和值类型，并在保存前清理所有编辑态临时字段。
+
+`example_frontier` v1.7.0 提供两阶段确定性因果链：第一阶段检查实体标签/字段、Actor、无向关系、历史事件和时间并创建持续事件；第二阶段读取前一阶段产生的实体状态、持续事件、目标进度和聚合指标后完成稳定化。
 ## 测试
 
 ```powershell
@@ -363,6 +375,16 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+## v0.28.0 发布说明
+
+- 新增 `multiagent_framework/causal_conditions.py` 通用因果条件契约，完整支持 17 种事实来源、12 种操作符、5 种聚合方法和 7 种聚合来源；Runtime、Orchestrator、Registry、静态分析与 Studio Dry Run 使用同一确定性求值器。
+- 因果运行时增加有界、脱敏事件历史并升级快照 Schema 至 `2.0`；历史不保留 Payload。`player_knowledge` 只能通过显式 Provider 读取，没有 Provider 时 fail-closed，避免泄露世界真相。
+- Registry 增加实体字段/标签/状态、Actor 属性/状态/Trait/成员关系、关系类型与端点、目标和聚合来源等跨引用检查；Dry Run 可投影实体 Metadata、Actor、关系、持续事件与初始历史。
+- DLC Studio 将旧三类型单行条件表单替换为详细中文动态卡片编辑器，支持全部条件来源与操作符、数值/文本/布尔/JSON 列表、历史窗口、聚合和 Filter JSON；条件组、模板和规则统一走安全序列化。
+- `example_frontier` 升级至 `1.7.0`，新增 `frontier_response_readiness`、`frontier_stabilization_ready`、`frontier_deterministic_follow_up` 与两阶段 `patrol_report → frontier_response_started → frontier_stabilization` 示例；AgentEra 四处产品版本同步至 `0.28.0`。
+- 本地发布门禁通过 600 个 Python 测试（另有 2 个外部 API 环境门禁测试因当前进程未注入凭据而按设计跳过）、41 个前端测试、155 项因果 focused suite、Python 编译、ESLint、生产构建和 `example_frontier` Registry 零问题校验。外部 API 测试仅从 `AGENTERA_TEST_*` 环境变量读取临时配置，未注入时不会发起网络调用。
+
+长期 Goal 继续保持 active；P1.3 已完成，下一阶段进入 P1.4 通用因果效果扩展，P1.5-P1.6 与 P2 仍未完成。
 ## v0.27.0 发布说明
 
 - 新增 DLC 自定义关系契约：`content.json.relationship_types` 可声明稳定类型 ID、中文名称与说明、有向/无向语义、强度上下界与默认值、默认公开性、是否允许到期、多维数值、图样式和安全 Metadata。旧 `subordinate` / `affiliated` 类型继续兼容，并允许 DLC 用同 ID 显式覆盖展示契约。

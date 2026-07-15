@@ -1,6 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import { buildCausalDryRunDraft, buildCausalEventCatalog, expandCausalRuleDraft, normalizeCausalReplayFixture } from './DLCStudioTools.js'
 import { effectiveRelationshipTypes } from './RelationshipTypeTools.js'
+import {
+  CAUSAL_AGGREGATES, CAUSAL_AGGREGATE_SOURCES, CAUSAL_CONDITION_KINDS, CAUSAL_CONDITION_OPERATORS, CAUSAL_VALUE_TYPES,
+  defaultCausalCondition, normalizeCausalConditionForEditor, serializeCausalConditions,
+} from './CausalConditionTools.js'
 
 const T = {
   add: '\uff0b \u65b0\u5efa',
@@ -143,14 +147,14 @@ function parseArray(value, label) {
 function normalizedListForm(kind, value) {
   const source = value ? deepClone(value) : deepClone(EMPTY[kind])
   if (kind === 'initial_events' || kind === 'random_events' || kind === 'causal_event_rules') source._payload_text = jsonText(source.initial_payload)
-  if (kind === 'causal_condition_groups') source.conditions = Array.isArray(source.conditions) ? source.conditions : []
+  if (kind === 'causal_condition_groups') source.conditions = (Array.isArray(source.conditions) ? source.conditions : []).map(normalizeCausalConditionForEditor)
   if (kind === 'causal_rule_templates') source._rule_text = JSON.stringify(source.rule && typeof source.rule === 'object' && !Array.isArray(source.rule) ? source.rule : {}, null, 2)
   if (kind === 'causal_event_rules') {
     source._source_types_text = (source.source_event_types || ['*']).join(', ')
     source.condition_group_ids = Array.isArray(source.condition_group_ids) ? source.condition_group_ids : []
     source._inherit_template_defaults = Boolean(source.template_id) && !['delay_days', 'probability', 'severity_delta', 'initial_payload', 'inherit_payload_keys', 'world_effects', 'max_depth', 'max_fires_per_chain', 'priority', 'enabled', 'target_agents'].some(key => Object.hasOwn(source, key))
     source._inherit_keys_text = (source.inherit_payload_keys || []).join(', ')
-    source.conditions = Array.isArray(source.conditions) ? source.conditions : []
+    source.conditions = (Array.isArray(source.conditions) ? source.conditions : []).map(normalizeCausalConditionForEditor)
     source.world_effects = (Array.isArray(source.world_effects) ? source.world_effects : []).map(effect => ({
       ...effect,
       _expected_result_text: effect.effect_type === 'create_ongoing_event' ? jsonText(effect.expected_result) : undefined,
@@ -224,13 +228,7 @@ function serializeListForm(kind, form) {
   if (kind === 'causal_condition_groups') {
     data.group_id = String(data.group_id || '').trim()
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(data.group_id)) throw new Error('Condition group ID must be a safe identifier.')
-    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
-      kind: String(condition.kind || ''), entity_id: String(condition.entity_id || ''),
-      name: String(condition.name || ''), operator: String(condition.operator || ''), value: Number(condition.value),
-    }))
-    const kinds = new Set(['anchored_inventory', 'metric', 'parameter'])
-    const operators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
-    if (!data.conditions.length || data.conditions.some(condition => !kinds.has(condition.kind) || !condition.entity_id || !condition.name || !operators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Condition groups require at least one complete condition.')
+    data.conditions = serializeCausalConditions(data.conditions, { requireOne: true })
   }
   if (kind === 'causal_rule_templates') {
     data.template_id = String(data.template_id || '').trim()
@@ -242,13 +240,7 @@ function serializeListForm(kind, form) {
   if (kind === 'causal_event_rules') {
     const inheritTemplateDefaults = Boolean(data.template_id && data._inherit_template_defaults)
     data.initial_payload = parseObject(data._payload_text, T.initialPayload)
-    data.conditions = (Array.isArray(data.conditions) ? data.conditions : []).map(condition => ({
-      kind: String(condition.kind || ''),
-      entity_id: String(condition.entity_id || ''),
-      name: String(condition.name || ''),
-      operator: String(condition.operator || ''),
-      value: Number(condition.value),
-    }))
+    data.conditions = serializeCausalConditions(data.conditions)
     data.world_effects = (Array.isArray(data.world_effects) ? data.world_effects : []).map(source => {
       const effect = { ...source, effect_type: String(source.effect_type || '') }
       delete effect._expected_result_text
@@ -279,9 +271,6 @@ function serializeListForm(kind, form) {
     if (!Number.isInteger(data.max_fires_per_chain) || data.max_fires_per_chain < 1 || data.max_fires_per_chain > 64) throw new Error('Max fires per chain must be an integer from 1 to 64.')
     if (!Number.isInteger(data.priority)) throw new Error('Priority must be an integer.')
     if (CAUSAL_RESERVED_FIELDS.some(key => Object.hasOwn(data.initial_payload, key) || data.inherit_payload_keys.includes(key))) throw new Error('Causal metadata fields are reserved.')
-    const conditionKinds = new Set(['anchored_inventory', 'metric', 'parameter'])
-    const conditionOperators = new Set(['lt', 'lte', 'eq', 'gte', 'gt'])
-    if (data.conditions.some(condition => !conditionKinds.has(condition.kind) || !condition.entity_id || !condition.name || !conditionOperators.has(condition.operator) || !Number.isFinite(condition.value))) throw new Error('Every condition needs a kind, entity, matching resource, operator, and finite value.')
     const effectTypes = new Set(['adjust_resource', 'set_resource', 'update_status', 'create_ongoing_event', 'transfer_anchored_value'])
     if (data.world_effects.length > 32 || data.world_effects.some(effect => !effectTypes.has(effect.effect_type))) throw new Error('World effects must use a supported type and cannot exceed 32 entries.')
     if (data.world_effects.some(effect => effect.effect_type !== 'transfer_anchored_value' && !effect.entity_id)) throw new Error('Every world effect requires an entity.')
@@ -453,59 +442,163 @@ function EditorError({ children }) {
   return children ? <div className="dlc-editor-error">{children}</div> : null
 }
 
-const CONDITION_KINDS = [
-  { key: 'anchored_inventory', label: 'Anchored inventory value' },
-  { key: 'metric', label: 'World metric' },
-  { key: 'parameter', label: 'World parameter' },
-]
-const CONDITION_OPERATORS = [
-  { key: 'lt', label: '<' }, { key: 'lte', label: '<=' }, { key: 'eq', label: '=' },
-  { key: 'gte', label: '>=' }, { key: 'gt', label: '>' },
-]
-
 function resourcesForCondition(resources, kind) {
   const resourceKind = kind === 'anchored_inventory' ? 'asset' : kind
   return resources.filter(item => item.kind === resourceKind)
 }
 
-function CausalConditionBuilder({ value, entities, resources, onChange }) {
-  const conditions = Array.isArray(value) ? value : []
+function effectiveActorOptions(actors, agents) {
+  const byId = new Map()
+  for (const actor of actors || []) {
+    const actorId = actor.actor_id || actor.id
+    if (actorId) byId.set(actorId, { ...actor, actor_id: actorId, _projected_agent: false })
+  }
+  for (const agent of agents || []) {
+    const actorId = agent.actor_id || agent.id
+    if (actorId && !byId.has(actorId)) byId.set(actorId, {
+      actor_id: actorId,
+      display_name: agent.name || agent.display_name || actorId,
+      _projected_agent: true,
+    })
+  }
+  return [...byId.values()]
+}
+
+function actorComponentNames(actor, kind) {
+  if (!actor) return []
+  if (kind === 'actor_attribute') return Object.keys(actor.attributes || {})
+  if (kind === 'actor_state') return Object.keys(actor.states || {})
+  if (kind === 'actor_trait') return (actor.traits || []).map(item => item.trait_id).filter(Boolean)
+  if (kind === 'actor_membership') return (actor.memberships || []).map(item => item.organization_id).filter(Boolean)
+  return []
+}
+
+function conditionNameLabel(kind) {
+  return {
+    anchored_inventory: 'Asset 资源', metric: 'Metric 指标', parameter: 'Parameter 参数',
+    entity_tag: '标签', actor_attribute: 'Attribute 名称', actor_state: 'State 名称',
+    actor_trait: 'Trait ID', actor_membership: 'Organization ID', relationship: '关系类型',
+    ongoing_event: '事件类型（可选）', event_history: '事件类型（可选）',
+    player_knowledge: '知识键',
+  }[kind] || '名称'
+}
+
+function CausalConditionBuilder({ value, entities, resources, actors, agents, relationshipTypes, objectives, ongoingEvents, eventTypes, onChange }) {
+  const conditions = (Array.isArray(value) ? value : []).map(normalizeCausalConditionForEditor)
+  const actorOptions = effectiveActorOptions(actors, agents)
+  const catalogs = { entities, resources, actors: actorOptions, relationshipTypes, objectives, ongoingEvents, eventTypes }
   const update = (index, name, nextValue) => {
     const next = conditions.map(item => ({ ...item }))
     next[index][name] = nextValue
-    if (name === 'kind') {
-      const candidates = resourcesForCondition(resources, nextValue)
-      if (!candidates.some(item => item.name === next[index].name)) next[index].name = candidates[0]?.name || ''
-    }
     onChange(next)
   }
-  const add = () => {
-    const kind = 'anchored_inventory'
-    onChange([...conditions, {
-      kind,
-      entity_id: entities[0]?.id || '',
-      name: resourcesForCondition(resources, kind)[0]?.name || '',
-      operator: 'lt',
-      value: 0,
-    }])
+  const updateMany = (index, values) => {
+    const next = conditions.map(item => ({ ...item }))
+    next[index] = { ...next[index], ...values }
+    onChange(next)
   }
+  const changeKind = (index, kind) => {
+    const next = conditions.map(item => ({ ...item }))
+    next[index] = defaultCausalCondition(kind, catalogs)
+    onChange(next)
+  }
+  const add = () => onChange([...conditions, defaultCausalCondition('anchored_inventory', catalogs)])
   const remove = index => onChange(conditions.filter((_, itemIndex) => itemIndex !== index))
 
   return <section className="dlc-condition-builder">
-    <div className="dlc-condition-header"><div><strong>Condition builder</strong><small>All conditions must pass. No raw JSON is required.</small></div><button type="button" onClick={add}>+ Add condition</button></div>
-    {!conditions.length && <div className="dlc-condition-empty">No conditions: matching event types continue to probability evaluation.</div>}
+    <div className="dlc-condition-header"><div><strong>通用因果条件</strong><small>同一组内所有条件必须同时成立；编辑器与运行时、Dry Run 使用相同语义，无需手写完整条件 JSON。</small></div><button type="button" onClick={add}>＋ 添加条件</button></div>
+    {!conditions.length && <div className="dlc-condition-empty">当前没有附加条件：事件类型匹配后会直接进入概率与调度判断。</div>}
     {conditions.map((condition, index) => {
-      const candidates = resourcesForCondition(resources, condition.kind)
-      const selectedResource = candidates.find(item => item.name === condition.name)
-      return <div className="dlc-condition-row" key={`condition-${index}`}>
-        <label>Fact kind<select value={condition.kind || 'anchored_inventory'} onChange={event => update(index, 'kind', event.target.value)}>{CONDITION_KINDS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
-        <label>Resource / value<select value={condition.name || ''} onChange={event => update(index, 'name', event.target.value)}><option value="">--</option>{candidates.map(item => <option key={item.name} value={item.name}>{item.name}{item.unit ? ` (${item.unit})` : ''}</option>)}</select></label>
-        <label>Compare<select value={condition.operator || 'lt'} onChange={event => update(index, 'operator', event.target.value)}>{CONDITION_OPERATORS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <label>Threshold<input type="number" step="any" value={condition.value ?? 0} onChange={event => update(index, 'value', event.target.value)} /></label>
-        <button type="button" className="danger" onClick={() => remove(index)}>Delete</button>
-        {condition.kind === 'anchored_inventory' && <small className="dlc-condition-anchor">Compares quantity * anchor_rate{selectedResource ? `; ${selectedResource.name} anchor rate ${selectedResource.anchor_rate ?? 1}` : ''}</small>}
-      </div>
+      const kindDefinition = CAUSAL_CONDITION_KINDS.find(item => item.key === condition.kind)
+      const resourceCandidates = resourcesForCondition(resources, condition.kind)
+      const selectedResource = resourceCandidates.find(item => item.name === condition.name)
+      const selectedActor = actorOptions.find(item => item.actor_id === condition.entity_id)
+      const componentNames = actorComponentNames(selectedActor, condition.kind)
+      const needsValue = !['exists', 'not_exists'].includes(condition.operator)
+      const aggregateSource = condition.field || 'entity_count'
+      const aggregateResources = ['anchored_inventory', 'metric', 'parameter'].includes(aggregateSource) ? resourcesForCondition(resources, aggregateSource) : []
+      const nameOptions = aggregateSource === 'relation'
+        ? relationshipTypes.map(item => ({ key: item.relationship_type_id, label: item.display_name || item.relationship_type_id }))
+        : aggregateSource === 'ongoing_event'
+          ? [...new Set((ongoingEvents || []).map(item => item.event_type).filter(Boolean))].map(key => ({ key, label: key }))
+          : aggregateResources.map(item => ({ key: item.name, label: `${item.name}${item.unit ? `（${item.unit}）` : ''}` }))
+      return <article className="dlc-condition-card" key={`condition-${index}`}>
+        <div className="dlc-condition-toolbar">
+          <strong>条件 #{index + 1}</strong>
+          <label>条件来源<select value={condition.kind} onChange={event => changeKind(index, event.target.value)}>{CAUSAL_CONDITION_KINDS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          <label>比较方式<select value={condition.operator} onChange={event => update(index, 'operator', event.target.value)}>{CAUSAL_CONDITION_OPERATORS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          <button type="button" className="danger" onClick={() => remove(index)}>删除</button>
+        </div>
+        <p className="dlc-condition-help">{kindDefinition?.help}</p>
+        <div className="dlc-condition-grid">
+          {['anchored_inventory', 'metric', 'parameter'].includes(condition.kind) && <>
+            <EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>{conditionNameLabel(condition.kind)}<select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 请选择 --</option>{resourceCandidates.map(item => <option key={item.name} value={item.name}>{item.name}{item.unit ? `（${item.unit}）` : ''}</option>)}</select><small>资源类型必须与条件来源一致，Registry 会再次校验跨引用。</small></label>
+          </>}
+
+          {condition.kind === 'entity_field' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>字段路径<input value={condition.field || condition.name} onChange={event => updateMany(index, { field: event.target.value, name: '' })} placeholder="name 或 metadata.population" /><small>直接字段示例：name、type；Metadata 示例：metadata.population。</small></label></>}
+          {condition.kind === 'entity_tag' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>标签<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="frontier" /><small>实际值为“实体是否含此标签”的布尔值，通常与“等于 true”搭配。</small></label></>}
+          {condition.kind === 'entity_state' && <><EntitySelect value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} /><label>读取字段<input value="current_status" disabled /><small>实体状态固定读取 current_status。</small></label></>}
+
+          {condition.kind.startsWith('actor_') && <>
+            <label>Actor<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">-- 请选择 --</option>{actorOptions.map(actor => <option key={actor.actor_id} value={actor.actor_id}>{actor.display_name || actor.actor_id}（{actor.actor_id}{actor._projected_agent ? ' · Agent 兼容投影' : ''}）</option>)}</select><small>优先使用显式 Actor；未定义同名 Actor 的 Agent 会作为兼容选项出现。</small></label>
+            <label>{conditionNameLabel(condition.kind)}<input list={`causal-actor-components-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder={condition.kind === 'actor_membership' ? 'organization_id' : '组件名称'} /><datalist id={`causal-actor-components-${index}`}>{componentNames.map(name => <option key={name} value={name} />)}</datalist><small>列表来自当前 Actor 定义，也允许输入之后准备新增的组件 ID。</small></label>
+            {condition.kind === 'actor_membership' && <label>成员关系字段（可选）<input list="causal-membership-fields" value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="留空表示判断成员关系存在" /><datalist id="causal-membership-fields"><option value="role" /><option value="status" /><option value="title" /><option value="weight" /></datalist><small>留空时实际值为 true；填写后读取该 Membership 对象中的字段。</small></label>}
+          </>}
+
+          {condition.kind === 'relationship' && <>
+            <EntitySelect label="来源实体" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <EntitySelect label="目标实体" value={condition.target_entity_id} entities={entities} onChange={next => update(index, 'target_entity_id', next)} />
+            <label>关系类型<select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 请选择 --</option>{relationshipTypes.map(item => <option key={item.relationship_type_id} value={item.relationship_type_id}>{item.display_name || item.relationship_type_id}（{item.relationship_type_id}）</option>)}</select><small>无向关系会自动接受反向端点；有向关系严格按来源 → 目标匹配。</small></label>
+            <label>读取字段<input list={`causal-relation-fields-${index}`} value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="strength" /><datalist id={`causal-relation-fields-${index}`}><option value="strength" /><option value="exists" /><option value="active" />{relationshipTypes.find(item => item.relationship_type_id === condition.name)?.dimensions?.map(dimension => <option key={dimension.dimension_id || dimension.id} value={`values.${dimension.dimension_id || dimension.id}`} />)}</datalist><small>支持 strength、exists、active、values.&lt;dimension_id&gt;、metadata.&lt;key&gt;。</small></label>
+          </>}
+
+          {condition.kind === 'ongoing_event' && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>事件类型（可选）<input list={`causal-ongoing-types-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="relief_operation" /><datalist id={`causal-ongoing-types-${index}`}>{[...new Set((ongoingEvents || []).map(item => item.event_type).filter(Boolean))].map(name => <option key={name} value={name} />)}</datalist><small>留空统计全部持续事件。</small></label>
+            <label>读取字段<select value={condition.field || 'count'} onChange={event => update(index, 'field', event.target.value)}><option value="count">数量 count</option><option value="exists">是否存在 exists</option><option value="active">是否激活 active</option><option value="remaining_days">最短剩余天数</option></select></label>
+          </>}
+
+          {condition.kind === 'event_history' && <>
+            <label>目标 Agent（可选）<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">全部 Agent</option>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name || agent.id}（{agent.id}）</option>)}</select><small>此处 entity_id 表示历史事件 target_agents 中的 Agent ID。</small></label>
+            <label>事件类型（可选）<input list={`causal-history-types-${index}`} value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="shortage" /><datalist id={`causal-history-types-${index}`}>{eventTypes.map(name => <option key={name} value={name} />)}</datalist><small>留空统计时间窗口内的全部脱敏历史事件。</small></label>
+            <label>读取字段<select value={condition.field || 'count'} onChange={event => update(index, 'field', event.target.value)}><option value="count">数量 count</option><option value="exists">是否出现 exists</option><option value="seen">是否见过 seen</option><option value="last_generated_at">最后生成时间（秒）</option></select></label>
+            <label>时间窗口（天）<input type="number" min="0" max="36500" step="any" value={condition.window_days} onChange={event => update(index, 'window_days', event.target.value)} /><small>0 表示只看当前模拟时刻；留空表示全部有界历史。</small></label>
+          </>}
+
+          {condition.kind === 'time' && <label>时间口径<select value={condition.name || 'sim_day'} onChange={event => update(index, 'name', event.target.value)}><option value="sim_day">模拟天数 sim_day</option><option value="sim_time">模拟秒数 sim_time</option><option value="seconds">模拟秒数 seconds</option></select><small>建议规则设计使用 sim_day，便于 DLC 作者阅读与复现。</small></label>}
+
+          {condition.kind === 'objective_progress' && <>
+            <label>Objective<select value={condition.entity_id || condition.name} onChange={event => updateMany(index, { entity_id: event.target.value, name: '' })}><option value="">-- 请选择 --</option>{objectives.map(item => <option key={item.objective_id} value={item.objective_id}>{item.display_name || item.objective_id}（{item.objective_id}）</option>)}</select></label>
+            <label>公开状态字段<input list="causal-objective-fields" value={condition.field || 'progress'} onChange={event => update(index, 'field', event.target.value)} /><datalist id="causal-objective-fields"><option value="progress" /><option value="status" /><option value="completed" /><option value="failed" /></datalist><small>常用 progress（数值）或 status（文本）；实际可读字段取决于 Objective 公共状态。</small></label>
+          </>}
+
+          {condition.kind === 'aggregate_metric' && <>
+            <label>聚合来源<select value={aggregateSource} onChange={event => { const source = event.target.value; const next = conditions.map(item => ({ ...item })); next[index] = defaultCausalCondition('aggregate_metric', catalogs); next[index].field = source; next[index].aggregate = source === 'entity_count' || source === 'ongoing_event' ? 'count' : 'sum'; if (['anchored_inventory', 'metric', 'parameter'].includes(source)) next[index].name = resourcesForCondition(resources, source)[0]?.name || ''; if (source === 'relation') next[index].name = relationshipTypes[0]?.relationship_type_id || ''; onChange(next) }} >{CAUSAL_AGGREGATE_SOURCES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select><small>来源决定 name、entity_id 与过滤器的解释方式。</small></label>
+            <label>聚合方法<select value={condition.aggregate || 'sum'} onChange={event => update(index, 'aggregate', event.target.value)}>{CAUSAL_AGGREGATES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+            {['entity_count', 'anchored_inventory', 'metric', 'parameter', 'ongoing_event'].includes(aggregateSource) && <EntitySelect label="限定实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />}
+            {aggregateSource === 'actor_attribute' && <label>限定 Actor（可选）<select value={condition.entity_id} onChange={event => update(index, 'entity_id', event.target.value)}><option value="">全部 Actor</option>{actorOptions.map(actor => <option key={actor.actor_id} value={actor.actor_id}>{actor.display_name || actor.actor_id}（{actor.actor_id}）</option>)}</select></label>}
+            {aggregateSource !== 'entity_count' && <label>{aggregateSource === 'actor_attribute' ? 'Attribute 名称' : aggregateSource === 'relation' ? '关系类型（可选）' : aggregateSource === 'ongoing_event' ? '事件类型（可选）' : '资源 / 数值名称'}{nameOptions.length ? <select value={condition.name} onChange={event => update(index, 'name', event.target.value)}><option value="">-- 全部 / 请选择 --</option>{nameOptions.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select> : <input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="名称" />}<small>资源与 Actor Attribute 必填；关系和持续事件可留空统计全部。</small></label>}
+          </>}
+
+          {condition.kind === 'player_knowledge' && <>
+            <EntitySelect label="关联实体（可选）" value={condition.entity_id} entities={entities} onChange={next => update(index, 'entity_id', next)} />
+            <label>知识键<input value={condition.name} onChange={event => update(index, 'name', event.target.value)} placeholder="known_secret_route" /><small>由游戏的知识 Provider 定义，DLC 不得假设该键一定存在。</small></label>
+            <label>知识字段（可选）<input value={condition.field} onChange={event => update(index, 'field', event.target.value)} placeholder="confidence" /></label>
+            <div className="dlc-condition-warning">隐私边界：这里只读取玩家已经知道的信息；没有知识 Provider 时条件按缺失处理，不会回退读取世界真相。</div>
+          </>}
+        </div>
+
+        {needsValue ? <div className="dlc-condition-value-row">
+          <label>目标值类型<select value={condition._value_type} onChange={event => { const type = event.target.value; updateMany(index, { _value_type: type, _value_text: type === 'number' ? '0' : type === 'boolean' ? 'true' : type === 'list' ? '[]' : '' }) }}>{CAUSAL_VALUE_TYPES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          {condition._value_type === 'boolean' ? <label>目标值<select value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)}><option value="true">true / 是</option><option value="false">false / 否</option></select></label>
+            : condition._value_type === 'list' ? <label className="dlc-condition-wide">目标值列表<textarea rows="3" spellCheck="false" value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)} placeholder='["mobilized", "stable"]' /><small>必须是 JSON 数组，最多 64 项；适合“属于列表 / 不属于列表”。</small></label>
+              : <label>目标值<input type={condition._value_type === 'number' ? 'number' : 'text'} step="any" value={condition._value_text} onChange={event => update(index, '_value_text', event.target.value)} /><small>{condition._value_type === 'number' ? '必须是有限数字。' : '最长 512 个字符。'}</small></label>}
+        </div> : <div className="dlc-condition-existence-note">“{condition.operator === 'exists' ? '存在' : '不存在'}”操作符不需要目标值；它只判断事实是否能够被安全解析。</div>}
+
+        <details className="dlc-condition-advanced"><summary>高级过滤器 JSON（可选）</summary><label>Filters<textarea rows="4" spellCheck="false" value={condition._filters_text} onChange={event => update(index, '_filters_text', event.target.value)} /><small>最多 16 个字段。entity_count 支持 entity_type、status、tag；actor_attribute 支持 actor_type；relation 支持 active、value_field。其他字段会安全保留，但只有运行时已支持的字段参与求值。</small></label></details>
+        {condition.kind === 'anchored_inventory' && <div className="dlc-condition-anchor">当前比较统一锚定价值 = 数量 × anchor_rate{selectedResource ? `；${selectedResource.name} 的 anchor_rate 为 ${selectedResource.anchor_rate ?? 1}` : ''}。</div>}
+      </article>
     })}
   </section>
 }
@@ -635,6 +728,9 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
   const items = content[kind] || []
   const entities = content.entities || []
   const agents = content.agents || []
+  const actors = content.actors || []
+  const objectives = content.objectives || []
+  const ongoingEvents = content.ongoing_events || []
   const resources = content.resources || []
   const relationshipTypes = effectiveRelationshipTypes(content)
   const causalTemplates = content.causal_rule_templates || []
@@ -858,7 +954,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
       {kind === 'causal_condition_groups' && <>
         <div className="dlc-row"><label>Group ID<input value={form.group_id || ''} onChange={event => set('group_id', event.target.value)} placeholder="treasury_ready" /></label><label>{T.name}<input value={form.name || ''} onChange={event => set('name', event.target.value)} /></label></div>
         <label>{T.description}<textarea rows="3" value={form.description || ''} onChange={event => set('description', event.target.value)} /></label>
-        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} actors={actors} agents={agents} relationshipTypes={relationshipTypes} objectives={objectives} ongoingEvents={ongoingEvents} eventTypes={eventTypes} onChange={value => set('conditions', value)} />
       </>}
 
       {kind === 'causal_rule_templates' && <>
@@ -885,7 +981,7 @@ export function StructuredContentEditor({ kind, content, selected, onSelect, onS
           <CausalWorldEffectBuilder value={form.world_effects || []} entities={entities} resources={resources} onChange={value => set('world_effects', value)} />
           <label>{T.initialPayload}<textarea className="dlc-json-field" rows="7" spellCheck="false" value={form._payload_text || ''} onChange={event => set('_payload_text', event.target.value)} /></label>
         </>}
-        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} onChange={value => set('conditions', value)} />
+        <CausalConditionBuilder value={form.conditions || []} entities={entities} resources={resources} actors={actors} agents={agents} relationshipTypes={relationshipTypes} objectives={objectives} ongoingEvents={ongoingEvents} eventTypes={eventTypes} onChange={value => set('conditions', value)} />
         <CausalDryRunPanel
           report={previewReport}
           replayComparison={replayComparison}

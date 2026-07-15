@@ -2113,3 +2113,30 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 - `subordinate` and `affiliated` remain effective defaults for older DLCs and databases. A DLC may override either stable ID to customize its presentation and constraints, but unrelated active packages may not claim the same non-legacy ID.
 - `example_frontier` v1.6.0 exercises directed command, undirected trust/rivalry, visibility, expiry, dimensions, style and metadata. AgentEra is synchronized at v0.27.0.
 - The v0.27.0 release gate passed 592 Python tests with 2 credential-gated external API tests skipped, 35 frontend tests, Python compile, frontend lint/build, `example_frontier` Registry validation, encoding and credential scans, and `git diff --check`. The persistent gameplay goal remains active. P1.2 is complete; P1.3 (richer causal condition/effect expressiveness) is the next phase.
+
+## Release architecture note: generic causal-condition expressiveness (v0.28.0)
+
+### Shared condition contract
+
+- `multiagent_framework/causal_conditions.py` is the single schema, validation and resolution boundary for causal facts. It defines 17 fact kinds, 12 operators, `sum/avg/min/max/count`, seven aggregate sources, bounded values, bounded `window_days`, and bounded JSON-safe filters.
+- `causal_events.py`, `causal_analysis.py`, `dlc_registry.py` and `orchestrator.py` consume the shared contract. Production scheduling, static diagnostics, unsaved-draft Dry Run and runtime publication therefore cannot implement divergent comparisons or source semantics.
+- Entity facts cover direct fields, `metadata.xxx`, tags and current state. Actor facts resolve runtime attributes/states plus declared traits and memberships. Relationship facts honor the active `RelationshipCatalog`, including reversed endpoint lookup for undirected types and `strength`, `active`, `values.xxx` or metadata fields.
+
+### History, objectives, aggregates and privacy
+
+- The causal scheduler keeps a bounded, payload-free event history containing only normalized event identity/type, targets and generated time. Snapshot Schema `2.0` persists and restores this history after strict validation; legacy snapshots restore an empty history.
+- `event_history` supports event type, target Agent and day-window filtering. `ongoing_event` exposes count, existence and minimum remaining days. `time` exposes simulation days or seconds, and `objective_progress` consumes only `ObjectiveManager.public_state()` fields.
+- `aggregate_metric` can aggregate entity counts, anchored inventory value, metrics, parameters, Actor attributes, relationship values/counts and ongoing-event counts. Filters are bounded and interpreted only by allowlisted source-specific fields.
+- `player_knowledge` never falls back to WorldState. It delegates to an explicitly installed knowledge Provider and resolves as missing when no Provider exists, so ordinary comparisons fail closed instead of gaining omniscient access.
+
+### Registry, Dry Run and Studio
+
+- Registry validation checks package-visible entity, resource, Actor, relationship-type, endpoint and Objective references, including aggregate source/resource-kind constraints. The built-in and DLC-authored relationship IDs come from `RelationshipCatalog.ids` rather than hard-coded legacy constants.
+- `_SeedWorldFacts` projects entity fields/metadata/tags/state, Actor definitions/runtime overlays, relationship edges/catalog, ongoing events and bounded initial event history. Transactional world effects remain isolated while downstream conditions can observe earlier Dry Run effects.
+- `frontend/src/CausalConditionTools.js` owns frontend catalogs, normalization and secret-free serialization. `CausalConditionBuilder` renders detailed Chinese cards for all condition kinds, dynamically exposes only relevant references, supports number/text/boolean/list values and Filter JSON, and strips editor-only fields before saving.
+- `example_frontier` v1.7.0 demonstrates a deterministic two-stage chain in which stage two observes stage-one entity-state and ongoing-event effects. AgentEra version identity is synchronized at v0.28.0.
+
+### Verification and remaining scope
+
+- Focused causal/runtime verification: 155 passed. Full Python verification: 600 passed, with 2 external-API tests skipped because `AGENTERA_TEST_*` credentials were not injected. Frontend verification: 41 tests, ESLint and Vite production build passed. Python compile and `example_frontier` Registry validation also passed with zero issues.
+- The persistent gameplay-framework goal remains active. This release completes P1.3 only. P1.4 must next expand generic causal effects; P1.5-P1.6 and P2 remain open.

@@ -1,4 +1,4 @@
-﻿"""Deterministic, restart-safe causal world-event chains.
+"""Deterministic, restart-safe causal world-event chains.
 
 DLC rules are evaluated when an event is observed.  Matching rules materialize
 complete child events immediately and queue them for a later simulation time.
@@ -17,17 +17,20 @@ import math
 import re
 from typing import Any
 
+from .causal_conditions import (
+    CausalCondition, CausalConditionContext, CausalEventError,
+    compare_condition_value, resolve_condition_value,
+)
 from .event_generator import GAME_SECONDS_PER_DAY
 from .types import EventObject
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_OPERATORS = {"lt", "lte", "eq", "gte", "gt"}
-_FACT_KINDS = {"anchored_inventory", "metric", "parameter"}
 CAUSAL_METADATA_FIELDS = frozenset({
     "causal_chain_id", "causal_parent_event_id", "causal_rule_id", "causal_depth"
 })
 _RESERVED_PAYLOAD = CAUSAL_METADATA_FIELDS
 _MAX_OBSERVED_EVENTS = 10_000
+_MAX_EVENT_HISTORY = 10_000
 _MAX_CHAIN_STATES = 2_000
 _MAX_PENDING_EVENTS = 10_000
 _MAX_ID_LENGTH = 128
@@ -39,47 +42,6 @@ _WORLD_EFFECT_TYPES = {
     "adjust_resource", "set_resource", "update_status",
     "create_ongoing_event", "transfer_anchored_value",
 }
-
-
-class CausalEventError(ValueError):
-    """Raised when causal rules or persisted scheduler state are invalid."""
-
-
-@dataclass(frozen=True)
-class CausalCondition:
-    kind: str
-    entity_id: str
-    name: str
-    operator: str
-    value: float
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "CausalCondition":
-        if not isinstance(value, Mapping):
-            raise CausalEventError("causal_condition_invalid")
-        raw_number = value.get("value")
-        if isinstance(raw_number, bool):
-            raise CausalEventError("causal_condition_value_invalid")
-        try:
-            number = float(raw_number)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise CausalEventError("causal_condition_value_invalid") from exc
-        condition = cls(
-            kind=str(value.get("kind", "")).strip(),
-            entity_id=str(value.get("entity_id", "")).strip(),
-            name=str(value.get("name", "")).strip(),
-            operator=str(value.get("operator", "")).strip(),
-            value=number,
-        )
-        if condition.kind not in _FACT_KINDS:
-            raise CausalEventError("causal_condition_kind_invalid")
-        if not condition.entity_id or not condition.name:
-            raise CausalEventError("causal_condition_reference_invalid")
-        if condition.operator not in _OPERATORS:
-            raise CausalEventError("causal_condition_operator_invalid")
-        if not math.isfinite(condition.value):
-            raise CausalEventError("causal_condition_value_invalid")
-        return condition
 
 
 def _finite_effect_number(value: Any, code: str) -> float:
@@ -497,6 +459,7 @@ class CausalEventEngine:
         self._pending: dict[str, _PendingCausalEvent] = {}
         self._observed_order: deque[str] = deque()
         self._observed: set[str] = set()
+        self._event_history: deque[dict[str, Any]] = deque()
         self._chain_counts: dict[str, dict[str, int]] = {}
         self._chain_order: deque[str] = deque()
         self._dropped_count = 0
@@ -517,33 +480,15 @@ class CausalEventEngine:
         self._rules = tuple(sorted(parsed, key=lambda item: (-item.priority, item.rule_id)))
 
     @staticmethod
-    def _fact(world_state: Any, condition: CausalCondition) -> float | None:
-        if world_state is None:
-            return None
-        if condition.kind == "anchored_inventory":
-            items = world_state.get_inventory(condition.entity_id)
-            matches = [item.base_value for item in items if item.item_name == condition.name]
-            return sum(matches) if matches else None
-        values = world_state.get_entity_values(condition.entity_id, condition.kind)
-        for item in values:
-            if item.name == condition.name:
-                return float(item.value)
-        return None
-
-    @classmethod
-    def _conditions_match(cls, rule: CausalEventRule, world_state: Any) -> bool:
-        for condition in rule.conditions:
-            actual = cls._fact(world_state, condition)
-            if actual is None or not math.isfinite(actual):
-                return False
-            expected = condition.value
-            if not {
-                "lt": actual < expected, "lte": actual <= expected,
-                "eq": math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9),
-                "gte": actual >= expected, "gt": actual > expected,
-            }[condition.operator]:
-                return False
-        return True
+    def _conditions_match(rule: CausalEventRule, context: CausalConditionContext) -> bool:
+        return all(
+            compare_condition_value(
+                resolve_condition_value(condition, context),
+                condition.operator,
+                condition.value,
+            )
+            for condition in rule.conditions
+        )
 
     def _remember_observed(self, event_id: str) -> bool:
         if event_id in self._observed:
@@ -553,6 +498,16 @@ class CausalEventEngine:
         while len(self._observed_order) > _MAX_OBSERVED_EVENTS:
             self._observed.discard(self._observed_order.popleft())
         return True
+
+    def _remember_history(self, event: EventObject) -> None:
+        self._event_history.append({
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "generated_at": float(event.generated_at),
+            "target_agents": list(event.target_agents),
+        })
+        while len(self._event_history) > _MAX_EVENT_HISTORY:
+            self._event_history.popleft()
 
     def _chain_has_pending(self, chain_id: str) -> bool:
         return any(
@@ -578,7 +533,14 @@ class CausalEventEngine:
             self._trim_chain_states()
         return self._chain_counts[chain_id]
 
-    def observe(self, event: EventObject, *, sim_time: float, world_state: Any = None) -> int:
+    def observe(
+        self,
+        event: EventObject,
+        *,
+        sim_time: float,
+        world_state: Any = None,
+        condition_context: CausalConditionContext | None = None,
+    ) -> int:
         targets = event.target_agents
         if (
             not isinstance(event.event_id, str)
@@ -626,6 +588,20 @@ class CausalEventEngine:
         else:
             depth = 0
             chain_id = "cause_" + hashlib.sha256(event.event_id.encode("utf-8")).hexdigest()[:16]
+        self._remember_history(event)
+        provided = condition_context or CausalConditionContext()
+        condition_world = world_state if world_state is not None else provided.world_state
+        context = CausalConditionContext(
+            world_state=condition_world,
+            actor_manager=provided.actor_manager,
+            objective_manager=provided.objective_manager,
+            event_history=tuple(provided.event_history) + tuple(self._event_history),
+            current_event=event,
+            sim_time=float(sim_time),
+            knowledge_provider=provided.knowledge_provider,
+            issue_manager=provided.issue_manager,
+            action_catalog=provided.action_catalog,
+        )
         counts = self._counts_for(chain_id)
         scheduled = 0
         for rule in self._rules:
@@ -634,7 +610,7 @@ class CausalEventEngine:
             next_depth = depth + 1
             if next_depth > rule.max_depth or counts.get(rule.rule_id, 0) >= rule.max_fires_per_chain:
                 continue
-            if not self._conditions_match(rule, world_state):
+            if not self._conditions_match(rule, context):
                 continue
             if self._unit(rule.rule_id, event.event_id, chain_id) >= rule.probability:
                 continue
@@ -659,7 +635,7 @@ class CausalEventEngine:
             due_at = float(sim_time) + rule.delay_days * GAME_SECONDS_PER_DAY
             try:
                 world_commands = _materialize_world_commands(
-                    rule.world_effects, world_state=world_state, due_at=due_at,
+                    rule.world_effects, world_state=condition_world, due_at=due_at,
                     child_id=child_id, chain_id=chain_id,
                 )
             except CausalEventError:
@@ -695,8 +671,9 @@ class CausalEventEngine:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "observed_event_ids": list(self._observed_order),
+            "event_history": list(self._event_history),
             "chain_counts": {key: dict(value) for key, value in self._chain_counts.items()},
             "chain_order": list(self._chain_order),
             "dropped_count": self._dropped_count,
@@ -710,12 +687,14 @@ class CausalEventEngine:
         if not isinstance(value, Mapping):
             raise CausalEventError("causal_snapshot_invalid")
         observed = value.get("observed_event_ids", [])
+        history = value.get("event_history", [])
         pending = value.get("pending", [])
         counts = value.get("chain_counts", {})
         order = value.get("chain_order", [])
         dropped = value.get("dropped_count", 0)
         if (
             not isinstance(observed, list)
+            or not isinstance(history, list)
             or not isinstance(pending, list)
             or not isinstance(counts, Mapping)
             or not isinstance(order, list)
@@ -723,6 +702,7 @@ class CausalEventEngine:
             or not isinstance(dropped, int)
             or dropped < 0
             or len(observed) > _MAX_OBSERVED_EVENTS
+            or len(history) > _MAX_EVENT_HISTORY
             or len(pending) > _MAX_PENDING_EVENTS
             or len(counts) > _MAX_CHAIN_STATES + _MAX_PENDING_EVENTS
             or len(order) > _MAX_CHAIN_STATES + _MAX_PENDING_EVENTS
@@ -737,6 +717,35 @@ class CausalEventEngine:
             if not event_id or len(event_id) > _MAX_ID_LENGTH:
                 raise CausalEventError("causal_snapshot_invalid")
             observed_ids.append(event_id)
+
+        history_records: list[dict[str, Any]] = []
+        history_ids: set[str] = set()
+        for item in history:
+            if not isinstance(item, Mapping):
+                raise CausalEventError("causal_snapshot_invalid")
+            event_id = str(item.get("event_id", ""))
+            event_type = str(item.get("event_type", ""))
+            targets = item.get("target_agents", [])
+            try:
+                generated_at = float(item.get("generated_at", 0.0))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise CausalEventError("causal_snapshot_invalid") from exc
+            if (
+                not event_id or len(event_id) > _MAX_ID_LENGTH
+                or event_id in history_ids
+                or not event_type or len(event_type) > _MAX_ID_LENGTH
+                or not isinstance(targets, list) or len(targets) > _MAX_TARGETS
+                or any(not isinstance(target, str) or not target or len(target) > _MAX_ID_LENGTH for target in targets)
+                or not math.isfinite(generated_at) or generated_at < 0
+            ):
+                raise CausalEventError("causal_snapshot_invalid")
+            history_ids.add(event_id)
+            history_records.append({
+                "event_id": event_id,
+                "event_type": event_type,
+                "generated_at": generated_at,
+                "target_agents": list(targets),
+            })
 
         new_pending: dict[str, _PendingCausalEvent] = {}
         for raw in pending:
@@ -823,6 +832,7 @@ class CausalEventEngine:
         self._pending = new_pending
         self._observed_order = deque(observed_ids)
         self._observed = set(observed_ids)
+        self._event_history = deque(history_records)
         self._chain_counts = new_counts
         self._chain_order = deque(dict.fromkeys(order_ids))
         for chain_id in new_counts:

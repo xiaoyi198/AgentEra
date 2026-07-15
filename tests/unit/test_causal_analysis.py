@@ -333,3 +333,88 @@ def test_causal_replay_rejects_invalid_fixture_digest():
         assert str(exc) == "causal_replay_digest_invalid"
     else:
         raise AssertionError("invalid replay digest should fail")
+
+
+
+def test_dry_run_generic_conditions_share_runtime_semantics_and_observe_applied_world_effects():
+    content = _content()
+    content["entities"] = [
+        {
+            "id": "city", "type": "location", "name": "City",
+            "current_status": "stable", "metadata": {"tags": ["coastal"], "tier": "capital"},
+        },
+        {"id": "fort", "type": "location", "name": "Fort"},
+    ]
+    content["actors"] = [{
+        "actor_id": "governor",
+        "display_name": "Governor",
+        "actor_type": "person",
+        "entity_id": "city",
+        "attributes": {"influence": 75},
+        "states": {"mood": "focused"},
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "allied", "display_name": "Allied",
+        "direction": "undirected", "minimum_strength": 0, "maximum_strength": 100,
+        "default_strength": 50, "default_visibility": "public",
+    }]
+    content["relations"] = [{
+        "parent_id": "fort", "child_id": "city", "rel_type": "allied",
+        "strength": 80, "visibility": "public", "starts_at": 0,
+    }]
+    content["initial_events"] = [{
+        "event_id": "known_shortage", "event_type": "shortage",
+        "generated_at": 2 * 86400, "severity": 4, "target_agents": ["governor"],
+    }]
+    content["causal_event_rules"] = [
+        {
+            "rule_id": "seed_to_response",
+            "source_event_types": ["shortage"],
+            "child_event_type": "response_started",
+            "delay_days": 1,
+            "probability": 1,
+            "conditions": [
+                {"kind": "entity_tag", "entity_id": "city", "name": "coastal", "operator": "eq", "value": True},
+                {"kind": "entity_field", "entity_id": "city", "field": "metadata.tier", "operator": "eq", "value": "capital"},
+                {"kind": "actor_attribute", "entity_id": "governor", "name": "influence", "operator": "gte", "value": 70},
+                {"kind": "relationship", "entity_id": "city", "target_entity_id": "fort", "name": "allied", "field": "strength", "operator": "gte", "value": 70},
+                {"kind": "time", "name": "sim_day", "operator": "gte", "value": 2},
+                {"kind": "event_history", "name": "shortage", "field": "count", "window_days": 1, "operator": "gte", "value": 1},
+            ],
+            "world_effects": [
+                {"effect_type": "update_status", "entity_id": "city", "new_status": "mobilized"},
+                {
+                    "effect_type": "create_ongoing_event", "entity_id": "city",
+                    "event_type": "relief_operation", "description": "Emergency relief",
+                    "duration_days": 5,
+                },
+            ],
+        },
+        {
+            "rule_id": "response_to_stabilization",
+            "source_event_types": ["response_started"],
+            "child_event_type": "stabilization",
+            "delay_days": 1,
+            "probability": 1,
+            "conditions": [
+                {"kind": "entity_state", "entity_id": "city", "operator": "eq", "value": "mobilized"},
+                {"kind": "ongoing_event", "entity_id": "city", "name": "relief_operation", "field": "exists", "operator": "eq", "value": True},
+            ],
+        },
+    ]
+
+    report = dry_run_causal_rules(
+        content,
+        {
+            "event_id": "manual_shortage", "event_type": "shortage",
+            "generated_at": 2 * 86400, "severity": 4, "target_agents": ["governor"],
+        },
+        horizon_days=10,
+    )
+
+    assert [node["event_type"] for node in report["nodes"]] == [
+        "shortage", "response_started", "stabilization",
+    ]
+    assert [node["day"] for node in report["nodes"]] == [2, 3, 4]
+    assert report["nodes"][1]["world_effect_status"] == "applied"
+    assert report["nodes"][2]["world_effect_status"] == "none"

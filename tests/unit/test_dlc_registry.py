@@ -736,3 +736,86 @@ def test_action_validation_reports_cross_reference_and_permission_errors(registr
         "action.cost.unknown_entity",
         "action.result.unknown_agent",
     } <= codes
+
+
+
+def _generic_causal_reference_content() -> dict:
+    content = valid_content()
+    content["entities"].extend([
+        {"id": "fort", "type": "location", "name": "Fort"},
+        {"id": "council", "type": "organization", "name": "Council"},
+    ])
+    content["actors"] = [{
+        "actor_id": "mayor",
+        "display_name": "Mayor",
+        "actor_type": "person",
+        "entity_id": "place",
+        "attributes": {"influence": 75},
+        "states": {"mood": "focused"},
+        "traits": [{"trait_id": "careful", "display_name": "Careful"}],
+        "memberships": [{"organization_id": "council", "role": "leader"}],
+    }]
+    content["relationship_types"] = [{
+        "relationship_type_id": "allied",
+        "display_name": "Allied",
+        "direction": "undirected",
+        "minimum_strength": 0,
+        "maximum_strength": 100,
+        "default_strength": 50,
+        "default_visibility": "public",
+    }]
+    content["objectives"] = [{
+        "objective_id": "secure_frontier",
+        "display_name": "Secure Frontier",
+        "completion": {"kind": "sim_day", "operator": "gte", "value": 30},
+    }]
+    content["causal_event_rules"] = [{
+        "rule_id": "generic_references",
+        "source_event_types": ["seed"],
+        "child_event_type": "follow_up",
+        "target_agents": ["agent"],
+        "conditions": [
+            {"kind": "actor_attribute", "entity_id": "mayor", "name": "influence", "operator": "gte", "value": 50},
+            {"kind": "actor_state", "entity_id": "mayor", "name": "mood", "operator": "eq", "value": "focused"},
+            {"kind": "actor_trait", "entity_id": "mayor", "name": "careful", "operator": "eq", "value": True},
+            {"kind": "actor_membership", "entity_id": "mayor", "name": "council", "field": "role", "operator": "eq", "value": "leader"},
+            {"kind": "relationship", "entity_id": "place", "target_entity_id": "fort", "name": "allied", "field": "strength", "operator": "gte", "value": 20},
+            {"kind": "objective_progress", "entity_id": "secure_frontier", "field": "progress", "operator": "gte", "value": 0},
+            {"kind": "aggregate_metric", "field": "anchored_inventory", "name": "coin", "aggregate": "sum", "operator": "gte", "value": 1},
+            {"kind": "aggregate_metric", "field": "actor_attribute", "entity_id": "mayor", "name": "influence", "aggregate": "avg", "operator": "gte", "value": 50},
+            {"kind": "aggregate_metric", "field": "relation", "name": "allied", "aggregate": "count", "operator": "gte", "value": 0},
+        ],
+    }]
+    return content
+
+
+def test_generic_causal_condition_cross_references_accept_valid_actor_relationship_objective_and_aggregate(registry: DLCRegistry):
+    registry.create(manifest("generic-valid"))
+    registry.save_content("generic-valid", _generic_causal_reference_content())
+
+    assert registry.validate("generic-valid") == []
+
+
+def test_generic_causal_condition_cross_references_report_missing_components_and_invalid_aggregate_kind(registry: DLCRegistry):
+    registry.create(manifest("generic-broken"))
+    content = _generic_causal_reference_content()
+    conditions = content["causal_event_rules"][0]["conditions"]
+    conditions.extend([
+        {"kind": "actor_attribute", "entity_id": "missing_actor", "name": "influence", "operator": "gte", "value": 1},
+        {"kind": "actor_state", "entity_id": "mayor", "name": "missing_state", "operator": "eq", "value": "ready"},
+        {"kind": "relationship", "entity_id": "missing_place", "target_entity_id": "fort", "name": "missing_relation", "operator": "exists"},
+        {"kind": "objective_progress", "entity_id": "missing_objective", "operator": "gte", "value": 0},
+        {"kind": "aggregate_metric", "field": "metric", "name": "coin", "aggregate": "sum", "operator": "gte", "value": 1},
+    ])
+    registry.save_content("generic-broken", content)
+
+    codes = {issue.code for issue in registry.validate("generic-broken")}
+
+    assert {
+        "causal_event.missing_actor",
+        "causal_event.missing_actor_component",
+        "causal_event.missing_entity",
+        "causal_event.missing_relationship_type",
+        "causal_event.missing_objective",
+        "causal_event.invalid_resource_kind",
+    } <= codes

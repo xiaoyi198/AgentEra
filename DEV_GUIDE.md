@@ -2783,3 +2783,67 @@ npm run build --prefix frontend
 ```
 
 外部 API 连通测试只允许从 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 和 `AGENTERA_TEST_MODEL_ATTEMPTS` 读取临时配置；未注入时必须 skip。禁止把实际 URL、Key 或响应原文写入源码、命令记录、日志、文档和提交。
+## Generic causal-condition authoring workflow (v0.28.0)
+
+### Authoritative schema and shared evaluator
+
+通用因果条件只允许通过 `multiagent_framework/causal_conditions.py` 扩展。新增来源或操作符时必须同时维护：
+
+1. 后端 `FACT_KINDS` / `OPERATORS`、`CausalCondition.validate()`、`resolve_condition_value()` 与比较语义；
+2. Registry 跨引用和资源 kind 校验；
+3. `_SeedWorldFacts` 的 Dry Run 投影；
+4. `frontend/src/CausalConditionTools.js` 的中文目录、默认值、序列化和测试；
+5. `CausalConditionBuilder` 的动态字段与中文帮助；
+6. Runtime、Dry Run 和 Orchestrator 的 focused 回归测试。
+
+禁止在 `causal_events.py`、`causal_analysis.py` 或 React 编辑器里复制第二套条件求值逻辑。生产与预览必须构造 `CausalConditionContext` 并调用共享求值器。
+
+### Condition shape and bounds
+
+每个条件至少包含 `kind`、`operator`，除 `exists/not_exists` 外还必须包含 `value`。引用字段按来源使用：
+
+- `entity_id`：实体、Actor、目标或历史目标；
+- `target_entity_id`：关系另一端；
+- `name`：资源/指标/参数/标签/Actor 组件/关系类型/事件类型；
+- `field`：实体字段、成员字段、关系字段、历史字段、目标公开字段或聚合来源；
+- `aggregate`：`sum`、`avg`、`min`、`max`、`count`；
+- `window_days`：`0..36500` 的历史窗口；
+- `filters`：最多 16 项的 JSON-safe 对象。
+
+条件文本最多 512 字符，列表最多 64 项，规则或条件组最多 32 条。Studio 编辑态 `_value_type`、`_value_text`、`_filters_text` 等字段不得进入 `content.json`。
+
+### Source semantics
+
+- `entity_field` 使用 `field` 或 `name`；`metadata.xxx` 只读取单层 Metadata 键。`entity_tag` 返回布尔值，`entity_state` 读取 `current_status`。
+- `actor_attribute` / `actor_state` 读取 Actor runtime；`actor_trait` 检查 `trait_id`；`actor_membership` 用 `name=organization_id`，可通过 `field` 读取 `role/status/weight` 等成员字段。
+- `relationship` 必须提供两端和关系类型；无向类型允许反向端点匹配。字段可使用 `strength`、`active`、`values.xxx`、`metadata.xxx` 或其他安全公开字段。
+- `ongoing_event` 默认返回数量，`field=exists|active` 返回布尔，`field=remaining_days` 返回最短剩余天数。`event_history` 默认返回数量，支持 `exists|seen`、`last_generated_at` 和 `window_days`。
+- `objective_progress` 只读取 `ObjectiveManager.public_state()`。`player_knowledge` 只访问显式 Provider；没有 Provider 时为 missing，不能改成读取 WorldState 的便利回退。
+- `aggregate_metric.field` 只能是 `entity_count`、`anchored_inventory`、`metric`、`parameter`、`actor_attribute`、`relation`、`ongoing_event`。实体过滤器支持 `entity_type/status/tag`，Actor 支持 `actor_type`，关系支持 `active/value_field`。
+
+### History and snapshot invariants
+
+事件历史必须保持有界和脱敏：不得保存 source Payload、Prompt、消息正文、模型配置、凭据或原始异常。更改历史形状时必须升级并迁移 causal snapshot Schema，同时验证大小、时间、ID、目标列表和 JSON 形状。旧快照必须安全恢复为空历史，而不是从日志猜测或回放过去事件。
+
+### DLC Studio workflow
+
+1. 优先从实体、Actor、资源、关系和目标下拉框选择稳定 ID；仅在兼容旧内容时手动输入。
+2. 根据条件实际值选择数值、文本、布尔或 JSON 列表；`in/not_in` 通常使用列表目标值。
+3. 关系和聚合字段使用中文说明中的白名单；Filter JSON 只写来源支持的键。
+4. 条件组至少一条，模板/规则可组合条件组与 inline 条件；保存前统一调用 `serializeCausalConditions()`。
+5. 用未保存草稿 Dry Run 验证多阶段链，确认后续节点能够观察前一节点的世界效果，但不会写入 live SQLite、运行时 scheduler 或包文件。
+
+### Required verification
+
+```powershell
+python -m pytest -q tests/unit/test_causal_events.py tests/unit/test_causal_analysis.py tests/unit/test_causal_templates.py tests/unit/test_causal_world_effects.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_objective_orchestrator.py tests/unit/test_turn_engine.py tests/integration/test_causal_economic_scenario.py tests/integration/test_agent_economic_replay_scenario.py
+python -m pytest -q
+python -m compileall -q multiagent_framework main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.')).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试只能读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`。未注入时必须 skip；不得把实际 URL、Key、模型响应或连接错误原文写入命令、测试、文档、日志或 Git。

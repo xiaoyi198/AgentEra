@@ -18,7 +18,7 @@ from .action_causal_bridge import build_action_causal_event
 from .agent_runtime import BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
-from .causal_events import CausalEventEngine
+from .causal_events import CausalConditionContext, CausalEventEngine
 from .causal_world_effects import execute_causal_world_commands
 from .memory_compressor import MemoryCompressor
 from .event_generator import RandomEventGenerator
@@ -146,6 +146,7 @@ class Orchestrator:
         self._sim_time: float = 0.0
         self.random_event_generator = RandomEventGenerator(sim_time=self._sim_time)
         self.causal_event_engine = CausalEventEngine()
+        self.player_knowledge_provider: Any = None
         self.time_simulator = (
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
@@ -810,7 +811,16 @@ class Orchestrator:
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
         causal_scheduled = self.causal_event_engine.observe(
-            event, sim_time=self._sim_time, world_state=self.world_state,
+            event,
+            sim_time=self._sim_time,
+            condition_context=CausalConditionContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                objective_manager=self.objective_manager,
+                knowledge_provider=self.player_knowledge_provider,
+                issue_manager=self.issue_manager,
+                action_catalog=self.action_catalog,
+            ),
         )
         if causal_scheduled and self.persistor:
             self.persistor.mark_state_dirty()

@@ -17,16 +17,20 @@ import math
 import re
 from typing import Any
 
+from .actor_contract import ActorManager
 from .causal_events import (
     CAUSAL_METADATA_FIELDS,
+    CausalConditionContext,
     CausalEventEngine,
     CausalEventError,
     CausalEventRule,
 )
 from .causal_templates import expand_causal_rule_document
 from .event_generator import GAME_SECONDS_PER_DAY
+from .objective_contract import ObjectiveManager
+from .relationship_contract import RelationshipCatalog
 from .types import EventObject
-from .world_state import EntityValue, InventoryItem, ResourceDefinition
+from .world_state import Entity, EntityValue, InventoryItem, OngoingEvent, ResourceDefinition
 
 _MAX_DRY_RUN_EVENTS = 256
 _MAX_HORIZON_DAYS = 3650.0
@@ -39,10 +43,51 @@ class _SeedWorldFacts:
     """Read-only world-state projection containing only facts used by conditions."""
 
     def __init__(self, content: Mapping[str, Any]) -> None:
-        self._entity_ids = {
-            str(item.get("id", "")).strip()
-            for item in _list_field(content, "entities") if isinstance(item, Mapping)
-        }
+        self._entities: dict[str, Entity] = {}
+        for raw in _list_field(content, "entities"):
+            if not isinstance(raw, Mapping):
+                continue
+            entity_id = str(raw.get("id", "")).strip()
+            if not entity_id:
+                continue
+            metadata = raw.get("metadata", {})
+            self._entities[entity_id] = Entity(
+                id=entity_id,
+                type=str(raw.get("type", "")),
+                name=str(raw.get("name", entity_id)),
+                description=str(raw.get("description", "")),
+                current_status=str(raw.get("current_status", "")),
+                updated_at=float(raw.get("updated_at", 0.0) or 0.0),
+                metadata=copy.deepcopy(dict(metadata)) if isinstance(metadata, Mapping) else {},
+                version=int(raw.get("version", 0) or 0),
+            )
+        self._entity_ids = set(self._entities)
+        self.relationship_catalog = RelationshipCatalog(_list_field(content, "relationship_types"))
+        self._relations: list[dict[str, Any]] = []
+        for index, raw in enumerate(_list_field(content, "relations")):
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                self._relations.append(self.relationship_catalog.normalize_relation(raw, f"relations[{index}]"))
+            except Exception:
+                continue
+        self._ongoing: list[OngoingEvent] = []
+        for raw in _list_field(content, "ongoing_events"):
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                self._ongoing.append(OngoingEvent(
+                    event_id=str(raw.get("event_id", "")),
+                    entity_id=str(raw.get("entity_id", "")),
+                    event_type=str(raw.get("event_type", "state_change")),
+                    description=str(raw.get("description", "")),
+                    start_time=float(raw.get("start_time", 0.0) or 0.0),
+                    end_time=float(raw.get("end_time", 0.0) or 0.0),
+                    expected_result=copy.deepcopy(dict(raw.get("expected_result", {}))),
+                    source_action_id=str(raw.get("source_action_id", "")),
+                ))
+            except (TypeError, ValueError, OverflowError):
+                continue
         resources = _list_field(content, "resources")
         inventory = _list_field(content, "inventory")
         values = _list_field(content, "entity_values")
@@ -128,6 +173,24 @@ class _SeedWorldFacts:
                 description=str(raw.get("description", "")),
             ))
 
+    def get_entity(self, entity_id: str) -> Entity | None:
+        return self._entities.get(entity_id)
+
+    def get_all_entities(self) -> list[Entity]:
+        return list(self._entities.values())
+
+    def get_all_relations(self, *, sim_time: float = 0.0) -> list[dict[str, Any]]:
+        return [
+            {**copy.deepcopy(item), "active": self.relationship_catalog.is_active(item, sim_time)}
+            for item in self._relations
+        ]
+
+    def list_ongoing_events(self, entity_id: str | None = None) -> list[OngoingEvent]:
+        return [
+            copy.deepcopy(item) for item in self._ongoing
+            if entity_id is None or item.entity_id == entity_id
+        ]
+
     def get_inventory(self, entity_id: str) -> list[InventoryItem]:
         return list(self._inventory.get(entity_id, ()))
 
@@ -143,6 +206,8 @@ class _SeedWorldFacts:
 
         inventory_before = {key: [InventoryItem(**asdict(item)) for item in values] for key, values in self._inventory.items()}
         values_before = {key: [EntityValue(**asdict(item)) for item in values] for key, values in self._values.items()}
+        entities_before = {key: Entity(**asdict(item)) for key, item in self._entities.items()}
+        ongoing_before = [OngoingEvent(**asdict(item)) for item in self._ongoing]
         try:
             for command in commands:
                 entity_id = str(command.get("entity_id", ""))
@@ -150,7 +215,20 @@ class _SeedWorldFacts:
                     raise CausalEventError("entity_not_found")
                 command_type = str(command.get("command_type", ""))
                 payload = command.get("payload", {})
-                if command_type == "update_status" or command_type == "create_event":
+                if command_type == "update_status":
+                    self._entities[entity_id].current_status = str(payload.get("new_status", ""))
+                    continue
+                if command_type == "create_event":
+                    self._ongoing.append(OngoingEvent(
+                        event_id=str(payload.get("event_id", "")),
+                        entity_id=entity_id,
+                        event_type=str(payload.get("event_type", "state_change")),
+                        description=str(payload.get("description", "")),
+                        start_time=float(payload.get("start_time", 0.0)),
+                        end_time=float(payload.get("end_time", 0.0)),
+                        expected_result=copy.deepcopy(dict(payload.get("expected_result", {}))),
+                        source_action_id=str(payload.get("source_action_id", "")),
+                    ))
                     continue
                 resource_name = str(payload.get("resource_name", ""))
                 definition = self._resources.get(resource_name)
@@ -190,6 +268,8 @@ class _SeedWorldFacts:
         except (CausalEventError, TypeError, ValueError, OverflowError) as exc:
             self._inventory = defaultdict(list, inventory_before)
             self._values = defaultdict(list, values_before)
+            self._entities = entities_before
+            self._ongoing = ongoing_before
             return False, str(exc) or "causal_effect_rejected"
         return True, ""
 
@@ -584,10 +664,32 @@ def dry_run_causal_rules(
 
     engine = CausalEventEngine([asdict(rule) for rule in rules])
     facts = _SeedWorldFacts(content)
+    actor_manager = ActorManager()
+    actor_manager.configure(_list_field(content, "actors"), generation=0, preserve_state=False)
+    objective_manager = ObjectiveManager()
+    objective_manager.configure(
+        _list_field(content, "objectives"), _list_field(content, "endings"), generation=0,
+    )
+    seed_history = tuple({
+        "event_id": str(item.get("event_id", f"seed-{index}")),
+        "event_type": str(item.get("event_type", "")),
+        "generated_at": float(item.get("generated_at", 0.0) or 0.0),
+        "target_agents": [str(target) for target in item.get("target_agents", [])],
+    } for index, item in enumerate(_list_field(content, "initial_events")) if isinstance(item, Mapping))
+
+    def condition_context(at: float) -> CausalConditionContext:
+        return CausalConditionContext(
+            world_state=facts,
+            actor_manager=actor_manager,
+            objective_manager=objective_manager,
+            event_history=seed_history,
+            sim_time=at,
+        )
+
     nodes = [_event_payload(source)]
     edges: list[dict[str, Any]] = []
     node_ids = {source.event_id}
-    engine.observe(source, sim_time=generated_at, world_state=facts)
+    engine.observe(source, sim_time=generated_at, condition_context=condition_context(generated_at))
     horizon_at = generated_at + horizon * GAME_SECONDS_PER_DAY
 
     while len(nodes) < max_events:
@@ -620,7 +722,7 @@ def dry_run_causal_rules(
                 "delay_days": max(0.0, (event.generated_at - next((item["generated_at"] for item in nodes if item["event_id"] == parent_id), event.generated_at)) / GAME_SECONDS_PER_DAY),
             })
             if effect_ok:
-                engine.observe(event, sim_time=next_due, world_state=facts)
+                engine.observe(event, sim_time=next_due, condition_context=condition_context(next_due))
 
     remaining = engine.snapshot()["pending"]
     pending_due = sum(float(item["due_at"]) <= horizon_at for item in remaining)

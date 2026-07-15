@@ -1481,3 +1481,20 @@ This checkpoint completes P1.2:
 The persistent gameplay-framework goal remains **active**. P1.2 is complete; P1.3 should next generalize causal condition/effect expressiveness while preserving deterministic preview, replay and generation lifecycle semantics. P1.4+ and P2 remain open.
 
 The v0.27.0 release gate passed 592 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected into the test process), 35 frontend tests, Python compile, frontend lint/build, example DLC Registry validation, credential-pattern and encoding scans, and Git diff checks.
+
+## Phase checkpoint: generic causal-condition expressiveness (v0.28.0, 2026-07-15)
+
+Status: **implemented and locally verified**.
+
+This checkpoint completes P1.3:
+
+- introduced one shared deterministic condition contract with 17 fact kinds, 12 operators, typed values, bounded history windows, aggregate functions and source-specific filters;
+- unified production scheduling, Orchestrator publication, Registry validation, static analysis and unsaved-draft Dry Run around the same evaluator;
+- added bounded payload-free causal event history, Snapshot Schema 2.0 recovery and fail-closed player-knowledge semantics;
+- extended cross-reference validation and Dry Run projection across entities, Metadata/tags/state, generic Actors, DLC relationships, ongoing events, Objectives and aggregate metrics;
+- replaced the legacy three-kind Studio row editor with a complete Chinese dynamic card editor and safe serialization for all condition groups/templates/rules;
+- upgraded `example_frontier` to v1.7.0 with a deterministic two-stage causal chain and synchronized AgentEra to v0.28.0.
+
+The persistent gameplay-framework goal remains **active**. P1.3 is complete; P1.4 should next generalize causal effects for entity lifecycle, Agent lifecycle, relationships/positions, Issue creation, knowledge revelation, objective progression, action unlocks and stage transitions. P1.5-P1.6 and P2 remain open.
+
+The v0.28.0 local gate passed 600 Python tests (with 2 external-API environment-gated tests skipped because credentials were not injected), a 155-test focused causal/runtime suite, 41 frontend tests, Python compile, frontend lint/build and zero-issue `example_frontier` Registry validation. External API tests remain opt-in through `AGENTERA_TEST_*` environment variables only.

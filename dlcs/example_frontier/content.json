@@ -31,7 +31,11 @@
       "current_status": "戒备",
       "metadata": {
         "x": 1200,
-        "y": 200
+        "y": 200,
+        "tags": [
+          "frontier",
+          "defense-hub"
+        ]
       }
     },
     {
@@ -1208,6 +1212,205 @@
       "metadata": {
         "actor_only": true
       }
+    }
+  ],
+  "causal_condition_groups": [
+    {
+      "group_id": "frontier_response_readiness",
+      "name": "边境应急响应就绪条件",
+      "description": "演示实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
+      "conditions": [
+        {
+          "kind": "entity_tag",
+          "entity_id": "边境哨站",
+          "name": "frontier",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "entity_field",
+          "entity_id": "边境哨站",
+          "field": "metadata.x",
+          "operator": "gte",
+          "value": 1000
+        },
+        {
+          "kind": "actor_attribute",
+          "entity_id": "frontier_guard",
+          "name": "vigilance",
+          "operator": "gte",
+          "value": 80
+        },
+        {
+          "kind": "actor_state",
+          "entity_id": "frontier_guard",
+          "name": "patrol_status",
+          "operator": "eq",
+          "value": "ready"
+        },
+        {
+          "kind": "actor_trait",
+          "entity_id": "frontier_guard",
+          "name": "vigilant_guard",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "actor_membership",
+          "entity_id": "frontier_guard",
+          "name": "frontier_garrison",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "relationship",
+          "entity_id": "frontier_caravan",
+          "target_entity_id": "frontier_garrison",
+          "name": "trust",
+          "field": "strength",
+          "operator": "gte",
+          "value": 30
+        },
+        {
+          "kind": "event_history",
+          "entity_id": "哨站守备官",
+          "name": "patrol_report",
+          "field": "count",
+          "window_days": 30,
+          "operator": "gte",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "group_id": "frontier_stabilization_ready",
+      "name": "边境稳定化条件",
+      "description": "演示前序世界效果可被后续实体状态与持续事件条件观察，并结合目标公开状态和锚定库存聚合。",
+      "conditions": [
+        {
+          "kind": "entity_state",
+          "entity_id": "边境哨站",
+          "operator": "eq",
+          "value": "应急动员"
+        },
+        {
+          "kind": "ongoing_event",
+          "entity_id": "边境哨站",
+          "name": "frontier_relief_operation",
+          "field": "exists",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "objective_progress",
+          "entity_id": "secure_frontier",
+          "field": "progress",
+          "operator": "exists"
+        },
+        {
+          "kind": "aggregate_metric",
+          "entity_id": "边境哨站",
+          "name": "边境银券",
+          "field": "anchored_inventory",
+          "aggregate": "sum",
+          "filters": {
+            "tag": "frontier"
+          },
+          "operator": "gte",
+          "value": 50
+        }
+      ]
+    }
+  ],
+  "causal_rule_templates": [
+    {
+      "template_id": "frontier_deterministic_follow_up",
+      "name": "边境确定性后续模板",
+      "description": "统一设置一天延迟、确定触发和安全链深度，并要求模拟时间已开始。",
+      "rule": {
+        "delay_days": 1,
+        "probability": 1,
+        "severity_delta": 0,
+        "max_depth": 4,
+        "max_fires_per_chain": 1,
+        "priority": 20,
+        "enabled": true,
+        "conditions": [
+          {
+            "kind": "time",
+            "name": "sim_day",
+            "operator": "gte",
+            "value": 0
+          }
+        ]
+      }
+    }
+  ],
+  "causal_event_rules": [
+    {
+      "rule_id": "patrol_report_to_frontier_response",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_response_readiness"
+      ],
+      "source_event_types": [
+        "patrol_report"
+      ],
+      "child_event_type": "frontier_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "巡逻报告触发边境应急响应。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "update_status",
+          "entity_id": "边境哨站",
+          "new_status": "应急动员"
+        },
+        {
+          "effect_type": "create_ongoing_event",
+          "entity_id": "边境哨站",
+          "event_type": "frontier_relief_operation",
+          "description": "守军与补给官协同执行边境支援。",
+          "duration_days": 3,
+          "expected_result": {
+            "status": "持续巡防"
+          }
+        }
+      ]
+    },
+    {
+      "rule_id": "frontier_response_to_stabilization",
+      "template_id": "frontier_deterministic_follow_up",
+      "condition_group_ids": [
+        "frontier_stabilization_ready"
+      ],
+      "source_event_types": [
+        "frontier_response_started"
+      ],
+      "child_event_type": "frontier_stabilization",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "stabilization",
+        "summary": "应急响应进入稳定化阶段。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "update_status",
+          "entity_id": "边境哨站",
+          "new_status": "持续巡防"
+        }
+      ]
     }
   ]
 }
