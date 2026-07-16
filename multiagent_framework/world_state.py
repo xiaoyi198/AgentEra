@@ -850,6 +850,7 @@ class WorldState:
             WorldCommandType.MODIFY_RELATIONSHIP: self._reduce_modify_relationship,
             WorldCommandType.SET_AGENT_ENABLED: self._reduce_gameplay_effect,
             WorldCommandType.MODIFY_MEMBERSHIP: self._reduce_gameplay_effect,
+            WorldCommandType.APPLY_LIFECYCLE_TRANSITION: self._reduce_gameplay_effect,
             WorldCommandType.CREATE_ISSUE: self._reduce_gameplay_effect,
             WorldCommandType.SET_WORLD_TRUTH: self._reduce_gameplay_effect,
             WorldCommandType.SET_ACTOR_BELIEF: self._reduce_gameplay_effect,

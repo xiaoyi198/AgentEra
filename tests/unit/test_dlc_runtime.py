@@ -36,6 +36,7 @@ class FakeOrchestrator:
         self.derived_metric_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
+        self.lifecycle_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -87,6 +88,62 @@ class FakeOrchestrator:
         self.operations.append(("ui_manifest", manifest.package_id))
         self.ui_manifest_configurations.append((manifest, generation))
 
+    def configure_lifecycle_system(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("lifecycle", contract.fingerprint()))
+        self.lifecycle_configurations.append((contract, generation, preserve_state))
+
+    def lifecycle_public_state(self):
+        if not self.lifecycle_configurations:
+            return {"configured": False, "enabled": False, "generation": 0}
+        contract, generation, _preserve_state = self.lifecycle_configurations[-1]
+        return contract.public_state(generation=generation)
+
+
+def lifecycle_document(display_name: str = "Frontier Lifecycle") -> dict:
+    return {
+        "enabled": True,
+        "actor_templates": [
+            {
+                "template_id": "deputy",
+                "display_name": "Deputy",
+                "actor": {"actor_type": "person"},
+                "entity": {"entity_type": "person", "location_id": "city"},
+                "agent": {"source_agent_id": "mayor"},
+            }
+        ],
+        "positions": [
+            {
+                "position_id": "city_deputy",
+                "display_name": "City Deputy",
+                "organization_id": "city",
+                "role": "deputy",
+                "candidate_actor_ids": ["mayor"],
+            }
+        ],
+        "transitions": [
+            {
+                "transition_id": "appoint_deputy",
+                "display_name": display_name,
+                "kind": "promotion",
+                "trigger": "manual",
+                "operations": [
+                    {
+                        "operation": "spawn_actor",
+                        "template_id": "deputy",
+                        "actor_id_pattern": "deputy_{sequence}",
+                    },
+                    {
+                        "operation": "appoint_position",
+                        "position_id": "city_deputy",
+                        "actor_id": "{actor_id}",
+                    },
+                ],
+            }
+        ],
+    }
+
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
     registry = DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
@@ -132,6 +189,7 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
             }],
         }],
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
+        "lifecycle": lifecycle_document(),
         "gameplay": {
             "player": {
                 "identity_id": "station_commander",
@@ -167,6 +225,14 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     assert report.entities == 1 and report.agents == 2 and report.seeded_world
     assert report.random_events == 1 and report.time_rules == 1
     assert report.causal_event_rules == 1
+    assert report.lifecycle_configured is True
+    assert report.lifecycle_actor_templates == 1
+    assert report.lifecycle_positions == 1
+    assert report.lifecycle_transitions == 1
+    lifecycle_contract, lifecycle_generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert lifecycle_contract.transitions[0].transition_id == "appoint_deputy"
+    assert lifecycle_generation == 1
+    assert preserve_state is False
     assert orchestrator.random_event_configurations[-1][1] is False
     assert orchestrator.random_event_configurations[-1][0][0]["template_id"] == "market_cycle"
     assert orchestrator.time_rule_configurations[-1][0]["rule_id"] == "policy_time"
@@ -1282,3 +1348,98 @@ def test_derived_metric_catalog_survives_generation_reload_archive_and_rollback(
     definitions, generation = orchestrator.derived_metric_configurations[-1]
     assert definitions[0]["display_name"] == "City readiness v1"
     assert generation == 3
+
+
+def test_primary_dlc_owns_lifecycle_contract_when_dependency_also_declares_one(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    registry.save_manifest("sample", {"primary": True})
+    registry.create({"id": "addon", "name": "Addon", "version": "1.0.0"})
+    registry.save_content("addon", {
+        "schema_version": "1.0",
+        "entities": [
+            {"id": "addon_city", "type": "location", "name": "Addon City"},
+            {"id": "addon_org", "type": "organization", "name": "Addon Org"},
+        ],
+        "agents": [{"id": "addon_agent", "name": "Addon Agent", "location_id": "addon_city"}],
+        "lifecycle": {
+            "enabled": True,
+            "actor_templates": [{
+                "template_id": "addon_actor",
+                "display_name": "Addon Actor",
+                "actor": {"actor_type": "person"},
+                "agent": {"source_agent_id": "addon_agent"},
+            }],
+            "positions": [{
+                "position_id": "addon_position",
+                "display_name": "Addon Position",
+                "organization_id": "addon_org",
+                "role": "member",
+            }],
+            "transitions": [{
+                "transition_id": "addon_transition",
+                "display_name": "Addon Transition",
+                "kind": "birth",
+                "trigger": "manual",
+                "operations": [{"operation": "spawn_actor", "template_id": "addon_actor"}],
+            }],
+        },
+    })
+    registry.publish("addon")
+    registry.set_enabled("addon", True)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    loader = DLCBundleLoader(registry, world, court, FakeOrchestrator(), FakeLLM())
+
+    candidate = loader._materialize_active()
+
+    assert candidate.primary_package_id == "sample"
+    assert candidate.lifecycle_contract.transitions[0].transition_id == "appoint_deputy"
+    assert "addon_transition" not in {
+        item.transition_id for item in candidate.lifecycle_contract.transitions
+    }
+
+
+def test_lifecycle_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.lifecycle_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.lifecycle_contract.fingerprint() == original.fingerprint()
+    assert cloned.lifecycle_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["lifecycle"] = lifecycle_document("Reloaded Lifecycle")
+    content["lifecycle"]["transitions"][0]["cooldown_days"] = 3
+    registry.save_content("sample", content)
+    preview = loader.preview_reload()
+    assert preview["lifecycle_changed"] is True
+    assert preview["world_changes"]["lifecycle_actor_templates"] == 1
+    assert preview["world_changes"]["lifecycle_positions"] == 1
+    assert preview["world_changes"]["lifecycle_transitions"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert result["lifecycle_changed"] is True
+    assert contract.transitions[0].display_name == "Reloaded Lifecycle"
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["lifecycle"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert public["counts"]["transitions"] == 1
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"
+    assert rolled_back.fingerprint() == original.fingerprint()
+    assert generation == 3
+    assert preserve_state is True

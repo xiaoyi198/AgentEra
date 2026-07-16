@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.32.0**
+> 当前版本：**v0.33.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -373,6 +373,19 @@ DLC 可在 `content.json.time_system` 声明完整的题材历法和长期玩法
 
 `example_frontier` v1.11.0 演示 360 天边境驻防历、四季、7 天指挥回合、30 天联席会议、14 天巡防任务、回合报告事件、会议自动暂停和战备度低于 30 的上升沿告警。
 
+## DLC 动态 Actor、Agent、职位与组织生命周期 (v0.33.0)
+
+DLC 可在 `content.json.lifecycle` 声明动态角色模板、职位和确定性生命周期规则。生命周期与 DLC Generation 绑定，首次加载、热重载、历史回滚、存档和读档都使用同一份契约；运行时变更统一经过 WorldCommand 原子批次，不允许 DLC 执行任意 Python 或前端代码。
+
+- Actor 模板可同时创建动态 Actor、可选世界实体和可选动态 Agent。动态 Agent 从 `source_agent_id` 对应静态 Agent 继承模型 Profile、任务模型路由、多轮预算、工具权限、记忆窗口和 API Provider 路由；生成后拥有独立 ID，并支持记忆迁移后继续分化。
+- 职位声明组织、角色、等级、容量、初始任职者、候选 Actor 和确定性评分字段。评分支持 Actor 属性、状态、组织成员等级与 Actor ID；同分时以 Actor ID 保证重放稳定。
+- 规则支持出生、死亡、晋升、继任、空缺、组织分裂、组织合并、实体转化和自定义九类语义，可绑定条件、日/周/月/年、季节和玩法周期边界，并支持 `all/any`、`once`、`cooldown_days` 与上升沿。
+- 七类白名单操作为 `spawn_actor`、`retire_actor`、`appoint_position`、`vacate_position`、`transform_entity`、`split_organization`、`merge_organizations`。同一规则的全部操作要么整体成功，要么整体回滚。
+- Receipt、序列号、冷却与条件 Latch 会进入存档；Actor 退休使用 Tombstone，避免热重载或回放时意外复活；动态 Agent 会同步停用，相关职位会自动腾空。
+- DLC Studio 的“动态生命周期”页签提供完整中文可视化编辑器，可创建模板、职位、评分、规则、时间过滤、通用因果条件、七类操作和玩家反馈，并在保存前检查 ID、引用、数值范围与 JSON 结构。
+
+`example_frontier` v1.12.0 提供动态巡防副官模板、巡防队长职位、双周生成、评分继任、退役、瞭望塔季节转化、守军分裂和组织合并示例。
+
 ## 测试
 
 ```powershell
@@ -417,6 +430,16 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.33.0 发布说明
+
+- 新增 Generation-bound `LifecycleContract` 与 `LifecycleRuntime`，覆盖动态 Actor、动态 Agent、职位、出生/死亡/晋升/继任/空缺、实体转化和组织分合。
+- 七类生命周期操作统一展开为原子 WorldCommand Batch；Receipt、序列、冷却、上升沿 Latch、Actor Tombstone、职位状态和玩家反馈可存档恢复，并支持热重载、Generation Archive 与回滚。
+- 动态 Agent 从静态来源 Agent 继承模型选择、多轮预算、工具、记忆和 Provider 路由，并在创建时迁移记忆；退休时同步停用，避免孤立 Agent。
+- DLC Registry 新增生命周期结构、跨目录引用和时间引用校验；Orchestrator Tick、存档、读档和公共状态已接入生命周期运行时。
+- DLC Studio 新增完整中文“动态生命周期”编辑器；`example_frontier` 升级到 `1.12.0`，AgentEra 四处产品版本同步到 `0.33.0`。
+
+长期 Goal 继续保持 active；P0、P1.1-P1.6、P2.1 与 P2.2 已完成，下一阶段进入 P2.3。
 
 ## v0.32.0 发布说明
 

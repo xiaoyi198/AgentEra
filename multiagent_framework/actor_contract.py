@@ -256,6 +256,8 @@ class ActorManager:
     def __init__(self) -> None:
         self._lock, self._generation = threading.RLock(), 0
         self._definitions: dict[str, ActorDefinition] = {}
+        self._dynamic_definitions: dict[str, ActorDefinition] = {}
+        self._lifecycle_tombstones: set[str] = set()
         self._runtime: dict[str, dict[str, Any]] = {}
         # SQLite gameplay effects are authoritative; this is a read-only overlay.
         self._effect_overrides: dict[str, dict[str, Any]] = {}
@@ -263,7 +265,16 @@ class ActorManager:
     @property
     def generation(self) -> int: return self._generation
     @property
-    def configured(self) -> bool: return bool(self._definitions)
+    def configured(self) -> bool:
+        return any(
+            actor_id not in self._lifecycle_tombstones
+            for actor_id in set(self._definitions) | set(self._dynamic_definitions)
+        )
+
+    def _definition(self, actor_id: str) -> ActorDefinition | None:
+        if actor_id in self._lifecycle_tombstones:
+            return None
+        return self._definitions.get(actor_id) or self._dynamic_definitions.get(actor_id)
 
     @staticmethod
     def _initial(actor: ActorDefinition) -> dict[str, Any]:
@@ -278,13 +289,25 @@ class ActorManager:
         with self._lock:
             previous = self._runtime if preserve_state else {}
             runtime: dict[str, dict[str, Any]] = {}
-            for actor_id, actor in parsed.items():
+            combined = {
+                actor_id: actor
+                for actor_id, actor in {**parsed, **{
+                    dynamic_id: actor for dynamic_id, actor in self._dynamic_definitions.items()
+                    if dynamic_id not in parsed
+                }}.items()
+                if actor_id not in self._lifecycle_tombstones
+            }
+            for actor_id, actor in combined.items():
                 base = self._initial(actor)
                 current = previous.get(actor_id, {})
                 if isinstance(current, Mapping):
                     self._merge_runtime(actor, base, current, path=f"actor_runtime.{actor_id}")
                 runtime[actor_id] = base
             self._definitions = parsed
+            self._dynamic_definitions = {
+                actor_id: actor for actor_id, actor in self._dynamic_definitions.items()
+                if actor_id not in parsed
+            }
             self._runtime = runtime
             self._generation = max(0, int(generation))
 
@@ -340,20 +363,66 @@ class ActorManager:
         except (TypeError, ValueError, OverflowError):
             base["version"] = 0
 
+    def set_lifecycle_definitions(self, definitions: Mapping[str, Any] | None) -> None:
+        """Project active SQLite-authoritative lifecycle actors into this generation."""
+        parsed: dict[str, ActorDefinition] = {}
+        tombstones: set[str] = set()
+        if isinstance(definitions, Mapping):
+            for raw_actor_id, raw in definitions.items():
+                if not isinstance(raw, Mapping):
+                    continue
+                actor_id = str(raw.get("actor_id") or raw_actor_id).strip()
+                if not actor_id:
+                    continue
+                if raw.get("retired") or raw.get("active") is False:
+                    tombstones.add(actor_id)
+                    continue
+                authored = copy.deepcopy(dict(raw))
+                authored["actor_id"] = actor_id
+                actor = ActorDefinition.parse(
+                    authored, f"lifecycle.dynamic_actors.{actor_id}"
+                )
+                if actor_id not in self._definitions:
+                    parsed[actor_id] = actor
+        with self._lock:
+            previous = self._runtime
+            runtime: dict[str, dict[str, Any]] = {}
+            combined = {
+                actor_id: actor
+                for actor_id, actor in {**self._definitions, **parsed}.items()
+                if actor_id not in tombstones
+            }
+            for actor_id, actor in combined.items():
+                base = self._initial(actor)
+                current = previous.get(actor_id, {})
+                if isinstance(current, Mapping):
+                    self._merge_runtime(
+                        actor, base, current, path=f"actor_runtime.{actor_id}"
+                    )
+                runtime[actor_id] = base
+            self._dynamic_definitions = parsed
+            self._lifecycle_tombstones = tombstones
+            self._runtime = runtime
+            valid_actor_ids = set(combined)
+            self._effect_overrides = {
+                actor_id: raw for actor_id, raw in self._effect_overrides.items()
+                if actor_id in valid_actor_ids
+            }
+
     def set_effect_overrides(self, overrides: Mapping[str, Any] | None) -> None:
         """Replace the projected membership overlay from GameplayEffectRuntime."""
         normalized: dict[str, dict[str, Any]] = {}
         if isinstance(overrides, Mapping):
             for raw_actor_id, raw in overrides.items():
                 actor_id = str(raw_actor_id)
-                if actor_id in self._definitions and isinstance(raw, Mapping):
+                if self._definition(actor_id) is not None and isinstance(raw, Mapping):
                     normalized[actor_id] = copy.deepcopy(dict(raw))
         with self._lock:
             self._effect_overrides = normalized
 
     def get(self, actor_id: str) -> dict[str, Any] | None:
         with self._lock:
-            actor = self._definitions.get(str(actor_id))
+            actor = self._definition(str(actor_id))
             if actor is None:
                 return None
             result = actor.to_dict()
@@ -381,7 +450,10 @@ class ActorManager:
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
-            actor_ids = sorted(self._definitions)
+            actor_ids = sorted(
+                (set(self._definitions) | set(self._dynamic_definitions))
+                - self._lifecycle_tombstones
+            )
         return [actor for actor_id in actor_ids if (actor := self.get(actor_id)) is not None]
 
     def public_state(self) -> dict[str, Any]:
@@ -395,7 +467,7 @@ class ActorManager:
         if not isinstance(snapshot, Mapping) or not isinstance(snapshot.get("actors", {}), Mapping): return
         with self._lock:
             for actor_id, raw in snapshot["actors"].items():
-                actor = self._definitions.get(str(actor_id))
+                actor = self._definition(str(actor_id))
                 if actor is None or not isinstance(raw, Mapping):
                     continue
                 base = self._initial(actor)

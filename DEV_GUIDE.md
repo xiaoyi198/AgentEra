@@ -3167,3 +3167,60 @@ npm run build
 - Public UI code must use the safe projection and must not copy authored condition trees. Closing an auto-pause banner is not equivalent to calling `POST /api/resume`.
 - Add or update `TemporalSystemTools.test.js` for authoring behavior and `TemporalStateTools.test.js` for public formatting. Backend contract/runtime changes require `test_temporal_contract.py`, `test_temporal_runtime.py` and Generation integration coverage.
 - `frontend/dist/`, `runtime/` and `.pytest_cache/` are generated/runtime artifacts and must not be committed.
+
+## Developing DLC dynamic lifecycles (v0.33.0)
+
+### Minimal authoring shape
+
+`lifecycle` is a top-level sibling of `actors`, `agents`, and `time_system` in a bundle-v1 `content.json`:
+
+```json
+{
+  "lifecycle": {
+    "enabled": true,
+    "recent_feedback_limit": 50,
+    "actor_templates": [],
+    "positions": [],
+    "transitions": []
+  }
+}
+```
+
+Use ASCII-safe IDs for template, position, transition, cycle, season, and month identifiers. Entity, Actor, organization, and Agent references may use existing Unicode IDs. Keep template source Agents static and present in the same resolved DLC graph so model routing and memory inheritance are deterministic.
+
+### Template and position rules
+
+- A template's `actor` object omits `actor_id`; `spawn_actor` assigns it from `actor_id_pattern`. Optional `entity` and `agent` objects create projections in the same transaction.
+- Dynamic Agents require `agent.source_agent_id`. Use `agent.system_prompt` only for role-specific additions; model Profile, task routing, multi-round budget, tools, memory settings, and Provider routing are inherited from the source Agent and may be narrowed by a safe patch.
+- A position must reference an existing organization and declares capacity, incumbents, candidates, role, rank, and score fields. Valid score sources are `attribute`, `state`, `membership_rank`, and `actor_id`. Add an Actor-ID ascending score with zero weight when an explicit stable tie-breaker helps authors understand the order.
+
+### Transition and operation rules
+
+Valid transition triggers are `condition`, `manual`, `day_start`, `week_start`, `month_start`, `year_start`, `season_start`, `season_end`, `cycle_start`, and `cycle_end`. Time-bound triggers must reference IDs declared in `time_system`. Conditions reuse the causal-condition DSL and obey the same hidden-state and audience rules.
+
+The seven operation payloads are edited in DLC Studio and validated again by the backend. Keep multi-operation transitions small and cohesive because all commands are committed as one atomic batch. Use `{sequence}`, `{transition_id}`, `{template_id}`, and `{actor_id}` only in supported pattern fields. Do not depend on array order or random selection for succession; use position scores and stable Actor IDs.
+
+### Hot reload, rollback, and saves
+
+Lifecycle definitions are Generation-bound. Never mutate an existing contract object after publication. Build and validate the next Generation first, then atomically switch the orchestrator. Runtime snapshots must preserve receipt IDs, sequence counters, cooldowns, condition latches, tombstones, dynamic Actor/Agent projections, positions, and recent feedback. Reload/rollback code must not resurrect retired Actors or reuse sequence IDs from a newer Generation.
+
+### DLC Studio workflow
+
+1. Open DLC Studio and select “动态生命周期”.
+2. Create Actor templates first, including optional entity and dynamic Agent sections.
+3. Create positions and verify organization/Actor references.
+4. Create transitions, choose a trigger, add conditions, then add one or more of the seven operations.
+5. Enable player feedback for important automatic transitions.
+6. Save only after the local editor reports no structural/reference errors; then run backend Registry validation because it has the complete resolved DLC graph.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_lifecycle_contract.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py tests/unit/test_lifecycle_state.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Also run `python -m pytest tests/unit/test_version_consistency.py -q` after a release bump. Before committing, validate `dlcs/example_frontier`, run `git diff --check`, and confirm that `frontend/dist/`, runtime state, API keys, and Provider URLs are not staged.

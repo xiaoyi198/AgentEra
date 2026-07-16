@@ -314,8 +314,14 @@ def normalize_world_effect(value: Mapping[str, Any]) -> dict[str, Any]:
             result.update({
                 "role": _text(value.get("role", "member"), "causal_effect_membership_role_invalid", limit=256),
                 "status": _text(value.get("status", "active"), "causal_effect_membership_status_invalid", limit=128),
+                "primary": value.get("primary", False),
+                "description": _text(value.get("description", ""), "causal_effect_membership_description_invalid", required=False, limit=1000),
                 "metadata": _object(value.get("metadata", {}), "causal_effect_metadata_invalid"),
             })
+            if not isinstance(result["primary"], bool):
+                raise CausalEventError("causal_effect_membership_primary_invalid")
+            if value.get("rank") is not None:
+                result["rank"] = _finite(value.get("rank"), "causal_effect_membership_rank_invalid")
     elif effect_type == "create_issue":
         source = _object(value.get("source", {}), "causal_effect_issue_source_invalid")
         if not source:

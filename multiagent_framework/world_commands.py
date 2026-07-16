@@ -39,6 +39,7 @@ class WorldCommandType(str, Enum):
     MODIFY_RELATIONSHIP = "modify_relationship"
     SET_AGENT_ENABLED = "set_agent_enabled"
     MODIFY_MEMBERSHIP = "modify_membership"
+    APPLY_LIFECYCLE_TRANSITION = "apply_lifecycle_transition"
     CREATE_ISSUE = "create_issue"
     SET_WORLD_TRUTH = "set_world_truth"
     SET_ACTOR_BELIEF = "set_actor_belief"

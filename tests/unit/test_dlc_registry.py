@@ -34,6 +34,54 @@ def valid_content(entity_id: str = "place", agent_id: str = "agent") -> dict:
     }
 
 
+def lifecycle_content() -> dict:
+    return {
+        "enabled": True,
+        "actor_templates": [
+            {
+                "template_id": "guard",
+                "display_name": "Guard",
+                "actor": {
+                    "actor_type": "person",
+                    "memberships": [{"organization_id": "guild", "role": "member"}],
+                },
+                "entity": {"entity_type": "person", "location_id": "place"},
+                "agent": {"source_agent_id": "agent"},
+            }
+        ],
+        "positions": [
+            {
+                "position_id": "captain",
+                "display_name": "Captain",
+                "organization_id": "guild",
+                "role": "captain",
+                "incumbent_actor_ids": ["agent"],
+                "candidate_actor_ids": ["agent"],
+            }
+        ],
+        "transitions": [
+            {
+                "transition_id": "recruit",
+                "display_name": "Recruit",
+                "kind": "birth",
+                "trigger": "manual",
+                "operations": [
+                    {
+                        "operation": "spawn_actor",
+                        "template_id": "guard",
+                        "actor_id_pattern": "guard_{sequence}",
+                    },
+                    {
+                        "operation": "appoint_position",
+                        "position_id": "captain",
+                        "actor_id": "{actor_id}",
+                    },
+                ],
+            }
+        ],
+    }
+
+
 def derived_metric(metric_id: str = "readiness", **overrides) -> dict:
     value = {
         "metric_id": metric_id,
@@ -99,6 +147,81 @@ def test_duplicate_ids_and_missing_references_are_reported(registry: DLCRegistry
     assert "entities.duplicate" in codes
     assert "inventory.missing_entity" in codes
     assert "agent.missing_superior" in codes
+
+
+def test_lifecycle_document_is_normalized_and_validated_with_static_references(registry: DLCRegistry):
+    registry.create(manifest("lifecycle"))
+    content = valid_content()
+    content["entities"].append({"id": "guild", "type": "organization", "name": "Guild"})
+    content["lifecycle"] = lifecycle_content()
+
+    registry.save_content("lifecycle", content)
+
+    loaded = registry.load_content("lifecycle")
+    assert loaded["lifecycle"]["actor_templates"][0]["template_id"] == "guard"
+    assert registry.validate("lifecycle") == []
+
+
+def test_lifecycle_validation_reports_contract_and_world_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("broken_lifecycle"))
+    content = valid_content()
+    lifecycle = lifecycle_content()
+    lifecycle["actor_templates"][0]["agent"]["source_agent_id"] = "missing-agent"
+    lifecycle["actor_templates"][0]["actor"]["memberships"][0]["organization_id"] = "missing-org"
+    lifecycle["positions"][0]["organization_id"] = "missing-org"
+    lifecycle["positions"][0]["candidate_actor_ids"] = ["missing-actor"]
+    lifecycle["transitions"][0].update({
+        "trigger": "cycle_start",
+        "cycle_id": "missing-cycle",
+        "conditions": [
+            {
+                "kind": "anchored_inventory",
+                "entity_id": "place",
+                "name": "missing-resource",
+                "operator": "gte",
+                "value": 1,
+            },
+            {
+                "kind": "objective_progress",
+                "entity_id": "missing-objective",
+                "operator": "gte",
+                "value": 1,
+            },
+        ],
+    })
+    lifecycle["transitions"][0]["operations"].append({
+        "operation": "transform_entity",
+        "entity_id": "missing-entity",
+    })
+    content["lifecycle"] = lifecycle
+    registry.save_content("broken_lifecycle", content)
+
+    codes = {issue.code for issue in registry.validate("broken_lifecycle")}
+
+    assert {
+        "lifecycle.missing_source_agent",
+        "lifecycle.missing_organization",
+        "lifecycle.missing_actor",
+        "lifecycle.missing_cycle",
+        "lifecycle.missing_resource",
+        "lifecycle.missing_objective",
+        "lifecycle.missing_entity",
+    } <= codes
+
+
+def test_lifecycle_dynamic_actor_patterns_are_not_treated_as_static_actor_ids(registry: DLCRegistry):
+    registry.create(manifest("dynamic_lifecycle"))
+    content = valid_content()
+    content["entities"].append({"id": "guild", "type": "organization", "name": "Guild"})
+    lifecycle = lifecycle_content()
+    lifecycle["positions"][0]["incumbent_actor_ids"] = []
+    lifecycle["positions"][0]["candidate_actor_ids"] = ["guard_{sequence}"]
+    content["lifecycle"] = lifecycle
+    registry.save_content("dynamic_lifecycle", content)
+
+    codes = {issue.code for issue in registry.validate("dynamic_lifecycle")}
+
+    assert "lifecycle.missing_actor" not in codes
 
 
 def test_asset_anchor_rate_must_be_positive_and_finite(registry: DLCRegistry):

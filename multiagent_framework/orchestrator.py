@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import threading
 import time
@@ -15,7 +16,7 @@ from .action_contract import ActionCatalog
 from .actor_contract import ActorDefinition, ActorManager
 from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .action_causal_bridge import build_action_causal_event
-from .agent_runtime import BaseAgent, OfficialAgent
+from .agent_runtime import AgentConfig, BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
 from .causal_events import CausalConditionContext, CausalEventEngine
@@ -26,6 +27,8 @@ from .gameplay_contract import GameplayContract
 from .gameplay_effect_runtime import GameplayEffectRuntime
 from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
+from .lifecycle_contract import LifecycleContract
+from .lifecycle_runtime import LifecyclePollResult, LifecycleRuntime
 from .objective_contract import ObjectiveManager
 from .derived_metrics import DerivedMetricCatalog, DerivedMetricEvaluationContext
 from .fc_handlers import (
@@ -96,6 +99,9 @@ class Orchestrator:
 
         self.agents: dict[str, BaseAgent] = {}
         self.agent_generation: int = 0
+        self._dynamic_agent_ids: set[str] = set()
+        self._dynamic_agent_specs: dict[str, tuple[Any, ...]] = {}
+        self._last_dynamic_agent_sync_errors: list[dict[str, Any]] = []
         self._gameplay_contract = GameplayContract()
         self._ui_manifest = UIManifest.from_content({})
         self.actor_manager = ActorManager()
@@ -160,6 +166,7 @@ class Orchestrator:
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
         self.temporal_runtime = TemporalRuntime()
+        self.lifecycle_runtime = LifecycleRuntime()
         self._auto_pause_reason: dict[str, Any] | None = None
         self._last_real_time: float = 0.0
         self._running = False
@@ -709,7 +716,7 @@ class Orchestrator:
         return getattr(self.action_agent, "world_state", None)
 
     def _sync_gameplay_effect_runtime(self, *, project_issues: bool = True) -> dict[str, Any]:
-        """Refresh the SQLite-authoritative effect read model and manager projections."""
+        """Refresh SQLite-authoritative effects and all runtime projections."""
         state = self.gameplay_effect_runtime.refresh(self.world_state)
         self.gameplay_effect_runtime.sync_managers(
             actor_manager=self.actor_manager,
@@ -719,7 +726,103 @@ class Orchestrator:
             sim_time=self._sim_time,
             project_issues=project_issues,
         )
+        self._last_dynamic_agent_sync_errors = self._sync_dynamic_agents(state)
         return state
+
+    @staticmethod
+    def _dynamic_agent_spec(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(row.get("source_agent_id", "")),
+            str(row.get("actor_id", "")),
+            str(row.get("display_name", "")),
+            str(row.get("system_prompt", "")),
+        )
+
+    def _sync_dynamic_agents(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        """Project enabled lifecycle Agent descriptors into live Agent instances.
+
+        Static Agents always win ID conflicts. Existing dynamic Agent memory is migrated
+        when a descriptor or its source Agent changes. Retired descriptors are removed
+        from future dispatch while already-running turns keep their direct old reference.
+        """
+        lifecycle = state.get("lifecycle", {}) if isinstance(state, dict) else {}
+        raw_rows = lifecycle.get("dynamic_agents", {}) if isinstance(lifecycle, dict) else {}
+        rows = raw_rows if isinstance(raw_rows, dict) else {}
+        desired = {
+            str(agent_id): dict(row)
+            for agent_id, row in rows.items()
+            if agent_id and isinstance(row, dict)
+            and bool(row.get("enabled", True))
+            and not bool(row.get("retired", False))
+        }
+        errors: list[dict[str, Any]] = []
+
+        for agent_id in sorted(self._dynamic_agent_ids - set(desired)):
+            self.agents.pop(agent_id, None)
+            self._dynamic_agent_ids.discard(agent_id)
+            self._dynamic_agent_specs.pop(agent_id, None)
+
+        for agent_id in sorted(desired):
+            row = desired[agent_id]
+            source_id = str(row.get("source_agent_id", "")).strip()
+            current = self.agents.get(agent_id)
+            if current is not None and agent_id not in self._dynamic_agent_ids:
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_id_conflict",
+                    "source_agent_id": source_id,
+                })
+                continue
+            source = self.agents.get(source_id)
+            if source is None or source_id == agent_id:
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_source_not_found",
+                    "source_agent_id": source_id,
+                })
+                continue
+            spec = (*self._dynamic_agent_spec(row), id(source), source.__class__)
+            if current is not None and self._dynamic_agent_specs.get(agent_id) == spec:
+                continue
+            if current is not None and bool(getattr(current, "is_busy", False)):
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_refresh_deferred",
+                    "source_agent_id": source_id,
+                })
+                continue
+            source_config = getattr(source, "config", None)
+            source_llm = getattr(source, "llm", None)
+            if not isinstance(source_config, AgentConfig):
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_source_invalid",
+                    "source_agent_id": source_id,
+                })
+                continue
+            config = copy.deepcopy(source_config)
+            config.agent_id = agent_id
+            config.actor_id = str(row.get("actor_id", ""))
+            config.display_name = str(row.get("display_name") or config.display_name or agent_id)
+            if row.get("system_prompt") not in (None, ""):
+                config.system_prompt = str(row.get("system_prompt"))
+            try:
+                projected = source.__class__(config, source_llm)
+                if current is not None:
+                    projected.deserialize_memory(current.serialize_memory())
+                self.register_agent(projected)
+            except Exception as exc:
+                logger.exception("Failed to project dynamic Agent %s", agent_id)
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_projection_failed",
+                    "source_agent_id": source_id,
+                    "detail": str(exc),
+                })
+                continue
+            self._dynamic_agent_ids.add(agent_id)
+            self._dynamic_agent_specs[agent_id] = spec
+        return errors
 
     def is_agent_enabled(self, agent_id: str) -> bool:
         """Return whether an Agent may receive or execute new work."""
@@ -799,7 +902,11 @@ class Orchestrator:
             )
             prepared[agent_id] = agent
 
-        replace_ids = set(replace_agent_ids or self.agents)
+        replace_ids = set(
+            replace_agent_ids if replace_agent_ids is not None
+            else (set(self.agents) - self._dynamic_agent_ids)
+        )
+        replace_ids -= self._dynamic_agent_ids
         previous = {
             agent_id: agent for agent_id, agent in self.agents.items()
             if agent_id in replace_ids
@@ -815,6 +922,7 @@ class Orchestrator:
             "Activated Agent snapshot generation=%d active=%d replaced=%d",
             self.agent_generation, len(prepared), len(previous),
         )
+        self._sync_gameplay_effect_runtime(project_issues=False)
         return previous
 
     def _fuzzy_find_agent(self, keyword: str) -> tuple[BaseAgent | None, Any]:
@@ -907,6 +1015,47 @@ class Orchestrator:
             self._sim_time, auto_pause_reason=self._auto_pause_reason,
         )
 
+    def configure_lifecycle_system(
+        self, contract: LifecycleContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish lifecycle transitions while preserving compatible condition latches."""
+        self.lifecycle_runtime.configure(
+            contract, generation=generation, preserve_state=preserve_state,
+        )
+        self._sync_gameplay_effect_runtime(project_issues=False)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def lifecycle_public_state(self) -> dict[str, Any]:
+        return self.lifecycle_runtime.public_state(world_state=self.world_state)
+
+    def execute_lifecycle_transition(
+        self, transition_id: str, *, request_id: str,
+        variables: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute one manual lifecycle transition with receipt idempotency."""
+        outcome = self.lifecycle_runtime.execute_manual(
+            transition_id, world_state=self.world_state, sim_time=self._sim_time,
+            request_id=request_id, actor_manager=self.actor_manager,
+            condition_context=CausalConditionContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                objective_manager=self.objective_manager,
+                event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+                derived_metric_provider=self.derived_metric_catalog,
+                knowledge_provider=self.player_knowledge_provider,
+                issue_manager=self.issue_manager,
+                action_catalog=self.action_catalog,
+            ),
+            variables=variables,
+        )
+        if outcome.get("status") == "applied":
+            self._sync_gameplay_effect_runtime()
+            if self.persistor:
+                self.persistor.mark_state_dirty()
+        return outcome
+
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
         causal_scheduled = self.causal_event_engine.observe(
@@ -985,6 +1134,7 @@ class Orchestrator:
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
             "time_system_runtime": self.temporal_runtime.snapshot(),
+            "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
             "auto_pause_reason": self._auto_pause_reason,
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
@@ -1021,6 +1171,7 @@ class Orchestrator:
             self.temporal_runtime.restore(temporal_state, sim_time=self._sim_time)
         else:
             self.temporal_runtime.last_polled_time = self._sim_time
+        self.lifecycle_runtime.restore(state.get("lifecycle_runtime", {}))
         auto_pause_reason = state.get("auto_pause_reason")
         self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
@@ -1186,6 +1337,41 @@ class Orchestrator:
             self.persistor.mark_state_dirty()
 
         # 1. 检查到期定时器 → 加入待唤醒队列
+        lifecycle_poll = LifecyclePollResult()
+        try:
+            lifecycle_poll = self.lifecycle_runtime.poll(
+                self._sim_time, markers=temporal_poll.markers,
+                world_state=self.world_state, actor_manager=self.actor_manager,
+                condition_context=CausalConditionContext(
+                    world_state=self.world_state,
+                    actor_manager=self.actor_manager,
+                    objective_manager=self.objective_manager,
+                    event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+                    derived_metric_provider=self.derived_metric_catalog,
+                    knowledge_provider=self.player_knowledge_provider,
+                    issue_manager=self.issue_manager,
+                    action_catalog=self.action_catalog,
+                ),
+            )
+            if lifecycle_poll.applied_count:
+                self._sync_gameplay_effect_runtime()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                result.agent_errors.extend(self._last_dynamic_agent_sync_errors)
+        except Exception as exc:
+            logger.exception("Lifecycle poll crashed")
+            result.agent_errors.append({
+                "agent_id": "lifecycle_system",
+                "error": "lifecycle_poll_failed",
+                "detail": str(exc),
+            })
+            result.lifecycle = {
+                **lifecycle_poll.to_dict(),
+                "runtime_error": str(exc),
+            }
+        else:
+            result.lifecycle = lifecycle_poll.to_dict()
+
         random_poll = self.random_event_generator.poll(self._sim_time)
         for event in random_poll.events:
             self.inject_event(event)

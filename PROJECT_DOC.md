@@ -2256,3 +2256,31 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 - `TickResult.time_system` and `GET /api/time-system` expose only the current calendar date, current season, enabled cycle states, authored public pause descriptions and bounded receipts. Condition trees, threshold values and hidden fact references are excluded. `TickResult.auto_pause` carries only the fired public reason and safe marker summary.
 - The main React application normalizes that projection through `TemporalStateTools.js`, displays the DLC date/season and active cycle progress, and keeps an auto-pause notice separate from the resume action. `TemporalSystemEditor.jsx` provides the detailed Chinese Studio authoring surface and serializes through `TemporalSystemTools.js`.
 - `example_frontier` v1.11.0 is the reference package for calendars, four seasons, concurrent command/meeting/task cycles, boundary Issue projection and condition/boundary pauses. AgentEra v0.32.0 completes P2.1; the persistent gameplay-framework goal remains active for P2.2-P2.4.
+
+## Dynamic lifecycle architecture (v0.33.0)
+
+### Contract and validation
+
+- `content.json.lifecycle` is normalized by `normalize_lifecycle_document()` and parsed by `LifecycleContract`. The contract is Generation-bound and contains `actor_templates`, `positions`, `transitions`, `enabled`, and `recent_feedback_limit`.
+- `DLCRegistry.validate()` checks template source Agents, entity/location/organization references, initial incumbents and candidates, calendar month/season/cycle references, causal-condition resources, and organization/entity operation targets. Dynamic formatted references are allowed only where the lifecycle runtime can resolve them.
+- The operation allowlist is fixed to `spawn_actor`, `retire_actor`, `appoint_position`, `vacate_position`, `transform_entity`, `split_organization`, and `merge_organizations`; authored lifecycle data cannot name Python handlers, React components, URLs, or executable code.
+
+### Runtime and atomicity
+
+`LifecycleRuntime` evaluates manual calls, temporal markers, and continuous conditions. A matched transition is expanded into one WorldCommand batch and applied atomically by the gameplay effect runtime. A later command failure rolls back the entire batch, including Actor, entity, membership, position, and Agent projections. Stable receipt IDs provide idempotency; transition sequence, once receipts, cooldown timestamps, edge-trigger latches, feedback, and dynamic definitions are stored in the gameplay-effect lifecycle state.
+
+Actor retirement writes a tombstone rather than deleting authoritative history. It disables the dynamic Agent, vacates every held position, removes active memberships, and can remove the projected entity. Organization split/merge creates or transforms organization entities and moves memberships through the same atomic command path. Position selection is deterministic: configured score fields are evaluated in order and Actor ID is the final stable tie-breaker.
+
+### Dynamic Agent projection and memory
+
+A template Agent must reference a static `source_agent_id`. At spawn time the runtime copies the source Agent's model profile, task-model policies, tool permissions, multi-round limits, memory policy, and Provider routing, then applies the template/operation patch. The new Agent receives its own stable ID. Existing memory is migrated into the dynamic Agent's namespace before later turns diverge. Tombstoning the Actor disables the Agent, while hot reload only preserves definitions and state that remain valid in the promoted Generation.
+
+### Orchestrator, archive, and public state
+
+The orchestrator polls lifecycle transitions during simulation ticks and includes runtime snapshots in save/load. DLC initial load, hot reload, promotion rollback, encrypted Generation Archive, and restart recovery publish the lifecycle contract with the other DLC catalogs. Public gameplay state exposes only the bounded lifecycle projection and recent feedback; it does not expose hidden causal operands, prompt bodies, Provider credentials, or source-Agent private memory.
+
+### DLC Studio and reference package
+
+`frontend/src/LifecycleEditor.jsx` and `LifecycleEditorTools.js` implement the “动态生命周期” editor. It covers template Actor/entity/Agent fields, position candidates and scoring, nine transition semantics, ten trigger types, common causal conditions, seven operations, feedback, local validation, normalization, serialization, and editor-only-field stripping. The editor is integrated into `DLCStudio.jsx` and uses the existing import/export, diff, history, and save pipeline.
+
+`example_frontier` v1.12.0 is the reference package: it defines a dynamic patrol-deputy Actor/entity/Agent template, a scored patrol-captain position, cycle recruitment, succession, retirement, seasonal entity transformation, organization split, and organization merge. AgentEra v0.33.0 completes gameplay-framework phase P2.2.
