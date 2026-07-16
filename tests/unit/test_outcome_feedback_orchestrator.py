@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from multiagent_framework.gameplay_contract import GameplayContract
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.outcome_feedback_contract import DAY, OutcomeFeedbackContract
 from multiagent_framework.time_simulator import TimeSimulator
+from multiagent_framework.types import EventObject
 from multiagent_framework.world_state import Entity, EntityValue, ResourceDefinition, WorldState
 
 
@@ -112,3 +114,50 @@ def test_save_load_preserves_delayed_report_and_delivers_once(tmp_path):
     second = restored.outcome_feedback_runtime.poll(sim_time=DAY * 2, condition_context=restored._feedback_condition_context())
     assert [item["kind"] for item in first["delivered"]] == ["delayed_report"]
     assert second["delivered"] == []
+
+
+
+def test_historical_causal_feedback_delay_is_already_due_in_catch_up_tick(tmp_path):
+    orchestrator = _orchestrator(tmp_path, "causal-catch-up")
+    orchestrator.configure_outcome_feedback(OutcomeFeedbackContract.from_mapping({
+        "enabled": True,
+        "immediate": {"enabled": False},
+        "rules": [{
+            "rule_id": "causal_follow_up",
+            "display_name": "Causal follow-up",
+            "source_kinds": ["causal_event"],
+            "event_types": ["relief"],
+            "delivery": "delayed",
+            "delay_days": 1,
+            "title": "Relief follow-up",
+            "summary": "Relief consequences are now visible.",
+        }],
+    }), generation=2, preserve_state=False)
+    orchestrator.configure_causal_events([{
+        "rule_id": "shortage_to_relief",
+        "source_event_types": ["shortage"],
+        "child_event_type": "relief",
+        "target_agents": [],
+        "delay_days": 1,
+        "probability": 1,
+    }])
+    orchestrator._sim_time = 5 * DAY
+    orchestrator.inject_event(EventObject(
+        event_id="historical-shortage",
+        event_type="shortage",
+        severity=5,
+        target_agents=[],
+        initial_payload={},
+        generated_at=DAY,
+    ))
+
+    result = asyncio.run(orchestrator._tick())
+
+    delayed = next(
+        item for item in result.outcome_feedback["delivered"]
+        if item["kind"] == "delayed_report"
+    )
+    assert delayed["created_at"] == 2 * DAY
+    assert delayed["due_at"] == 3 * DAY
+    assert delayed["delivered_at"] == 5 * DAY
+    assert result.outcome_feedback["pending_count"] == 0

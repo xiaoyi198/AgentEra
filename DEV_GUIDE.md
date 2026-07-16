@@ -3485,3 +3485,31 @@ git diff --check
 ```
 
 提交前还要确认 `VERSION`、`multiagent_framework/version.py`、`frontend/package.json` 与 `frontend/package-lock.json` 四处版本一致。共享文档和并行 Settings/API 文件只能按本任务 hunk 暂存；不要提交本地 Key、`config/models.json`、运行数据库或 `.codex-local` 进度文件。
+
+## 开发长对局 catch-up 时间语义（v0.38.0）
+
+### 事件时间规则
+
+新增事件生产者必须填写 `EventObject.generated_at`，并使用实际发生时间而不是当前轮询时间：随机模板使用 `scheduled_at`，时间边界使用 marker 时间，因果子事件使用 `due_at`。进入 Orchestrator 后统一调用 `_effective_event_time()`；不要在各分支自行复制 clamp 逻辑。
+
+以下消费者必须使用同一个有效事件时间：
+
+1. `CausalEventEngine.observe(..., sim_time=...)` 与对应 `CausalConditionContext.sim_time`；
+2. 时间边界、随机事件、因果事件的 `RhythmRuntime.allow_event()`；
+3. `execute_causal_world_commands()` 的命令时间；
+4. 历史事件投影出的 Issue/Case/DecisionRequest 创建时间和截止期；
+5. 因果结果反馈的记录时间与延迟到期时间；
+6. 发往 Agent 或玩家的事件唤醒负载中的 `generated_at`。
+
+普通 API 或玩家当下操作继续使用当前 `_sim_time`。只有来源事件明确携带权威时间时才调用内部 `_open_issue_at()`，避免允许客户端任意伪造历史 Issue。
+
+### 回归要求
+
+~~~powershell
+python -m pytest tests/unit/test_event_generator.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_outcome_feedback_orchestrator.py -q
+python -m pytest tests/unit/test_version_consistency.py -q
+~~~
+
+长跳时测试至少要覆盖：历史来源事件的因果延迟、当前 tick 后仍应 pending 的未来子事件、Rhythm 冷却序列、世界命令/库存账本时间、Issue 截止期与逾期状态、已经逾期的延迟反馈补发。测试断言应同时检查 `generated_at` 和持久化时间字段，不能只检查事件数量。
+
+不要把“保留每条事件的发生时间”误写成“跨来源全局严格排序”。当前 tick 仍按既有阶段处理时间边界、生命周期、随机与因果来源；若未来引入统一时间队列，需要单独设计跨来源稳定排序、预算、公平性和零延迟链上限。

@@ -125,6 +125,98 @@ def test_tick_exposes_rhythm_and_suppresses_random_event_during_quiet_period(tmp
     assert public["recent_suppressed_events"][-1]["event_type"] == "storm"
 
 
+def test_random_event_cooldown_uses_each_historical_occurrence_time(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+    contract = RhythmContract.from_mapping({
+        "enabled": True,
+        "max_active_issues": 20,
+        "attention_budget": 10,
+        "attention_recovery_per_day": 0,
+        "rules": [{
+            "rule_id": "weather_cooldown",
+            "event_types": ["storm"],
+            "max_active": 20,
+            "attention_cost": 1,
+            "cooldown_days": 2,
+        }],
+    })
+    orchestrator.configure_rhythm_system(contract, generation=5, preserve_state=False)
+    orchestrator.configure_random_events([{
+        "template_id": "storm",
+        "event_type": "storm",
+        "target_agents": ["observer"],
+        "severity_min": 4,
+        "severity_max": 4,
+        "min_interval_days": 1,
+        "max_interval_days": 1,
+        "probability": 1,
+        "max_occurrences": 5,
+        "enabled": True,
+    }], preserve_state=False)
+    orchestrator._sim_time = 5 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orchestrator._tick())
+
+    assert [item["generated_at"] for item in result.generated_events] == [
+        day * GAME_SECONDS_PER_DAY for day in range(1, 6)
+    ]
+    assert [item["rhythm_status"] for item in result.generated_events] == [
+        "allowed", "suppressed", "allowed", "suppressed", "allowed",
+    ]
+    assert [
+        item["generated_at"] for item in result.generated_events
+        if item["rhythm_status"] == "allowed"
+    ] == [
+        GAME_SECONDS_PER_DAY,
+        3 * GAME_SECONDS_PER_DAY,
+        5 * GAME_SECONDS_PER_DAY,
+    ]
+
+
+def test_causal_world_effect_receipt_uses_historical_due_time(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+    world = orchestrator.world_state
+    world.upsert_entity(Entity(id="warehouse", type="location", name="Warehouse"))
+    world.upsert_resource_definition(ResourceDefinition(
+        name="grain", kind="asset", anchor_rate=1, min_quantity=0, default_quantity=0,
+    ))
+    world.set_inventory("warehouse", "grain", "grain", 10, command_id="seed")
+    orchestrator.configure_causal_events([{
+        "rule_id": "shortage_to_relief",
+        "source_event_types": ["shortage"],
+        "child_event_type": "relief",
+        "target_agents": [],
+        "delay_days": 1,
+        "probability": 1,
+        "world_effects": [{
+            "effect_type": "adjust_resource",
+            "entity_id": "warehouse",
+            "resource_name": "grain",
+            "quantity_delta": -5,
+        }],
+    }])
+    orchestrator._sim_time = 5 * GAME_SECONDS_PER_DAY
+    orchestrator.inject_event(EventObject(
+        event_id="shortage-history",
+        event_type="shortage",
+        severity=5,
+        target_agents=[],
+        initial_payload={},
+        generated_at=GAME_SECONDS_PER_DAY,
+    ))
+
+    result = asyncio.run(orchestrator._tick())
+
+    causal = next(item for item in result.generated_events if item["source"] == "causal")
+    assert causal["generated_at"] == 2 * GAME_SECONDS_PER_DAY
+    effect_rows = [
+        item for item in world.get_inventory_ledger("warehouse")
+        if item["command_id"] != "seed"
+    ]
+    assert len(effect_rows) == 1
+    assert effect_rows[0]["sim_time"] == 2 * GAME_SECONDS_PER_DAY
+
+
 def test_suppressed_causal_event_does_not_execute_world_commands(tmp_path):
     orchestrator = _orchestrator(tmp_path)
     world = orchestrator.world_state

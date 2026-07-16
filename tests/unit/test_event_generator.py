@@ -250,6 +250,63 @@ def test_orchestrator_random_event_triggers_zero_delay_causal_event_without_payl
     assert len(result.new_decision_requests) == 4
 
 
+def test_orchestrator_catch_up_preserves_event_time_for_causal_delays_and_issue_deadlines():
+    orch = make_orchestrator_for_events()
+    orch.configure_issue_catalog([{
+        "issue_type_id": "locust_report",
+        "display_name": "Locust report",
+        "source": {"allowed_kinds": ["system"]},
+        "match": {"payload_types": ["locust_plague"]},
+        "default_deadline_days": 1,
+    }], generation=6)
+    orch.configure_random_events([
+        template(
+            min_interval_days=1,
+            max_interval_days=1,
+            max_occurrences=5,
+        )
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": "locust_to_famine",
+        "source_event_types": ["locust_plague"],
+        "child_event_type": "famine_risk",
+        "delay_days": 1,
+        "probability": 1,
+        "max_depth": 2,
+        "max_fires_per_chain": 1,
+    }])
+    orch._sim_time = 5 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    random_events = [item for item in result.generated_events if item["source"] == "random"]
+    causal_events = [item for item in result.generated_events if item["source"] == "causal"]
+    assert [item["generated_at"] for item in random_events] == [
+        day * GAME_SECONDS_PER_DAY for day in range(1, 6)
+    ]
+    assert [item["generated_at"] for item in causal_events] == [
+        day * GAME_SECONDS_PER_DAY for day in range(2, 6)
+    ]
+    assert orch.causal_event_status()["pending_count"] == 1
+
+    issues = [
+        item for item in orch.list_issues()
+        if item["issue_type_id"] == "locust_report"
+    ]
+    assert len(issues) == 10
+    statuses_by_day = {
+        day: {item["status"] for item in issues if item["created_at"] == day * GAME_SECONDS_PER_DAY}
+        for day in range(1, 6)
+    }
+    assert statuses_by_day == {
+        1: {"overdue"},
+        2: {"overdue"},
+        3: {"overdue"},
+        4: {"open"},
+        5: {"open"},
+    }
+
+
 def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():
     orch = make_orchestrator_for_events()
     rules = [{

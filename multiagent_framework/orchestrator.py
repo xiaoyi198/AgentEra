@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import threading
 import time
 import uuid
@@ -511,13 +512,30 @@ class Orchestrator:
     def list_decision_requests(self, *, status: str = "") -> list[dict[str, Any]]:
         return self.issue_manager.list_decision_requests(sim_time=self._sim_time, status=status)
 
-    def open_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self.issue_manager.open_issue(payload, sim_time=self._sim_time)
+    def _effective_event_time(self, generated_at: Any) -> float:
+        """Clamp an authored event timestamp to the elapsed simulation window."""
+        current = float(self._sim_time)
+        if not math.isfinite(current) or current < 0:
+            current = 0.0
+        if isinstance(generated_at, bool) or not isinstance(generated_at, (int, float)):
+            return current
+        value = float(generated_at)
+        if not math.isfinite(value):
+            return current
+        return min(current, max(0.0, value))
+
+    def _open_issue_at(self, payload: dict[str, Any], *, sim_time: Any) -> dict[str, Any]:
+        result = self.issue_manager.open_issue(
+            payload, sim_time=self._effective_event_time(sim_time),
+        )
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
         self._evaluate_objectives()
         return result
+
+    def open_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._open_issue_at(payload, sim_time=self._sim_time)
 
     def append_issue_evidence(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.issue_manager.append_evidence(issue_id, payload, sim_time=self._sim_time)
@@ -1117,9 +1135,10 @@ class Orchestrator:
     def outcome_feedback_public_state(self) -> dict[str, Any]:
         return self.outcome_feedback_runtime.public_state()
 
-    def _feedback_condition_context(self) -> CausalConditionContext:
+    def _feedback_condition_context(self, *, sim_time: Any = None) -> CausalConditionContext:
+        context_time = self._sim_time if sim_time is None else self._effective_event_time(sim_time)
         return CausalConditionContext(
-            sim_time=self._sim_time, world_state=self.world_state,
+            sim_time=context_time, world_state=self.world_state,
             actor_manager=self.actor_manager, objective_manager=self.objective_manager,
             event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
             derived_metric_provider=self.derived_metric_catalog,
@@ -1216,10 +1235,12 @@ class Orchestrator:
 
     def inject_event(self, event: EventObject) -> None:
         """注入一个事件，为每个 target_agent 创建即时唤醒."""
+        event_time = self._effective_event_time(event.generated_at)
         causal_scheduled = self.causal_event_engine.observe(
             event,
-            sim_time=self._sim_time,
+            sim_time=event_time,
             condition_context=CausalConditionContext(
+                sim_time=event_time,
                 world_state=self.world_state,
                 actor_manager=self.actor_manager,
                 objective_manager=self.objective_manager,
@@ -1238,11 +1259,12 @@ class Orchestrator:
             self._pending_wakeups.append({
                 "target": agent_id,
                 "payload": {
+                    **event.initial_payload,
                     "description": f"【{event.event_type}】严重程度{event.severity}/10 — {event.initial_payload}",
                     "event_id": event.event_id,
                     "event_type": event.event_type,
                     "severity": event.severity,
-                    **event.initial_payload,
+                    "generated_at": event_time,
                 },
                 "event_id": event.event_id,
                 "chain_id": f"chain_{uuid.uuid4().hex[:8]}",
@@ -1502,8 +1524,9 @@ class Orchestrator:
             ),
         )
         for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+            event_time = self._effective_event_time(event.generated_at)
             rhythm_event = self.rhythm_runtime.allow_event(
-                event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
             )
             generated_metadata = {
                 **dict(event_metadata),
@@ -1519,7 +1542,7 @@ class Orchestrator:
             if issue_type_id:
                 payload = dict(event.initial_payload)
                 try:
-                    opened = self.open_issue({
+                    opened = self._open_issue_at({
                         "external_id": f"time_system:{event.event_id}",
                         "issue_type_id": issue_type_id,
                         "type": event.event_type,
@@ -1529,7 +1552,7 @@ class Orchestrator:
                         "details": {"temporal_boundary": payload.get("temporal_boundary", {}), "payload": payload},
                         "urgency": payload.get("urgency", "normal"),
                         "metadata": {"event_id": event.event_id, "boundary_event_id": payload.get("boundary_event_id", "")},
-                    })
+                    }, sim_time=event_time)
                     result.new_issues.append(opened["issue"])
                     result.new_cases.append(opened["case"])
                     result.new_decision_requests.extend(opened["decision_requests"])
@@ -1595,8 +1618,9 @@ class Orchestrator:
 
         random_poll = self.random_event_generator.poll(self._sim_time)
         for event in random_poll.events:
+            event_time = self._effective_event_time(event.generated_at)
             rhythm_event = self.rhythm_runtime.allow_event(
-                event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
             )
             allowed = rhythm_event.get("allowed", True)
             if allowed:
@@ -1626,9 +1650,10 @@ class Orchestrator:
                 break
             causal_remaining -= causal_poll.due_count
             for event in causal_poll.events:
+                event_time = self._effective_event_time(event.generated_at)
                 effect_count = len(event.world_commands)
                 rhythm_event = self.rhythm_runtime.allow_event(
-                    event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+                    event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
                 )
                 if not rhythm_event.get("allowed", True):
                     result.generated_events.append({
@@ -1650,7 +1675,7 @@ class Orchestrator:
                     self._record_operational_metric("causal_effect_batches")
                     try:
                         effect_result = execute_causal_world_commands(
-                            self.world_state, event, sim_time=self._sim_time,
+                            self.world_state, event, sim_time=event_time,
                         ) if self.world_state is not None else None
                     except Exception:
                         self._record_operational_metric("causal_effect_failures")
@@ -1821,8 +1846,11 @@ class Orchestrator:
                 }
                 if payload.get("deadline_days") is not None:
                     issue_payload["deadline_days"] = payload["deadline_days"]
+                issue_time = self._effective_event_time(
+                    payload.get("generated_at", self._sim_time),
+                )
                 try:
-                    opened = self.open_issue(issue_payload)
+                    opened = self._open_issue_at(issue_payload, sim_time=issue_time)
                 except IssueContractError as exc:
                     logger.warning(
                         "Player wakeup rejected by issue contract: target=%s code=%s",
@@ -1893,15 +1921,16 @@ class Orchestrator:
         for item in result.generated_events:
             if item.get("source") != "causal" or not item.get("event_id"):
                 continue
+            event_time = self._effective_event_time(item.get("generated_at", self._sim_time))
             feedback = self.outcome_feedback_runtime.record(
                 source_kind="causal_event", source_id=str(item.get("event_id", "")),
-                receipt_id=f"causal_event:{item.get('event_id', '')}", sim_time=self._sim_time,
+                receipt_id=f"causal_event:{item.get('event_id', '')}", sim_time=event_time,
                 display_name=str(item.get("event_type", "Causal event")),
                 event_type=str(item.get("event_type", "")),
                 summary=f"{item.get('event_type', 'Causal event')} occurred.",
                 reason=str(item.get("world_effect_status", item.get("source", "causal"))),
                 details={"event_type": str(item.get("event_type", ""))},
-                condition_context=self._feedback_condition_context(),
+                condition_context=self._feedback_condition_context(sim_time=event_time),
             )
             tick_feedback_deliveries.extend(feedback["delivered"])
         feedback_poll = self.outcome_feedback_runtime.poll(

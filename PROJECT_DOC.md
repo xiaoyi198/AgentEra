@@ -2408,3 +2408,21 @@ flowchart LR
 ### 发布状态
 
 v0.37.0 新增 9 项前端工具测试，覆盖中文解析、原子套件创建、缺失引用、冲突跳过/覆盖、玩家身份规范化、自动建议、引用与重复校验，以及 `gameplay` 扩展字段保留。发布回归要求运行完整前端测试、ESLint、生产构建和 `git diff --check`。
+
+## Long-session catch-up event time architecture (v0.38.0)
+
+### Effective event time
+
+`EventObject.generated_at` is the authoritative occurrence time for authored temporal boundaries, scheduled random events, and materialized causal children. `Orchestrator._effective_event_time()` normalizes that value to the elapsed simulation window `[0, current_sim_time]`; invalid or non-finite external values fall back to the current simulation time. This prevents future timestamps from executing world effects ahead of the simulation while preserving valid historical timestamps during catch-up.
+
+`inject_event()` passes the normalized time to `CausalEventEngine.observe()` and to its `CausalConditionContext`. Therefore a child with `delay_days=1` is scheduled one game day after the source occurrence, not one day after the catch-up poll. Event wakeups also carry the normalized `generated_at` so downstream player projection retains the same clock.
+
+### Runtime consumers
+
+The temporal, random, and causal admission paths call `RhythmRuntime.allow_event()` with each event occurrence time. Causal world-command batches execute with the child event time, preserving command receipts and inventory-ledger timestamps. Player-facing Issues are opened through the internal `_open_issue_at()` path, so `created_at`, deadlines, DecisionRequest deadlines, and overdue projection are derived from the source occurrence. Causal outcome feedback is recorded at the child event time; the normal end-of-tick feedback poll at current time immediately delivers delayed reports whose due time has already elapsed.
+
+The public `open_issue()` API remains current-time based for ordinary callers. Historical time is only selected when the orchestrator has an authoritative source event timestamp.
+
+### Ordering boundary
+
+This release does not introduce a single global chronological merge across temporal, lifecycle, random, and causal producers. Existing tick phases remain intact. v0.38.0 guarantees that each produced event keeps its own authoritative time inside those phases, which fixes delay, cooldown, receipt, Issue, and feedback semantics without changing the broader phase-order contract.
