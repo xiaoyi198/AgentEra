@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.38.0**
+> 当前版本：**v0.39.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -457,6 +457,15 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.39.0 发布说明
+
+- Orchestrator 将时间边界、生命周期 marker、随机事件和已到期因果事件放入同一 tick 时间队列，长跳时按权威 `generated_at` / marker `sim_time` 跨来源归并，不再先执行全部生命周期后再处理更早的因果效果。
+- 同一时刻采用稳定优先级：时间边界 → 生命周期 marker → 随机事件 → 因果事件 → 当前时刻条件型生命周期；零延迟因果链会在其来源之后继续参与排序。
+- `CausalEventEngine.next_due_key()` 支持不消费 pending 的最早到期窥视；历史 marker 轮询通过 `evaluate_conditions=False` 避免重复评估当前条件，条件型生命周期只在 tick 当前时刻评估一次。
+- 因果事件仍保留每 tick 128 条硬预算，生命周期仍保留 256 次尝试预算。严格跨来源排序适用于预算内；因果风暴超出预算时旧 pending 留到下一 tick，而已物化的非因果条目继续完成，本版本不宣称任意负载下的无限严格排序。
+- 新增跨 temporal/random/causal、历史 causal 与未来 lifecycle、因果 peek 稳定性、生命周期条件延迟评估回归；相关定向验证 **78 passed**，完整 Integration **11 passed, 2 skipped**，前端 **97 passed** 且 lint/build 通过。完整 Unit 运行达到 **784 passed**，另有 1 个由并行 LLM/API 改动产生的 deadline 浮点边界失败，不属于本时间队列改动。
+- `VERSION`、Python 包版本和前端 package/lock 四处统一升级到 `0.39.0`。
 
 ## v0.38.0 发布说明
 

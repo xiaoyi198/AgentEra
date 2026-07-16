@@ -2426,3 +2426,33 @@ The public `open_issue()` API remains current-time based for ordinary callers. H
 ### Ordering boundary
 
 This release does not introduce a single global chronological merge across temporal, lifecycle, random, and causal producers. Existing tick phases remain intact. v0.38.0 guarantees that each produced event keeps its own authoritative time inside those phases, which fixes delay, cooldown, receipt, Issue, and feedback semantics without changing the broader phase-order contract.
+
+## 跨来源统一时间队列架构（v0.39.0）
+
+v0.39.0 在 `Orchestrator._tick()` 内引入统一的、仅存在于当前 tick 的最小堆时间线。时间边界事件、生命周期 marker 和随机事件先由各自的确定性生产者物化，再按以下稳定键入队：
+
+```text
+(effective_event_time, source_rank, insertion_sequence)
+```
+
+`effective_event_time` 来自事件权威 `generated_at` 或 marker `sim_time`，并统一经过 `_effective_event_time()` 校正。`source_rank` 只负责同一时刻的稳定兼容顺序：
+
+```text
+0 temporal boundary
+1 lifecycle marker
+2 random event
+3 causal event
+4 current-time condition lifecycle（队列清空后执行）
+```
+
+因果 pending 不会一次性提前弹出。`CausalEventEngine.next_due_key(now)` 返回最早到期的 `(due_at, event_id)`，Orchestrator 每次将该键与堆顶比较，只有因果事件确实更早或轮到同刻 rank 3 时才用 `poll(max_events=1)` 消费。这样 temporal/random 注入产生的零延迟因果事件也能在下一次循环立即加入比较，而不会被固定阶段推迟到所有较晚条目之后。
+
+生命周期 marker 按各自历史 `sim_time` 单独轮询，反馈、Receipt、条件上下文和结果中的 `sim_time` 都使用 marker 时间。历史轮询传入 `evaluate_conditions=False`，因此 condition-triggered transition 不会在每个补算日重复更新 latch；队列完成后只在当前 `_sim_time` 评估一次条件型生命周期。
+
+### 安全预算边界
+
+统一队列不取消既有防风暴预算：每 tick 最多消费 128 条因果事件，生命周期总尝试预算为 256。预算内保证上述跨来源顺序。若同一 tick 的到期因果事件超过 128 条，剩余 pending 会保留到下一 tick；因为 temporal/random 生产者游标已经推进，已物化的非因果条目仍会完成，因此不能把该模式描述为任意负载下的无限严格排序。生命周期超过 256 次尝试时返回 `truncated=true`；DLC 作者应避免单次 catch-up 触发超过预算的大规模 marker transition，后续阶段需要设计可持久化的 deferred timeline 才能消除此边界。
+
+### 状态与兼容性
+
+统一时间线本身不进入存档，持久状态仍由 Temporal cursor、Random generator snapshot、Causal pending、Lifecycle Receipt/latch 和世界命令账本承担。同刻来源优先级保持 v0.38.0 以前的来源顺序，因此普通短 tick 行为不变；变化只发生在长跳时不同来源拥有不同历史时间的场景。

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from multiagent_framework.orchestrator import Orchestrator
+from multiagent_framework.temporal_contract import TemporalContract
 from multiagent_framework.types import EventObject
 from multiagent_framework.event_generator import (
     GAME_SECONDS_PER_DAY,
@@ -305,6 +306,61 @@ def test_orchestrator_catch_up_preserves_event_time_for_causal_delays_and_issue_
         4: {"open"},
         5: {"open"},
     }
+
+
+def test_orchestrator_catch_up_globally_orders_temporal_random_and_causal_events():
+    orch = make_orchestrator_for_events()
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "ordering_calendar",
+            "display_name": "Ordering Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=8)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=3)
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": "locust_to_famine",
+        "source_event_types": ["locust_plague"],
+        "child_event_type": "famine_risk",
+        "delay_days": 1,
+        "probability": 1,
+        "max_depth": 2,
+        "max_fires_per_chain": 1,
+    }])
+    orch._sim_time = 3 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    assert [
+        (item["source"], item["event_type"], item["generated_at"] / GAME_SECONDS_PER_DAY)
+        for item in result.generated_events
+    ] == [
+        ("time_system", "daily_signal", 1),
+        ("random", "locust_plague", 1),
+        ("time_system", "daily_signal", 2),
+        ("random", "locust_plague", 2),
+        ("causal", "famine_risk", 2),
+        ("time_system", "daily_signal", 3),
+        ("random", "locust_plague", 3),
+        ("causal", "famine_risk", 3),
+    ]
+    assert orch.causal_event_status()["pending_count"] == 1
 
 
 def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():

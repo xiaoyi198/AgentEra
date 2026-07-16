@@ -393,6 +393,16 @@ class CausalEventEngine:
             scheduled += 1
         return scheduled
 
+    def next_due_key(self, now: float) -> tuple[float, str] | None:
+        """Return the stable key of the oldest due event without consuming it."""
+        current = float(now)
+        eligible = (
+            (pending.due_at, event_id)
+            for event_id, pending in self._pending.items()
+            if pending.due_at <= current
+        )
+        return min(eligible, default=None)
+
     def poll(self, now: float, *, max_events: int = 128) -> CausalEventPollResult:
         if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events <= 0:
             raise CausalEventError("causal_poll_budget_invalid")

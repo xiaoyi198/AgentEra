@@ -4,11 +4,13 @@ import asyncio
 from types import SimpleNamespace
 
 from multiagent_framework.agent_runtime import AgentConfig, OfficialAgent
+from multiagent_framework.event_generator import GAME_SECONDS_PER_DAY
 from multiagent_framework.lifecycle_contract import LifecycleContract
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.temporal_contract import TemporalContract
 from multiagent_framework.time_simulator import TimeSimulator
-from multiagent_framework.world_state import WorldState
+from multiagent_framework.types import EventObject
+from multiagent_framework.world_state import ResourceDefinition, WorldState
 
 
 class _Court:
@@ -166,6 +168,86 @@ def test_tick_applies_lifecycle_marker_and_projects_dynamic_agent(tmp_path):
     assert projected.llm is orchestrator.get_agent("captain_agent").llm
     assert orchestrator.world_state.get_entity("entity_guard_1") is not None
     assert orchestrator.lifecycle_public_state()["counts"]["dynamic_agents"] == 1
+
+
+def test_catch_up_runs_earlier_causal_effect_before_later_lifecycle_spawn(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.configure_lifecycle_system(LifecycleContract.from_mapping({
+        "enabled": True,
+        "actor_templates": [{
+            "template_id": "guard",
+            "display_name": "Guard",
+            "actor": {
+                "display_name": "New Guard",
+                "actor_type": "person",
+                "attributes": {},
+                "states": {"alive": True},
+            },
+            "entity": {
+                "entity_type": "person",
+                "name": "Guard Entity",
+                "location_id": "frontier",
+            },
+            "agent": {
+                "source_agent_id": "captain_agent",
+                "display_name": "Patrol Agent",
+                "system_prompt": "Protect the frontier.",
+            },
+        }],
+        "transitions": [{
+            "transition_id": "day_four_recruitment",
+            "display_name": "Day Four Recruitment",
+            "kind": "birth",
+            "trigger": "day_start",
+            "day": 4,
+            "once": True,
+            "operations": [{
+                "operation": "spawn_actor",
+                "template_id": "guard",
+                "actor_id_pattern": "guard_{sequence}",
+                "entity_id_pattern": "entity_{actor_id}",
+                "agent_id_pattern": "agent_{actor_id}",
+            }],
+        }],
+    }), generation=5, preserve_state=False)
+    orchestrator.world_state.upsert_resource_definition(ResourceDefinition(
+        name="coin", kind="asset", default_quantity=0, min_quantity=0, anchor_rate=1,
+    ))
+    orchestrator.configure_causal_events([{
+        "rule_id": "early_guard_payment",
+        "source_event_types": ["payment_order"],
+        "child_event_type": "guard_payment",
+        "delay_days": 2,
+        "probability": 1,
+        "world_effects": [{
+            "effect_type": "adjust_resource",
+            "entity_id": "entity_guard_1",
+            "resource_name": "coin",
+            "quantity_delta": 1,
+            "reason": "payment before recruitment",
+        }],
+    }])
+    orchestrator.inject_event(EventObject(
+        event_id="payment-order-1",
+        event_type="payment_order",
+        severity=1,
+        target_agents=[],
+        initial_payload={},
+        generated_at=0,
+    ))
+    orchestrator._sim_time = 3 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orchestrator._tick())
+
+    causal = next(item for item in result.generated_events if item["source"] == "causal")
+    assert causal["event_type"] == "guard_payment"
+    assert causal["generated_at"] == 2 * GAME_SECONDS_PER_DAY
+    assert causal["world_effect_status"] == "rejected"
+    assert causal["error_code"] == "entity_not_found"
+    assert result.lifecycle["applied_count"] == 1
+    assert result.lifecycle["applied"][0]["transition_id"] == "day_four_recruitment"
+    assert result.lifecycle["applied"][0]["sim_time"] == 3 * GAME_SECONDS_PER_DAY
+    assert orchestrator.world_state.get_entity("entity_guard_1") is not None
 
 
 def test_manual_retirement_removes_dynamic_agent_from_future_dispatch(tmp_path):

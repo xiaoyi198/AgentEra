@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import heapq
 import logging
 import math
 import threading
@@ -29,7 +30,11 @@ from .gameplay_effect_runtime import GameplayEffectRuntime
 from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
 from .lifecycle_contract import LifecycleContract
-from .lifecycle_runtime import LifecyclePollResult, LifecycleRuntime
+from .lifecycle_runtime import (
+    MAX_LIFECYCLE_TRANSITIONS_PER_POLL,
+    LifecyclePollResult,
+    LifecycleRuntime,
+)
 from .objective_contract import ObjectiveManager
 from .rhythm_contract import RhythmContract
 from .rhythm_runtime import RhythmRuntime
@@ -1509,55 +1514,13 @@ class Orchestrator:
         if (rhythm_poll.activated or rhythm_poll.transitions) and self.persistor:
             self.persistor.mark_state_dirty()
 
-        # DLC-authored time boundaries are resolved before random and causal events.
+        # Poll deterministic producers first, then execute their output through one
+        # chronological queue. Same-time ties retain the legacy source precedence:
+        # temporal boundary -> lifecycle marker -> random event -> causal event.
         temporal_poll = self.temporal_runtime.poll(
             self._sim_time,
-            condition_context=CausalConditionContext(
-                world_state=self.world_state,
-                actor_manager=self.actor_manager,
-                objective_manager=self.objective_manager,
-                event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
-                derived_metric_provider=self.derived_metric_catalog,
-                knowledge_provider=self.player_knowledge_provider,
-                issue_manager=self.issue_manager,
-                action_catalog=self.action_catalog,
-            ),
+            condition_context=self._feedback_condition_context(),
         )
-        for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
-            event_time = self._effective_event_time(event.generated_at)
-            rhythm_event = self.rhythm_runtime.allow_event(
-                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
-            )
-            generated_metadata = {
-                **dict(event_metadata),
-                "rhythm_status": "allowed" if rhythm_event.get("allowed") else "suppressed",
-                "rhythm_reason": str(rhythm_event.get("reason", "")),
-                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
-            }
-            result.generated_events.append(generated_metadata)
-            if not rhythm_event.get("allowed", True):
-                continue
-            self.inject_event(event)
-            issue_type_id = str(event_metadata.get("issue_type_id", ""))
-            if issue_type_id:
-                payload = dict(event.initial_payload)
-                try:
-                    opened = self._open_issue_at({
-                        "external_id": f"time_system:{event.event_id}",
-                        "issue_type_id": issue_type_id,
-                        "type": event.event_type,
-                        "source": {"kind": "system", "id": "time_system", "display_name": "时间系统"},
-                        "title": str(payload.get("title", event.event_type)),
-                        "summary": str(payload.get("summary", payload.get("description", event.event_type))),
-                        "details": {"temporal_boundary": payload.get("temporal_boundary", {}), "payload": payload},
-                        "urgency": payload.get("urgency", "normal"),
-                        "metadata": {"event_id": event.event_id, "boundary_event_id": payload.get("boundary_event_id", "")},
-                    }, sim_time=event_time)
-                    result.new_issues.append(opened["issue"])
-                    result.new_cases.append(opened["case"])
-                    result.new_decision_requests.extend(opened["decision_requests"])
-                except IssueContractError as exc:
-                    result.agent_errors.append({"agent_id": "time_system", "error": "issue_contract_rejected", "code": exc.code, "event_id": event.event_id})
         if temporal_poll.pause_requests:
             requests = [dict(item) for item in temporal_poll.pause_requests]
             self._auto_pause_reason = {**requests[0], "requests": requests}
@@ -1567,89 +1530,125 @@ class Orchestrator:
         if (temporal_poll.markers or temporal_poll.events or temporal_poll.pause_requests) and self.persistor:
             self.persistor.mark_state_dirty()
 
-        # 1. 检查到期定时器 → 加入待唤醒队列
-        lifecycle_poll = LifecyclePollResult()
-        try:
-            lifecycle_poll = self.lifecycle_runtime.poll(
-                self._sim_time, markers=temporal_poll.markers,
-                world_state=self.world_state, actor_manager=self.actor_manager,
-                condition_context=CausalConditionContext(
-                    world_state=self.world_state,
-                    actor_manager=self.actor_manager,
-                    objective_manager=self.objective_manager,
-                    event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
-                    derived_metric_provider=self.derived_metric_catalog,
-                    knowledge_provider=self.player_knowledge_provider,
-                    issue_manager=self.issue_manager,
-                    action_catalog=self.action_catalog,
-                ),
+        random_poll = self.random_event_generator.poll(self._sim_time)
+        if random_poll.attempts and self.persistor:
+            self.persistor.mark_state_dirty()
+
+        timeline: list[tuple[float, int, int, str, Any, Any]] = []
+        timeline_sequence = 0
+
+        def enqueue_timeline(
+            kind: str, occurrence_time: Any, source_rank: int, payload: Any, metadata: Any = None,
+        ) -> None:
+            nonlocal timeline_sequence
+            event_time = self._effective_event_time(occurrence_time)
+            heapq.heappush(
+                timeline,
+                (event_time, source_rank, timeline_sequence, kind, payload, metadata),
             )
-            if lifecycle_poll.applied_count:
+            timeline_sequence += 1
+
+        for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+            enqueue_timeline("temporal", event.generated_at, 0, event, dict(event_metadata))
+        for marker in temporal_poll.markers:
+            enqueue_timeline("lifecycle_marker", marker.get("sim_time", self._sim_time), 1, dict(marker))
+        for event in random_poll.events:
+            enqueue_timeline("random", event.generated_at, 2, event)
+
+        lifecycle_applied: list[dict[str, Any]] = []
+        lifecycle_skipped: list[dict[str, Any]] = []
+        lifecycle_failed: list[dict[str, Any]] = []
+        lifecycle_truncated = False
+        lifecycle_runtime_error = ""
+        lifecycle_remaining = MAX_LIFECYCLE_TRANSITIONS_PER_POLL
+
+        def consume_lifecycle_poll(poll: LifecyclePollResult, *, poll_time: float) -> None:
+            nonlocal lifecycle_remaining, lifecycle_truncated
+
+            def stamp(rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+                return [{**dict(item), "sim_time": poll_time} for item in rows]
+
+            applied = stamp(poll.applied)
+            skipped = stamp(poll.skipped)
+            failed = stamp(poll.failed)
+            lifecycle_applied.extend(applied)
+            lifecycle_skipped.extend(skipped)
+            lifecycle_failed.extend(failed)
+            lifecycle_remaining = max(
+                0, lifecycle_remaining - len(applied) - len(skipped) - len(failed),
+            )
+            lifecycle_truncated = lifecycle_truncated or poll.truncated
+            if applied:
                 self._sync_gameplay_effect_runtime()
                 if self.persistor:
                     self.persistor.mark_state_dirty()
                 result.agent_errors.extend(self._last_dynamic_agent_sync_errors)
-        except Exception as exc:
-            logger.exception("Lifecycle poll crashed")
-            result.agent_errors.append({
-                "agent_id": "lifecycle_system",
-                "error": "lifecycle_poll_failed",
-                "detail": str(exc),
-            })
-            result.lifecycle = {
-                **lifecycle_poll.to_dict(),
-                "runtime_error": str(exc),
-            }
-        else:
-            result.lifecycle = lifecycle_poll.to_dict()
-        for index, item in enumerate(lifecycle_poll.applied):
-            transition_id = str(item.get("transition_id", f"lifecycle-{index}"))
-            feedback = self.outcome_feedback_runtime.record(
-                source_kind="lifecycle", source_id=transition_id,
-                receipt_id=f"lifecycle:{transition_id}:{item.get('receipt_id', item.get('marker_id', self._sim_time))}",
-                sim_time=self._sim_time, display_name=str(item.get("display_name", transition_id)),
-                summary=str(item.get("summary", "A lifecycle transition was applied.")),
-                reason=str(item.get("reason", transition_id)),
-                changes=list(item.get("changes", [])) if isinstance(item.get("changes", []), list) else [],
-                details={"transition_id": transition_id},
-                condition_context=self._feedback_condition_context(),
-            )
-            tick_feedback_deliveries.extend(feedback["delivered"])
+            for index, item in enumerate(applied):
+                transition_id = str(item.get("transition_id", f"lifecycle-{index}"))
+                feedback = self.outcome_feedback_runtime.record(
+                    source_kind="lifecycle", source_id=transition_id,
+                    receipt_id=f"lifecycle:{transition_id}:{item.get('receipt_id', item.get('marker_id', poll_time))}",
+                    sim_time=poll_time, display_name=str(item.get("display_name", transition_id)),
+                    summary=str(item.get("summary", "A lifecycle transition was applied.")),
+                    reason=str(item.get("reason", transition_id)),
+                    changes=list(item.get("changes", [])) if isinstance(item.get("changes", []), list) else [],
+                    details={"transition_id": transition_id},
+                    condition_context=self._feedback_condition_context(sim_time=poll_time),
+                )
+                tick_feedback_deliveries.extend(feedback["delivered"])
 
-        random_poll = self.random_event_generator.poll(self._sim_time)
-        for event in random_poll.events:
-            event_time = self._effective_event_time(event.generated_at)
-            rhythm_event = self.rhythm_runtime.allow_event(
-                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
-            )
-            allowed = rhythm_event.get("allowed", True)
-            if allowed:
-                self.inject_event(event)
-            result.generated_events.append({
-                "event_id": event.event_id,
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "target_count": len(event.target_agents) if allowed else 0,
-                "generated_at": event.generated_at,
-                "source": "random",
-                "rhythm_status": "allowed" if allowed else "suppressed",
-                "rhythm_reason": str(rhythm_event.get("reason", "")),
-                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
-            })
-        if random_poll.attempts and self.persistor:
-            self.persistor.mark_state_dirty()
+        def run_lifecycle_poll(
+            poll_time: float, *, markers: tuple[dict[str, Any], ...] = (),
+            evaluate_conditions: bool,
+        ) -> None:
+            nonlocal lifecycle_truncated, lifecycle_runtime_error
+            if lifecycle_remaining <= 0:
+                lifecycle_truncated = True
+                return
+            try:
+                poll = self.lifecycle_runtime.poll(
+                    poll_time, markers=markers,
+                    world_state=self.world_state, actor_manager=self.actor_manager,
+                    condition_context=self._feedback_condition_context(sim_time=poll_time),
+                    max_transitions=lifecycle_remaining,
+                    evaluate_conditions=evaluate_conditions,
+                )
+            except Exception as exc:
+                logger.exception("Lifecycle poll crashed")
+                lifecycle_runtime_error = str(exc)
+                result.agent_errors.append({
+                    "agent_id": "lifecycle_system",
+                    "error": "lifecycle_poll_failed",
+                    "detail": str(exc),
+                })
+                return
+            consume_lifecycle_poll(poll, poll_time=poll_time)
 
-        # Materialized causal events are processed oldest-first. Delay-zero chains
-        # may continue in this tick, but the shared budget prevents event storms.
-        causal_remaining = 128
-        while causal_remaining > 0:
-            causal_poll = self.causal_event_engine.poll(
-                self._sim_time, max_events=causal_remaining,
+        causal_processed = 0
+        causal_budget = 128
+
+        # The hard causal budget still bounds zero-delay storms. Strict cross-source
+        # ordering is guaranteed while due causal work fits this tick's budget. Once
+        # exhausted, already-materialized temporal/random entries finish draining and
+        # older causal work remains pending for the next tick rather than being dropped.
+        while timeline or (
+            causal_processed < causal_budget
+            and self.causal_event_engine.next_due_key(self._sim_time) is not None
+        ):
+            causal_key = (math.inf, "")
+            if causal_processed < causal_budget:
+                causal_key = self.causal_event_engine.next_due_key(self._sim_time) or causal_key
+            next_timeline_key = timeline[0][:2] if timeline else (math.inf, math.inf)
+            process_causal = causal_key[0] < next_timeline_key[0] or (
+                causal_key[0] == next_timeline_key[0] and 3 < next_timeline_key[1]
             )
-            if not causal_poll.events:
-                break
-            causal_remaining -= causal_poll.due_count
-            for event in causal_poll.events:
+
+            if process_causal:
+                causal_poll = self.causal_event_engine.poll(self._sim_time, max_events=1)
+                if not causal_poll.events:
+                    break
+                causal_processed += causal_poll.due_count
+                event = causal_poll.events[0]
                 event_time = self._effective_event_time(event.generated_at)
                 effect_count = len(event.world_commands)
                 rhythm_event = self.rhythm_runtime.allow_event(
@@ -1669,8 +1668,12 @@ class Orchestrator:
                         "rhythm_reason": str(rhythm_event.get("reason", "")),
                         "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
                     })
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
                     continue
+
                 effect_status = "none"
+                effect_ok = True
                 if effect_count:
                     self._record_operational_metric("causal_effect_batches")
                     try:
@@ -1678,6 +1681,7 @@ class Orchestrator:
                             self.world_state, event, sim_time=event_time,
                         ) if self.world_state is not None else None
                     except Exception:
+                        effect_ok = False
                         self._record_operational_metric("causal_effect_failures")
                         logger.exception("Causal world effect batch crashed for event %s", event.event_id)
                         result.generated_events.append({
@@ -1691,46 +1695,127 @@ class Orchestrator:
                             "world_effect_status": "error",
                             "error_code": "causal_effect_execution_error",
                         })
-                        continue
-                    if effect_result is None or not effect_result.ok:
-                        self._record_operational_metric("causal_effect_rejections")
-                        rejected = next(
-                            (item for item in (effect_result.results if effect_result else []) if not item.ok),
-                            None,
-                        )
-                        result.generated_events.append({
-                            "event_id": event.event_id,
-                            "event_type": event.event_type,
-                            "severity": event.severity,
-                            "target_count": 0,
-                            "generated_at": event.generated_at,
-                            "source": "causal",
-                            "world_effect_count": effect_count,
-                            "world_effect_status": "rejected",
-                            "error_code": rejected.error_code if rejected else "world_state_unavailable",
-                        })
-                        continue
-                    effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
-                    self._sync_gameplay_effect_runtime()
-                    self._record_operational_metric("causal_effect_commands", effect_count)
-                    if self.persistor and effect_result.applied_count:
-                        self.persistor.mark_state_dirty()
-                self.inject_event(event)
-                result.generated_events.append({
-                    "event_id": event.event_id,
-                    "event_type": event.event_type,
-                    "severity": event.severity,
-                    "target_count": len(event.target_agents),
-                    "generated_at": event.generated_at,
-                    "source": "causal",
-                    "world_effect_count": effect_count,
-                    "world_effect_status": effect_status,
-                    "rhythm_status": "allowed",
-                    "rhythm_reason": "",
+                    else:
+                        if effect_result is None or not effect_result.ok:
+                            effect_ok = False
+                            self._record_operational_metric("causal_effect_rejections")
+                            rejected = next(
+                                (item for item in (effect_result.results if effect_result else []) if not item.ok),
+                                None,
+                            )
+                            result.generated_events.append({
+                                "event_id": event.event_id,
+                                "event_type": event.event_type,
+                                "severity": event.severity,
+                                "target_count": 0,
+                                "generated_at": event.generated_at,
+                                "source": "causal",
+                                "world_effect_count": effect_count,
+                                "world_effect_status": "rejected",
+                                "error_code": rejected.error_code if rejected else "world_state_unavailable",
+                            })
+                        else:
+                            effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
+                            self._sync_gameplay_effect_runtime()
+                            self._record_operational_metric("causal_effect_commands", effect_count)
+                            if self.persistor and effect_result.applied_count:
+                                self.persistor.mark_state_dirty()
+                if effect_ok:
+                    self.inject_event(event)
+                    result.generated_events.append({
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "severity": event.severity,
+                        "target_count": len(event.target_agents),
+                        "generated_at": event.generated_at,
+                        "source": "causal",
+                        "world_effect_count": effect_count,
+                        "world_effect_status": effect_status,
+                        "rhythm_status": "allowed",
+                        "rhythm_reason": "",
+                        "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                    })
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                continue
+
+            event_time, _source_rank, _sequence, kind, payload, metadata = heapq.heappop(timeline)
+            if kind == "lifecycle_marker":
+                run_lifecycle_poll(
+                    event_time, markers=(dict(payload),), evaluate_conditions=False,
+                )
+                continue
+
+            event = payload
+            rhythm_event = self.rhythm_runtime.allow_event(
+                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
+            )
+            allowed = rhythm_event.get("allowed", True)
+            if kind == "temporal":
+                event_metadata = dict(metadata or {})
+                generated_metadata = {
+                    **event_metadata,
+                    "rhythm_status": "allowed" if allowed else "suppressed",
+                    "rhythm_reason": str(rhythm_event.get("reason", "")),
                     "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
-                })
-            if self.persistor:
-                self.persistor.mark_state_dirty()
+                }
+                result.generated_events.append(generated_metadata)
+                if not allowed:
+                    continue
+                self.inject_event(event)
+                issue_type_id = str(event_metadata.get("issue_type_id", ""))
+                if issue_type_id:
+                    issue_payload = dict(event.initial_payload)
+                    try:
+                        opened = self._open_issue_at({
+                            "external_id": f"time_system:{event.event_id}",
+                            "issue_type_id": issue_type_id,
+                            "type": event.event_type,
+                            "source": {"kind": "system", "id": "time_system", "display_name": "????"},
+                            "title": str(issue_payload.get("title", event.event_type)),
+                            "summary": str(issue_payload.get("summary", issue_payload.get("description", event.event_type))),
+                            "details": {"temporal_boundary": issue_payload.get("temporal_boundary", {}), "payload": issue_payload},
+                            "urgency": issue_payload.get("urgency", "normal"),
+                            "metadata": {"event_id": event.event_id, "boundary_event_id": issue_payload.get("boundary_event_id", "")},
+                        }, sim_time=event_time)
+                        result.new_issues.append(opened["issue"])
+                        result.new_cases.append(opened["case"])
+                        result.new_decision_requests.extend(opened["decision_requests"])
+                    except IssueContractError as exc:
+                        result.agent_errors.append({
+                            "agent_id": "time_system", "error": "issue_contract_rejected",
+                            "code": exc.code, "event_id": event.event_id,
+                        })
+                continue
+
+            if allowed:
+                self.inject_event(event)
+            result.generated_events.append({
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "target_count": len(event.target_agents) if allowed else 0,
+                "generated_at": event.generated_at,
+                "source": "random",
+                "rhythm_status": "allowed" if allowed else "suppressed",
+                "rhythm_reason": str(rhythm_event.get("reason", "")),
+                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+            })
+
+        # Condition-triggered lifecycle rules belong to the current simulation
+        # instant and run after all same-time authored/random/causal occurrences.
+        run_lifecycle_poll(
+            self._sim_time, markers=(), evaluate_conditions=True,
+        )
+        lifecycle_poll = LifecyclePollResult(
+            applied=tuple(lifecycle_applied),
+            skipped=tuple(lifecycle_skipped),
+            failed=tuple(lifecycle_failed),
+            truncated=lifecycle_truncated,
+        )
+        result.lifecycle = lifecycle_poll.to_dict()
+        if lifecycle_runtime_error:
+            result.lifecycle["runtime_error"] = lifecycle_runtime_error
 
         due_timers = self.timers.pop_due(self._sim_time)
         for timer in due_timers:

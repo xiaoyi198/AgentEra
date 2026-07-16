@@ -3513,3 +3513,31 @@ python -m pytest tests/unit/test_version_consistency.py -q
 长跳时测试至少要覆盖：历史来源事件的因果延迟、当前 tick 后仍应 pending 的未来子事件、Rhythm 冷却序列、世界命令/库存账本时间、Issue 截止期与逾期状态、已经逾期的延迟反馈补发。测试断言应同时检查 `generated_at` 和持久化时间字段，不能只检查事件数量。
 
 不要把“保留每条事件的发生时间”误写成“跨来源全局严格排序”。当前 tick 仍按既有阶段处理时间边界、生命周期、随机与因果来源；若未来引入统一时间队列，需要单独设计跨来源稳定排序、预算、公平性和零延迟链上限。
+
+## 开发跨来源统一时间排序（v0.39.0）
+
+### 新事件生产者接入规则
+
+1. 生产者必须提供权威发生时间；事件写入 `EventObject.generated_at`，边界 marker 写入 `sim_time`。
+2. 在 `Orchestrator._tick()` 的统一时间线中分配明确 `source_rank`。只有兼容性需要时才增加新 rank，不得依赖字典顺序或批次阶段碰巧排序。
+3. 同源稳定顺序必须可重放：普通入队使用单调 `insertion_sequence`；因果 pending 使用 `(due_at, event_id)`。
+4. 事件只有在从时间线取出后才能执行节奏判断、世界效果、Issue 投影、Agent 唤醒和下游因果观察，所有消费者使用同一个 `event_time`。
+5. 历史 lifecycle marker 必须传 `evaluate_conditions=False`；condition transition 只在当前模拟时刻统一评估一次，避免长跳时重复触发或提前锁存。
+
+### 预算与失败语义
+
+- 因果硬预算为每 tick 128 条。达到预算后不得丢弃 pending；剩余事件由下一 tick 继续。已物化 temporal/random 条目会完成，因此文档和测试只能声明“预算内全局排序”。
+- 生命周期总尝试预算为 256，`LifecyclePollResult.truncated` 必须向 Tick 结果传播。若新增 deferred timeline，必须同时覆盖存档、恢复、Generation 切换、热重载和幂等 Receipt，不能只做进程内队列。
+- 被 Rhythm 抑制、世界效果 rejected/error 的因果事件都已经从 pending 消费，必须标记持久状态 dirty；只有世界效果成功时才注入 Agent 唤醒和下游因果链。
+- 同刻优先级固定为 temporal → lifecycle marker → random → causal → current condition lifecycle。修改优先级属于兼容性变更，必须新增世界状态可观测回归，而不只断言结果数组顺序。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/unit/test_event_generator.py tests/unit/test_causal_events.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_outcome_feedback_orchestrator.py -q
+python -m pytest tests/integration/test_dlc_temporal_generation.py tests/integration/test_cross_genre_dlc_playthrough.py -q
+python -m compileall -q multiagent_framework routers
+python -m pytest tests/unit/test_version_consistency.py -q
+```
+
+至少覆盖：不同来源跨日归并、同刻稳定 tie、零延迟因果、未来 pending 不提前消费、历史因果效果早于未来生命周期实体生成、`next_due_key()` 不改变 snapshot、历史 marker 不更新 condition latch、因果 128 条预算后 pending 保留，以及 lifecycle `truncated` 传播。

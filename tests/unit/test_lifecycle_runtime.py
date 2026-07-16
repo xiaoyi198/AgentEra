@@ -165,6 +165,74 @@ def test_condition_edge_latch_snapshot_prevents_repeat_until_false(tmp_path):
     assert world.get_entity("fort").version == version
 
 
+def test_marker_poll_can_defer_condition_evaluation_without_mutating_latch(tmp_path):
+    world = WorldState(str(tmp_path / "world.db"))
+    world.upsert_entity(Entity(id="marker_target", type="location", name="Marker", current_status="open"))
+    world.upsert_entity(Entity(id="condition_target", type="location", name="Condition", current_status="open"))
+    contract = LifecycleContract.from_mapping({
+        "enabled": True,
+        "transitions": [
+            {
+                "transition_id": "historical_marker",
+                "display_name": "Historical marker",
+                "kind": "entity_transform",
+                "trigger": "day_start",
+                "day": 2,
+                "operations": [{
+                    "operation": "transform_entity",
+                    "entity_id": "marker_target",
+                    "new_status": "marked",
+                }],
+            },
+            {
+                "transition_id": "current_condition",
+                "display_name": "Current condition",
+                "kind": "entity_transform",
+                "trigger": "condition",
+                "conditions": [{
+                    "kind": "time",
+                    "name": "days",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+                "edge_triggered": True,
+                "operations": [{
+                    "operation": "transform_entity",
+                    "entity_id": "condition_target",
+                    "new_status": "condition_applied",
+                }],
+            },
+        ],
+    })
+    runtime = LifecycleRuntime(contract, generation=1)
+    marker = {
+        "trigger": "day_start",
+        "sim_time": DAY,
+        "day_index": 1,
+        "date": {"day": 2, "day_of_year": 2, "month_id": "month_01"},
+    }
+
+    historical = runtime.poll(
+        DAY, markers=[marker], world_state=world, evaluate_conditions=False,
+    )
+
+    assert historical.applied_count == 1
+    assert historical.applied[0]["transition_id"] == "historical_marker"
+    assert world.get_entity("marker_target").current_status == "marked"
+    assert world.get_entity("condition_target").current_status == "open"
+    assert runtime.snapshot()["condition_state"] == {}
+
+    current = runtime.poll(DAY, world_state=world, evaluate_conditions=True)
+
+    assert current.applied_count == 1
+    assert current.applied[0]["transition_id"] == "current_condition"
+    assert world.get_entity("condition_target").current_status == "condition_applied"
+    assert runtime.snapshot()["condition_state"]["current_condition"] == {
+        "latch": True,
+        "last_evaluated_at": DAY,
+    }
+
+
 def test_deterministic_position_candidate_uses_scores_then_actor_id(tmp_path):
     world = WorldState(str(tmp_path / "world.db"))
     actors = ActorManager()

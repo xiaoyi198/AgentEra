@@ -113,6 +113,7 @@ class LifecycleRuntime:
         condition_context: CausalConditionContext | None = None,
         actor_manager: Any = None,
         max_transitions: int = MAX_LIFECYCLE_TRANSITIONS_PER_POLL,
+        evaluate_conditions: bool = True,
     ) -> LifecyclePollResult:
         now = self._sim_time(sim_time)
         if not self.contract.configured:
@@ -129,6 +130,8 @@ class LifecycleRuntime:
             if not transition.enabled or transition.trigger == "manual":
                 continue
             if transition.trigger == "condition":
+                if not evaluate_conditions:
+                    continue
                 state = self._condition_state.setdefault(
                     transition.transition_id,
                     {"latch": False, "last_evaluated_at": None},
