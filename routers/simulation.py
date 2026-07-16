@@ -90,6 +90,25 @@ async def get_time_system():
     return state.orchestrator.time_system_public_state()
 
 
+@router.get("/rhythm")
+async def get_rhythm():
+    """Return the active DLC pacing budget, queue, rules, and recent feedback."""
+    if not state.orchestrator:
+        return {
+            "configured": False,
+            "enabled": False,
+            "generation": 0,
+            "attention_available": 0.0,
+            "attention_used": 0.0,
+            "active_issue_count": 0,
+            "queued_issue_count": 0,
+            "rules": [],
+            "recent_feedback": [],
+            "recent_suppressed_events": [],
+        }
+    return state.orchestrator.rhythm_public_state()
+
+
 @router.get("/time-scale")
 async def get_time_scale():
     if not state.orchestrator:

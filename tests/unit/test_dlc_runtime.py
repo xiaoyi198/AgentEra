@@ -37,6 +37,7 @@ class FakeOrchestrator:
         self.objective_configurations = []
         self.ui_manifest_configurations = []
         self.lifecycle_configurations = []
+        self.rhythm_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -99,6 +100,35 @@ class FakeOrchestrator:
             return {"configured": False, "enabled": False, "generation": 0}
         contract, generation, _preserve_state = self.lifecycle_configurations[-1]
         return contract.public_state(generation=generation)
+
+    def configure_rhythm_system(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("rhythm", contract.fingerprint()))
+        self.rhythm_configurations.append((contract, generation, preserve_state))
+
+    def rhythm_public_state(self):
+        if not self.rhythm_configurations:
+            return {"configured": False, "enabled": False, "generation": 0}
+        contract, generation, _preserve_state = self.rhythm_configurations[-1]
+        return contract.public_state(generation=generation)
+
+
+def rhythm_document(display_name: str = "Market Pressure") -> dict:
+    return {
+        "enabled": True,
+        "max_active_issues": 3,
+        "attention_budget": 8,
+        "attention_recovery_per_day": 2,
+        "rules": [{
+            "rule_id": "market_pressure",
+            "display_name": display_name,
+            "event_types": ["market_shift", "welcome"],
+            "priority": 7,
+            "max_active": 1,
+            "cooldown_days": 2,
+        }],
+    }
 
 
 def lifecycle_document(display_name: str = "Frontier Lifecycle") -> dict:
@@ -190,6 +220,7 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
         }],
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
         "lifecycle": lifecycle_document(),
+        "rhythm": rhythm_document(),
         "gameplay": {
             "player": {
                 "identity_id": "station_commander",
@@ -229,6 +260,12 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     assert report.lifecycle_actor_templates == 1
     assert report.lifecycle_positions == 1
     assert report.lifecycle_transitions == 1
+    assert report.rhythm_configured is True
+    assert report.rhythm_rules == 1
+    rhythm_contract, rhythm_generation, rhythm_preserve_state = orchestrator.rhythm_configurations[-1]
+    assert rhythm_contract.rules[0].rule_id == "market_pressure"
+    assert rhythm_generation == 1
+    assert rhythm_preserve_state is False
     lifecycle_contract, lifecycle_generation, preserve_state = orchestrator.lifecycle_configurations[-1]
     assert lifecycle_contract.transitions[0].transition_id == "appoint_deputy"
     assert lifecycle_generation == 1
@@ -1439,6 +1476,52 @@ def test_lifecycle_contract_survives_reload_archive_public_state_and_rollback(tm
 
     rollback = asyncio.run(loader.rollback_active(1))
     rolled_back, generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"
+    assert rolled_back.fingerprint() == original.fingerprint()
+    assert generation == 3
+    assert preserve_state is True
+
+
+def test_rhythm_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.rhythm_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.rhythm_contract.fingerprint() == original.fingerprint()
+    assert cloned.rhythm_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["rhythm"] = rhythm_document("Reloaded Market Pressure")
+    content["rhythm"]["attention_budget"] = 13
+    content["rhythm"]["rules"][0]["cooldown_days"] = 4
+    registry.save_content("sample", content)
+
+    preview = loader.preview_reload()
+    assert preview["rhythm_changed"] is True
+    assert preview["world_changes"]["rhythm_rules"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.rhythm_configurations[-1]
+    assert result["rhythm_changed"] is True
+    assert contract.rules[0].display_name == "Reloaded Market Pressure"
+    assert contract.attention_budget == 13
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["rhythm"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert len(public["rules"]) == 1
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.rhythm_configurations[-1]
     assert rollback["activation_kind"] == "rollback"
     assert rolled_back.fingerprint() == original.fingerprint()
     assert generation == 3

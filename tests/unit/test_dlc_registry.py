@@ -1162,3 +1162,83 @@ def test_derived_metric_registry_reports_missing_world_references(registry: DLCR
     assert "derived_metric.missing_entity" in codes
     assert "derived_metric.missing_resource" in codes
     assert "derived_metric.invalid_resource_kind" in codes
+
+
+def test_rhythm_document_is_normalized_and_validated(registry: DLCRegistry):
+    registry.create(manifest("rhythm"))
+    content = valid_content()
+    content["issue_types"] = [{
+        "issue_type_id": "market_report",
+        "display_name": "Market report",
+        "default_urgency": "normal",
+        "source": {"allowed_kinds": ["system"]},
+    }]
+    content["rhythm"] = {
+        "enabled": True,
+        "max_active_issues": 2,
+        "attention_budget": 6,
+        "rules": [{
+            "rule_id": "market_pressure",
+            "issue_type_ids": ["market_report"],
+            "event_types": ["market_shift"],
+            "priority": 5,
+            "max_active": 1,
+            "deescalation": {
+                "enabled": True,
+                "target_level": 0,
+                "conditions": [{
+                    "kind": "anchored_inventory",
+                    "entity_id": "place",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+        }],
+    }
+    registry.save_content("rhythm", content)
+
+    loaded = registry.load_content("rhythm")
+    assert loaded["rhythm"]["rules"][0]["rule_id"] == "market_pressure"
+    assert registry.validate("rhythm") == []
+
+
+def test_rhythm_validation_reports_issue_and_condition_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("broken-rhythm"))
+    content = valid_content()
+    content["rhythm"] = {
+        "enabled": True,
+        "rules": [{
+            "rule_id": "broken",
+            "issue_type_ids": ["missing_issue"],
+            "deescalation": {
+                "enabled": True,
+                "conditions": [{
+                    "kind": "anchored_inventory",
+                    "entity_id": "missing_entity",
+                    "name": "missing_resource",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+            "climax": {
+                "enabled": True,
+                "level": 2,
+                "conditions": [{
+                    "kind": "derived_metric",
+                    "name": "missing_metric",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+        }],
+    }
+    registry.save_content("broken-rhythm", content)
+
+    codes = {issue.code for issue in registry.validate("broken-rhythm")}
+    assert {
+        "rhythm.missing_issue_type",
+        "rhythm.missing_entity",
+        "rhythm.missing_resource",
+        "rhythm.missing_derived_metric",
+    } <= codes

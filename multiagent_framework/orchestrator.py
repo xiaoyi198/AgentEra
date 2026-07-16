@@ -30,6 +30,8 @@ from .issue_contract import IssueContractError, IssueManager
 from .lifecycle_contract import LifecycleContract
 from .lifecycle_runtime import LifecyclePollResult, LifecycleRuntime
 from .objective_contract import ObjectiveManager
+from .rhythm_contract import RhythmContract
+from .rhythm_runtime import RhythmRuntime
 from .derived_metrics import DerivedMetricCatalog, DerivedMetricEvaluationContext
 from .fc_handlers import (
     FCContext,
@@ -111,6 +113,8 @@ class Orchestrator:
             configure_router_capabilities(self.capability_catalog)
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
+        self.rhythm_runtime = RhythmRuntime()
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
         self.objective_manager = ObjectiveManager()
         self.derived_metric_catalog = DerivedMetricCatalog()
         self.objective_manager.set_derived_metric_provider(
@@ -1015,6 +1019,24 @@ class Orchestrator:
             self._sim_time, auto_pause_reason=self._auto_pause_reason,
         )
 
+    def configure_rhythm_system(
+        self, contract: RhythmContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish pacing rules and retain compatible queue/budget state."""
+        self.rhythm_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def rhythm_public_state(self) -> dict[str, Any]:
+        return self.rhythm_runtime.public_state(
+            issue_manager=self.issue_manager, sim_time=self._sim_time,
+        )
+
     def configure_lifecycle_system(
         self, contract: LifecycleContract, *, generation: int,
         preserve_state: bool = True,
@@ -1135,6 +1157,7 @@ class Orchestrator:
             "time_rules": self.time_rule_status(),
             "time_system_runtime": self.temporal_runtime.snapshot(),
             "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
+            "rhythm_runtime": self.rhythm_runtime.snapshot(),
             "auto_pause_reason": self._auto_pause_reason,
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
@@ -1172,6 +1195,8 @@ class Orchestrator:
         else:
             self.temporal_runtime.last_polled_time = self._sim_time
         self.lifecycle_runtime.restore(state.get("lifecycle_runtime", {}))
+        self.rhythm_runtime.restore(state.get("rhythm_runtime", {}), sim_time=self._sim_time)
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
         auto_pause_reason = state.get("auto_pause_reason")
         self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
@@ -1290,6 +1315,25 @@ class Orchestrator:
         done = {t for t in self._agent_tasks if t.done()}
         self._agent_tasks -= done
 
+        rhythm_context = CausalConditionContext(
+            sim_time=self._sim_time,
+            world_state=self.world_state,
+            actor_manager=self.actor_manager,
+            objective_manager=self.objective_manager,
+            event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+            derived_metric_provider=self.derived_metric_catalog,
+            knowledge_provider=self.player_knowledge_provider,
+            issue_manager=self.issue_manager,
+            action_catalog=self.action_catalog,
+        )
+        rhythm_poll = self.rhythm_runtime.poll(
+            self._sim_time, issue_manager=self.issue_manager,
+            condition_context=rhythm_context,
+        )
+        result.rhythm = rhythm_poll.to_dict()
+        if (rhythm_poll.activated or rhythm_poll.transitions) and self.persistor:
+            self.persistor.mark_state_dirty()
+
         # DLC-authored time boundaries are resolved before random and causal events.
         temporal_poll = self.temporal_runtime.poll(
             self._sim_time,
@@ -1305,8 +1349,19 @@ class Orchestrator:
             ),
         )
         for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+            rhythm_event = self.rhythm_runtime.allow_event(
+                event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+            )
+            generated_metadata = {
+                **dict(event_metadata),
+                "rhythm_status": "allowed" if rhythm_event.get("allowed") else "suppressed",
+                "rhythm_reason": str(rhythm_event.get("reason", "")),
+                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+            }
+            result.generated_events.append(generated_metadata)
+            if not rhythm_event.get("allowed", True):
+                continue
             self.inject_event(event)
-            result.generated_events.append(dict(event_metadata))
             issue_type_id = str(event_metadata.get("issue_type_id", ""))
             if issue_type_id:
                 payload = dict(event.initial_payload)
@@ -1374,13 +1429,22 @@ class Orchestrator:
 
         random_poll = self.random_event_generator.poll(self._sim_time)
         for event in random_poll.events:
-            self.inject_event(event)
+            rhythm_event = self.rhythm_runtime.allow_event(
+                event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+            )
+            allowed = rhythm_event.get("allowed", True)
+            if allowed:
+                self.inject_event(event)
             result.generated_events.append({
                 "event_id": event.event_id,
                 "event_type": event.event_type,
                 "severity": event.severity,
-                "target_count": len(event.target_agents),
+                "target_count": len(event.target_agents) if allowed else 0,
                 "generated_at": event.generated_at,
+                "source": "random",
+                "rhythm_status": "allowed" if allowed else "suppressed",
+                "rhythm_reason": str(rhythm_event.get("reason", "")),
+                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
             })
         if random_poll.attempts and self.persistor:
             self.persistor.mark_state_dirty()
@@ -1397,6 +1461,24 @@ class Orchestrator:
             causal_remaining -= causal_poll.due_count
             for event in causal_poll.events:
                 effect_count = len(event.world_commands)
+                rhythm_event = self.rhythm_runtime.allow_event(
+                    event.event_type, sim_time=self._sim_time, issue_manager=self.issue_manager,
+                )
+                if not rhythm_event.get("allowed", True):
+                    result.generated_events.append({
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "severity": event.severity,
+                        "target_count": 0,
+                        "generated_at": event.generated_at,
+                        "source": "causal",
+                        "world_effect_count": effect_count,
+                        "world_effect_status": "suppressed",
+                        "rhythm_status": "suppressed",
+                        "rhythm_reason": str(rhythm_event.get("reason", "")),
+                        "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                    })
+                    continue
                 effect_status = "none"
                 if effect_count:
                     self._record_operational_metric("causal_effect_batches")
@@ -1452,6 +1534,9 @@ class Orchestrator:
                     "source": "causal",
                     "world_effect_count": effect_count,
                     "world_effect_status": effect_status,
+                    "rhythm_status": "allowed",
+                    "rhythm_reason": "",
+                    "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
                 })
             if self.persistor:
                 self.persistor.mark_state_dirty()

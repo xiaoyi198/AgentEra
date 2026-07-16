@@ -2284,3 +2284,29 @@ The orchestrator polls lifecycle transitions during simulation ticks and include
 `frontend/src/LifecycleEditor.jsx` and `LifecycleEditorTools.js` implement the “动态生命周期” editor. It covers template Actor/entity/Agent fields, position candidates and scoring, nine transition semantics, ten trigger types, common causal conditions, seven operations, feedback, local validation, normalization, serialization, and editor-only-field stripping. The editor is integrated into `DLCStudio.jsx` and uses the existing import/export, diff, history, and save pipeline.
 
 `example_frontier` v1.12.0 is the reference package: it defines a dynamic patrol-deputy Actor/entity/Agent template, a scored patrol-captain position, cycle recruitment, succession, retirement, seasonal entity transformation, organization split, and organization merge. AgentEra v0.33.0 completes gameplay-framework phase P2.2.
+
+## Rhythm director architecture (v0.34.0)
+
+### Generation-bound contract
+
+`content.json.rhythm` is normalized by `normalize_rhythm_document()` and parsed into an immutable `RhythmContract`. The contract contains global admission limits, attention capacity and per-game-day recovery, queue and feedback bounds, urgency costs, global quiet-period policy, and up to 256 ordered `RhythmRule` entries. Rules match declared Issue Types and/or Event Types and may override attention cost, active limits, cooldowns, mutex groups, quiet periods, escalation, condition-driven de-escalation, and climax settlement.
+
+`DLCRegistry.validate()` checks safe and unique rule IDs, referenced Issue Types, numeric bounds, urgency levels, escalation/de-escalation/climax level consistency, and all causal-condition references. The resolved primary DLC owns the active rhythm contract. The contract is published with its Generation during initial load, hot reload, encrypted archive restore, and rollback; an absent rhythm document preserves legacy behavior through a disabled empty contract.
+
+### Runtime admission and deterministic progression
+
+`RhythmRuntime` is the single admission controller for Issue creation and authored random-event injection. It restores attention according to authoritative `sim_time`, evaluates global and rule-specific active limits, attention cost, queue capacity, cooldown, mutex-group occupancy, and quiet periods, then records a bounded safe decision. Critical traffic can bypass quiet periods only when the DLC explicitly enables it. Suppressed random events never enter the world event queue.
+
+Accepted Issue candidates retain their matched rule and attention reservation. Candidates that cannot enter immediately may wait in the bounded rhythm queue and are retried deterministically. Polling during simulation ticks advances due escalation levels, evaluates de-escalation and climax conditions through the shared `CausalConditionEvaluator`, updates urgency/status, settles same-group Case and DecisionRequest records when configured, starts post-climax quiet periods, and releases attention when work reaches a terminal state.
+
+### State, orchestration, and public API
+
+The orchestrator installs the runtime as the Issue Manager rhythm controller and calls `RhythmRuntime.poll()` with the current world/knowledge/objective/time condition context. Save/load snapshots preserve attention, queued candidates, cooldowns, mutex/quiet-period state, matched rule state, escalation/de-escalation/climax receipts, and recent feedback. Reconfiguration preserves only state compatible with the promoted contract and current simulation time.
+
+`GET /api/rhythm` exposes capability-safe budget totals, active/queued counts, public rule summaries, recent feedback, and recent suppressed events. It excludes hidden causal operands and internal authored condition values. Tick results include the bounded rhythm transition summary so the UI and diagnostics can explain pacing changes without exposing world truth.
+
+### DLC Studio and reference package
+
+`frontend/src/RhythmEditor.jsx`, `RhythmEditorTools.js`, and `RhythmEditor.css` implement the “节奏导演” editor inside the existing DLC Studio save pipeline. The editor covers global budgets, urgency costs, rule ordering, Issue/Event matching, cooldowns, mutex and quiet periods, escalation tables, de-escalation conditions, climax conditions and settlement behavior, with Chinese field help and local reference validation. `RhythmEditorTools.test.js` covers normalization, serialization, event-type discovery, defaults, and invalid references/levels.
+
+`example_frontier` v1.13.0 is the reference package. It demonstrates a three-level border-security crisis, readiness-driven de-escalation, climax settlement, stabilization/intelligence rules, low-cost routine reports, and low-priority rumor suppression. AgentEra v0.34.0 completes gameplay-framework phase P2.3; the next phase is P2.4 player-understandable outcome feedback.

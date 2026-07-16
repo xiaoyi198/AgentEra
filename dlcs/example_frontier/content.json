@@ -276,7 +276,27 @@
   "prompts": {
     "official_template": "你是{name}，驻守{location}。{personality}\nActor={actor_id}，需求={actor_needs}，目标={actor_goals}，状态={actor_states}。\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
   },
-  "random_events": [],
+  "random_events": [
+    {
+      "template_id": "frontier_rumor_cycle",
+      "event_type": "frontier_rumor",
+      "target_agents": [
+        "哨站守备官"
+      ],
+      "initial_payload": {
+        "title": "边境流言",
+        "summary": "商旅带来未经证实的边境消息，需要结合正式巡查报告判断。",
+        "source": "random_event"
+      },
+      "severity_min": 1,
+      "severity_max": 3,
+      "min_interval_days": 2,
+      "max_interval_days": 4,
+      "probability": 0.7,
+      "max_occurrences": 0,
+      "enabled": true
+    }
+  ],
   "time_rules": [
     {
       "rule_id": "frontier_default",
@@ -2423,6 +2443,238 @@
           "message": "边境守军与商队已合并为联合指挥部，来源组织保留并标记为已合并。",
           "level": "success",
           "category": "lifecycle"
+        }
+      }
+    ]
+  },
+  "rhythm": {
+    "enabled": true,
+    "max_active_issues": 4,
+    "attention_budget": 10,
+    "attention_recovery_per_day": 3,
+    "queue_limit": 64,
+    "recent_feedback_limit": 48,
+    "quiet_period_days": 1,
+    "critical_bypasses_quiet": true,
+    "urgency_costs": {
+      "low": 1,
+      "normal": 2,
+      "high": 3.5,
+      "critical": 5
+    },
+    "rules": [
+      {
+        "rule_id": "frontier_security_crisis",
+        "display_name": "边境安全危机升级链",
+        "enabled": true,
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [
+          "frontier_response_started"
+        ],
+        "priority": 100,
+        "attention_cost": 3.5,
+        "max_active": 1,
+        "cooldown_days": 0.5,
+        "mutual_exclusion_group": "frontier_crisis",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0.5,
+        "escalation": {
+          "enabled": true,
+          "after_days": 1,
+          "interval_days": 1,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": [
+            "边境安全报告仍未处理，风险已进入高优先级队列。",
+            "边境风险持续累积，请立即调配巡防与补给资源。",
+            "边境安全事项已达到危急等级，即将进入高潮收束阶段。"
+          ]
+        },
+        "deescalation": {
+          "enabled": true,
+          "interval_days": 0.5,
+          "target_level": 1,
+          "issue_status": "monitoring",
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "frontier_readiness",
+              "value": 65
+            }
+          ],
+          "feedback": "边境综合战备度回升，安全危机降为持续观察。"
+        },
+        "climax": {
+          "enabled": true,
+          "level": 3,
+          "after_days": 0.5,
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "frontier_readiness",
+              "value": 75
+            }
+          ],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": "边境危机已经完成收束，相关决策请求关闭，世界进入三天恢复期。"
+        }
+      },
+      {
+        "rule_id": "frontier_stabilization",
+        "display_name": "稳定化与情报确认",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "frontier_stabilization",
+          "frontier_intelligence_confirmed"
+        ],
+        "priority": 80,
+        "attention_cost": 1,
+        "max_active": 2,
+        "cooldown_days": 0,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 1,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "frontier_routine_reports",
+        "display_name": "常规边疆报告",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "patrol_report",
+          "frontier_command_turn_started"
+        ],
+        "priority": 20,
+        "attention_cost": 1.5,
+        "max_active": 2,
+        "cooldown_days": 0.25,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "frontier_rumor_noise",
+        "display_name": "低优先级边境流言",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "frontier_rumor"
+        ],
+        "priority": -50,
+        "attention_cost": 1,
+        "max_active": 1,
+        "cooldown_days": 3,
+        "mutual_exclusion_group": "frontier_noise",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "low",
+            "normal",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
         }
       }
     ]

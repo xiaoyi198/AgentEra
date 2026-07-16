@@ -32,6 +32,7 @@ from .gameplay_contract import GameplayContract
 from .ui_manifest import UIManifest
 from .temporal_contract import TemporalContract
 from .lifecycle_contract import LifecycleContract
+from .rhythm_contract import RhythmContract
 from .world_state import (
     Entity,
     EntityValue,
@@ -82,6 +83,8 @@ class DLCLoadReport:
     lifecycle_actor_templates: int = 0
     lifecycle_positions: int = 0
     lifecycle_transitions: int = 0
+    rhythm_configured: bool = False
+    rhythm_rules: int = 0
     actions: int = 0
     capabilities: int = 0
     issue_types: int = 0
@@ -117,6 +120,7 @@ class DLCReloadPlan:
     derived_metrics_changed: bool = False
     time_system_changed: bool = False
     lifecycle_changed: bool = False
+    rhythm_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -157,6 +161,7 @@ class _DLCMaterializedSnapshot:
     time_rules: list[dict[str, Any]]
     time_system_contract: TemporalContract
     lifecycle_contract: LifecycleContract
+    rhythm_contract: RhythmContract
     action_definitions: list[dict[str, Any]]
     capability_definitions: list[dict[str, Any]]
     issue_definitions: list[dict[str, Any]]
@@ -631,6 +636,8 @@ class DLCBundleLoader:
             lifecycle_actor_templates=len(content["lifecycle"].get("actor_templates", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
             lifecycle_positions=len(content["lifecycle"].get("positions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
             lifecycle_transitions=len(content["lifecycle"].get("transitions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            rhythm_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content.get("rhythm", {}).get("enabled", False)),
+            rhythm_rules=len(content.get("rhythm", {}).get("rules", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
             actions=len(content["actions"]),
             capabilities=len(content["capabilities"]),
             issue_types=len(content["issue_types"]),
@@ -676,6 +683,7 @@ class DLCBundleLoader:
         time_rules: list[dict[str, Any]] = []
         time_system_contract = TemporalContract.from_mapping({})
         lifecycle_contract = LifecycleContract.from_mapping({})
+        rhythm_contract = RhythmContract.from_mapping({})
         action_definitions: list[dict[str, Any]] = []
         action_ids: set[str] = set()
         capability_definitions: list[dict[str, Any]] = []
@@ -724,6 +732,7 @@ class DLCBundleLoader:
                 gameplay_contract = package_gameplay
                 time_system_contract = TemporalContract.from_mapping(content.get("time_system", {}))
                 lifecycle_contract = LifecycleContract.from_mapping(content.get("lifecycle", {}))
+                rhythm_contract = RhythmContract.from_mapping(content.get("rhythm", {}))
                 ui_manifest = UIManifest.from_content(
                     content.get("ui_manifest", {}),
                     package_id=package.manifest.id,
@@ -928,6 +937,7 @@ class DLCBundleLoader:
             time_rules=time_rules,
             time_system_contract=time_system_contract,
             lifecycle_contract=lifecycle_contract,
+            rhythm_contract=rhythm_contract,
             action_definitions=action_definitions,
             capability_definitions=capability_definitions,
             issue_definitions=issue_definitions,
@@ -1029,6 +1039,10 @@ class DLCBundleLoader:
                 current is None
                 or current.lifecycle_contract.fingerprint() != candidate.lifecycle_contract.fingerprint()
             ),
+            rhythm_changed=(
+                current is None
+                or current.rhythm_contract.fingerprint() != candidate.rhythm_contract.fingerprint()
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -1047,6 +1061,7 @@ class DLCBundleLoader:
                 "lifecycle_actor_templates": len(candidate.lifecycle_contract.actor_templates),
                 "lifecycle_positions": len(candidate.lifecycle_contract.positions),
                 "lifecycle_transitions": len(candidate.lifecycle_contract.transitions),
+                "rhythm_rules": len(candidate.rhythm_contract.rules),
                 "actions": len(candidate.action_definitions),
                 "capabilities": len(candidate.capability_definitions),
                 "issue_types": len(candidate.issue_definitions),
@@ -1120,6 +1135,7 @@ class DLCBundleLoader:
             "time_rules": copy.deepcopy(snapshot.time_rules),
             "time_system_contract": snapshot.time_system_contract.to_dict(),
             "lifecycle_contract": snapshot.lifecycle_contract.to_dict(),
+            "rhythm_contract": snapshot.rhythm_contract.to_dict(),
             "action_definitions": copy.deepcopy(snapshot.action_definitions),
             "capability_definitions": copy.deepcopy(snapshot.capability_definitions),
             "issue_definitions": copy.deepcopy(snapshot.issue_definitions),
@@ -1355,6 +1371,7 @@ class DLCBundleLoader:
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
             time_system_contract=TemporalContract.from_mapping(blueprint.get("time_system_contract", {})),
             lifecycle_contract=LifecycleContract.from_mapping(blueprint.get("lifecycle_contract", {})),
+            rhythm_contract=RhythmContract.from_mapping(blueprint.get("rhythm_contract", {})),
             action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
             capability_definitions=[dict(item) for item in blueprint.get("capability_definitions", [])],
             issue_definitions=[dict(item) for item in blueprint.get("issue_definitions", [])],
@@ -1450,6 +1467,7 @@ class DLCBundleLoader:
             time_rules=copy.deepcopy(snapshot.time_rules),
             time_system_contract=copy.deepcopy(snapshot.time_system_contract),
             lifecycle_contract=copy.deepcopy(snapshot.lifecycle_contract),
+            rhythm_contract=copy.deepcopy(snapshot.rhythm_contract),
             action_definitions=copy.deepcopy(snapshot.action_definitions),
             capability_definitions=copy.deepcopy(snapshot.capability_definitions),
             issue_definitions=copy.deepcopy(snapshot.issue_definitions),
@@ -1800,6 +1818,11 @@ class DLCBundleLoader:
                         candidate.lifecycle_contract, generation=target_generation,
                         preserve_state=True,
                     )
+                if hasattr(self.orchestrator, "configure_rhythm_system"):
+                    self.orchestrator.configure_rhythm_system(
+                        candidate.rhythm_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
                 if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
                     self.orchestrator.configure_derived_metric_catalog(
                         candidate.derived_metric_definitions, generation=target_generation,
@@ -2047,6 +2070,11 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "lifecycle_public_state")
                 else snapshot.lifecycle_contract.public_state(generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
             ),
+            "rhythm": (
+                self.orchestrator.rhythm_public_state()
+                if hasattr(self.orchestrator, "rhythm_public_state")
+                else snapshot.rhythm_contract.public_state(generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
+            ),
             "runtime_bindings": (
                 self.orchestrator.runtime_bindings_public_state()
                 if hasattr(self.orchestrator, "runtime_bindings_public_state")
@@ -2072,6 +2100,11 @@ class DLCBundleLoader:
         # events participate in the same deterministic chain semantics.
         if hasattr(self.orchestrator, "configure_causal_events"):
             self.orchestrator.configure_causal_events(candidate.causal_event_rules)
+        if hasattr(self.orchestrator, "configure_rhythm_system"):
+            self.orchestrator.configure_rhythm_system(
+                candidate.rhythm_contract, generation=initial_generation,
+                preserve_state=False,
+            )
         reports = [
             self.load_package(package, seed_world=seed_world)
             for package in self.registry.ordered_active_packages()

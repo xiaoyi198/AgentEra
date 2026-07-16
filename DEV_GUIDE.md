@@ -3224,3 +3224,77 @@ npm run build
 ```
 
 Also run `python -m pytest tests/unit/test_version_consistency.py -q` after a release bump. Before committing, validate `dlcs/example_frontier`, run `git diff --check`, and confirm that `frontend/dist/`, runtime state, API keys, and Provider URLs are not staged.
+
+## Developing DLC rhythm rules (v0.34.0)
+
+### Minimal authoring shape
+
+`rhythm` is a top-level sibling of `issue_types`, `random_events`, `time_system`, and `lifecycle` in a bundle-v1 `content.json`:
+
+```json
+{
+  "rhythm": {
+    "enabled": true,
+    "max_active_issues": 8,
+    "attention_budget": 12,
+    "attention_recovery_per_day": 4,
+    "queue_limit": 128,
+    "recent_feedback_limit": 32,
+    "quiet_period_days": 0,
+    "critical_bypasses_quiet": true,
+    "urgency_costs": {
+      "low": 1,
+      "normal": 2,
+      "high": 3,
+      "critical": 5
+    },
+    "rules": []
+  }
+}
+```
+
+Use ASCII-safe unique `rule_id` values. Each enabled rule must match at least one declared `issue_type_ids` entry or authored `event_types` entry. Rules are evaluated by descending `priority` and then stable rule ID; do not rely on source-array order as a tie-breaker. `attention_cost` may be omitted to use the matched urgency cost.
+
+### Admission, cooldown, mutex, and quiet periods
+
+- `max_active_issues` is global; `max_active` is per rule. Both count non-terminal Issues.
+- Attention is restored from authoritative elapsed `sim_time`, not wall-clock time. Keep costs and daily recovery proportional to the number of meaningful decisions expected per game day.
+- `cooldown_days` starts from a successful activation. `mutual_exclusion_group` prevents overlapping active arcs in the same group.
+- Global and rule `quiet_period_days` suppress new matching content after activation/settlement. `allow_during_quiet` is rule-specific; `critical_bypasses_quiet` only affects critical Issue traffic.
+- `queue_limit` bounds deferred Issue candidates. Random events are never queued: they are either admitted or suppressed before injection.
+
+### Escalation, de-escalation, and climax
+
+`escalation` defines `after_days`, `interval_days`, `max_level`, `urgency_by_level`, and optional player-safe `feedback_by_level`. The runtime derives due levels from game time, so reloads and replays remain deterministic.
+
+`deescalation` may periodically evaluate shared causal `conditions`, move the Issue to `target_level`, set it to `open` or `monitoring`, and emit bounded feedback. `climax` waits for its configured level and delay, evaluates the same causal DSL, moves the Issue to a terminal status, optionally closes same-group Case and DecisionRequest records, and starts a post-climax quiet period. De-escalation and climax levels must not exceed the escalation maximum.
+
+Conditions must obey normal knowledge visibility and resource-reference validation. Do not encode hidden operands in feedback strings, Event payloads, or UI labels. Keep feedback explanatory but authored; P2.4 will add generalized outcome-causality presentation.
+
+### Hot reload, rollback, saves, and API
+
+Rhythm definitions are Generation-bound. Build and validate the next Generation before publication. Compatible attention/queue/cooldown/progression state is retained on hot reload; rollback and save/load restore the runtime snapshot against current `sim_time`. Never mutate a published `RhythmContract` in place.
+
+Use `GET /api/rhythm` for diagnostics and UI consumption. It intentionally returns public rule summaries, budget/queue counters, recent feedback, and recent suppressed-event summaries, but not evaluated condition operands. If a new runtime field affects deterministic progression, add it to both `snapshot()` and `restore()` and cover reload plus save/load behavior.
+
+### DLC Studio workflow
+
+1. Open DLC Studio and select “节奏导演”.
+2. Configure the global active limit, attention capacity/recovery, queue, feedback, quiet-period, and urgency costs.
+3. Add rules, choose Issue Types and/or Event Types, then order them with explicit priorities.
+4. Configure admission overrides, cooldown, mutex group, and quiet behavior.
+5. Enable escalation first; then configure de-escalation and climax levels/conditions within that maximum.
+6. Save only after the editor reports no ID, reference, numeric, urgency, or causal-condition errors; backend Registry validation remains authoritative for the complete resolved DLC graph.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_rhythm_contract.py tests/unit/test_rhythm_runtime.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_rhythm_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Before committing, validate `dlcs/example_frontier`, run `git diff --check`, scan the new editor and sample package for replacement characters, and confirm that runtime state, local API keys, Provider URLs, and generated `frontend/dist/` files are not staged.

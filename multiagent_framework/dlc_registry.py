@@ -47,6 +47,9 @@ from .temporal_contract import (
 from .lifecycle_contract import (
     LifecycleContract, LifecycleContractError, normalize_lifecycle_document,
 )
+from .rhythm_contract import (
+    RhythmContract, RhythmContractError, normalize_rhythm_document,
+)
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -422,7 +425,7 @@ class DLCRegistry:
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
                 raise DLCRegistryError(f"DLC content field {key!r} must be a list")
-        for key in ("personas", "prompts", "ui_manifest", "time_system", "lifecycle"):
+        for key in ("personas", "prompts", "ui_manifest", "time_system", "lifecycle", "rhythm"):
             value = normalized.setdefault(key, {})
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
@@ -437,6 +440,7 @@ class DLCRegistry:
             normalized["derived_metrics"] = normalize_derived_metric_document(normalized.get("derived_metrics", []))
             normalized["time_system"] = normalize_time_system_document(normalized.get("time_system", {}))
             normalized["lifecycle"] = normalize_lifecycle_document(normalized.get("lifecycle", {}))
+            normalized["rhythm"] = normalize_rhythm_document(normalized.get("rhythm", {}))
             normalized["objectives"] = normalize_objective_document(normalized.get("objectives", []))
             normalized["endings"] = normalize_ending_document(normalized.get("endings", []))
         except TypeError as exc:
@@ -798,6 +802,50 @@ class DLCRegistry:
                         add("time_system.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
                     if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
                         add("time_system.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
+        rhythm_contract: RhythmContract | None = None
+        try:
+            rhythm_contract = RhythmContract.from_mapping(content.get("rhythm", {}))
+        except RhythmContractError as exc:
+            add(exc.code, exc.code, exc.path or "rhythm")
+        if rhythm_contract is not None:
+            def validate_rhythm_condition(condition: Any, path: str) -> None:
+                if condition.kind in {
+                    "anchored_inventory", "metric", "parameter", "entity_field",
+                    "entity_tag", "entity_state", "ongoing_event", "world_truth",
+                    "actor_belief", "player_knowledge", "knowledge_confidence",
+                    "knowledge_freshness", "knowledge_secrecy",
+                } and condition.entity_id and condition.entity_id not in entity_ids:
+                    add("rhythm.missing_entity", f"Unknown entity: {condition.entity_id}", path + ".entity_id")
+                if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                    resource = resource_map.get(condition.name)
+                    expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                    if resource is None:
+                        add("rhythm.missing_resource", f"Unknown resource: {condition.name}", path + ".name")
+                    elif resource.get("kind") != expected_kind:
+                        add("rhythm.invalid_resource_kind", f"Condition requires resource kind {expected_kind}", path + ".kind")
+                if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"} and condition.entity_id not in actor_ids:
+                    add("rhythm.missing_actor", f"Unknown actor: {condition.entity_id}", path + ".entity_id")
+                if condition.kind == "relationship":
+                    for field_name in ("entity_id", "target_entity_id"):
+                        entity_id = getattr(condition, field_name)
+                        if entity_id and entity_id not in entity_ids:
+                            add("rhythm.missing_entity", f"Unknown relationship endpoint: {entity_id}", path + "." + field_name)
+                    if condition.name and condition.name not in relationship_type_ids:
+                        add("rhythm.missing_relationship_type", f"Unknown relationship type: {condition.name}", path + ".name")
+                if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                    add("rhythm.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
+                if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                    add("rhythm.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
+
+            for rule_index, rule in enumerate(rhythm_contract.rules):
+                rule_path = f"rhythm.rules[{rule_index}]"
+                for issue_index, issue_type_id in enumerate(rule.issue_type_ids):
+                    if issue_type_id not in issue_type_ids:
+                        add("rhythm.missing_issue_type", f"Unknown issue type: {issue_type_id}", f"{rule_path}.issue_type_ids[{issue_index}]")
+                for section_name, transition in (("deescalation", rule.deescalation), ("climax", rule.climax)):
+                    for condition_index, condition in enumerate(transition.conditions):
+                        validate_rhythm_condition(condition, f"{rule_path}.{section_name}.conditions[{condition_index}]")
+
         lifecycle_contract: LifecycleContract | None = None
         try:
             lifecycle_contract = LifecycleContract.from_mapping(content.get("lifecycle", {}))
