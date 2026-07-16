@@ -38,6 +38,7 @@ class FakeOrchestrator:
         self.ui_manifest_configurations = []
         self.lifecycle_configurations = []
         self.rhythm_configurations = []
+        self.outcome_feedback_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -113,6 +114,18 @@ class FakeOrchestrator:
         contract, generation, _preserve_state = self.rhythm_configurations[-1]
         return contract.public_state(generation=generation)
 
+    def configure_outcome_feedback(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("outcome_feedback", contract.fingerprint()))
+        self.outcome_feedback_configurations.append((contract, generation, preserve_state))
+
+    def outcome_feedback_public_state(self):
+        if not self.outcome_feedback_configurations:
+            return {"configured": False, "enabled": False, "generation": 0, "recent": [], "pending": []}
+        contract, generation, _preserve_state = self.outcome_feedback_configurations[-1]
+        return {**contract.public_state(generation=generation), "recent": [], "pending": []}
+
 
 def rhythm_document(display_name: str = "Market Pressure") -> dict:
     return {
@@ -127,6 +140,29 @@ def rhythm_document(display_name: str = "Market Pressure") -> dict:
             "priority": 7,
             "max_active": 1,
             "cooldown_days": 2,
+        }],
+    }
+
+
+def outcome_feedback_document(display_name: str = "Action Result") -> dict:
+    return {
+        "enabled": True,
+        "recent_limit": 64,
+        "pending_limit": 128,
+        "receipt_limit": 512,
+        "metric_delta_epsilon": 0.1,
+        "rules": [{
+            "rule_id": "city_action_result",
+            "display_name": display_name,
+            "source_kinds": ["action"],
+            "delivery": "delayed",
+            "action_ids": [],
+            "issue_type_ids": [],
+            "metric_ids": [],
+            "delay_days": 1,
+            "conditions": [],
+            "title": "City result",
+            "summary": "A safe player-facing result.",
         }],
     }
 
@@ -221,6 +257,7 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
         "lifecycle": lifecycle_document(),
         "rhythm": rhythm_document(),
+        "outcome_feedback": outcome_feedback_document(),
         "gameplay": {
             "player": {
                 "identity_id": "station_commander",
@@ -262,6 +299,11 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     assert report.lifecycle_transitions == 1
     assert report.rhythm_configured is True
     assert report.rhythm_rules == 1
+    assert report.outcome_feedback_configured is True
+    assert report.outcome_feedback_rules == 1
+    feedback_contract, feedback_generation, feedback_preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert feedback_contract.rules[0].rule_id == "city_action_result"
+    assert (feedback_generation, feedback_preserve_state) == (1, False)
     rhythm_contract, rhythm_generation, rhythm_preserve_state = orchestrator.rhythm_configurations[-1]
     assert rhythm_contract.rules[0].rule_id == "market_pressure"
     assert rhythm_generation == 1
@@ -1526,3 +1568,49 @@ def test_rhythm_contract_survives_reload_archive_public_state_and_rollback(tmp_p
     assert rolled_back.fingerprint() == original.fingerprint()
     assert generation == 3
     assert preserve_state is True
+
+
+def test_outcome_feedback_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.outcome_feedback_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.outcome_feedback_contract.fingerprint() == original.fingerprint()
+    assert cloned.outcome_feedback_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["outcome_feedback"] = outcome_feedback_document("Reloaded Action Result")
+    content["outcome_feedback"]["recent_limit"] = 96
+    content["outcome_feedback"]["rules"][0]["delay_days"] = 2
+    registry.save_content("sample", content)
+
+    preview = loader.preview_reload()
+    assert preview["outcome_feedback_changed"] is True
+    assert preview["world_changes"]["outcome_feedback_rules"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert result["outcome_feedback_changed"] is True
+    assert contract.rules[0].display_name == "Reloaded Action Result"
+    assert contract.recent_limit == 96
+    assert contract.rules[0].delay_days == 2
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["outcome_feedback"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert len(public["rules"]) == 1
+    assert public["recent"] == []
+    assert public["pending"] == []
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"

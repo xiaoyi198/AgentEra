@@ -32,6 +32,8 @@ from .lifecycle_runtime import LifecyclePollResult, LifecycleRuntime
 from .objective_contract import ObjectiveManager
 from .rhythm_contract import RhythmContract
 from .rhythm_runtime import RhythmRuntime
+from .outcome_feedback_contract import OutcomeFeedbackContract
+from .outcome_feedback_runtime import OutcomeFeedbackRuntime
 from .derived_metrics import DerivedMetricCatalog, DerivedMetricEvaluationContext
 from .fc_handlers import (
     FCContext,
@@ -115,6 +117,7 @@ class Orchestrator:
         self.issue_manager = IssueManager()
         self.rhythm_runtime = RhythmRuntime()
         self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        self.outcome_feedback_runtime = OutcomeFeedbackRuntime()
         self.objective_manager = ObjectiveManager()
         self.derived_metric_catalog = DerivedMetricCatalog()
         self.objective_manager.set_derived_metric_provider(
@@ -531,11 +534,33 @@ class Orchestrator:
         )
 
     def resolve_decision(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
         result = self.issue_manager.resolve_decision(
             request_id, payload, sim_time=self._sim_time,
             action_preview=self.preview_dlc_action,
             action_execute=self.execute_dlc_action,
         )
+        metrics_after = self._player_metric_snapshot()
+        request = result.get("decision_request", {})
+        issue = result.get("issue", {})
+        option_id = str(request.get("selected_option_id", ""))
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="decision", source_id=request_id,
+            receipt_id=f"decision:{request_id}:{option_id}", sim_time=self._sim_time,
+            display_name=str(request.get("title", "Decision resolved")),
+            action_id=str((result.get("action_result") or {}).get("action_id", "")),
+            issue_type_id=str(issue.get("issue_type_id", "")),
+            summary=str((request.get("outcome") or {}).get("summary", "Decision resolved.")),
+            reason=str((request.get("outcome") or {}).get("summary", "")),
+            changes=self._action_change_rows(result.get("action_result") or {}),
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="decision",
+                source_id=request_id, reason=str(request.get("title", "Decision resolved")),
+            ),
+            details={"decision_id": request_id, "action_id": str((result.get("action_result") or {}).get("action_id", "")), "issue_id": str(issue.get("issue_id", ""))},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
@@ -543,7 +568,28 @@ class Orchestrator:
         return result
 
     def close_case(self, case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
         result = self.issue_manager.close_case(case_id, payload, sim_time=self._sim_time)
+        metrics_after = self._player_metric_snapshot()
+        case = result.get("case", {})
+        issues = result.get("issues", [])
+        outcome = case.get("outcome", {}) if isinstance(case, dict) else {}
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="case_closed", source_id=case_id,
+            receipt_id=f"case:{case_id}:{case.get('status', 'closed')}", sim_time=self._sim_time,
+            display_name=str(case.get("title", "Case closed")),
+            issue_type_id=str(issues[0].get("issue_type_id", "")) if issues else "",
+            summary=str(outcome.get("summary", "Case closed.")),
+            reason=str(outcome.get("summary", "")),
+            decisions=list(outcome.get("decisions", [])) if isinstance(outcome, dict) else [],
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="case_closed",
+                source_id=case_id, reason=str(case.get("title", "Case closed")),
+            ),
+            details={"case_id": case_id},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self._sync_legacy_memorials()
         if self.persistor:
             self.persistor.mark_state_dirty()
@@ -577,15 +623,34 @@ class Orchestrator:
         })
 
     def execute_dlc_action(self, action_id: str, invocation: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
+        preview = self.preview_dlc_action(action_id, invocation)
         result = self.action_catalog.execute(
             action_id, invocation, world_state=self.world_state,
             time_simulator=self.time_simulator, sim_time=self._sim_time,
             available_agent_ids=self._action_agent_ids(),
             wake_callback=self._wake_from_dlc_action, emit_callback=self.inject_event,
         )
+        metrics_after = self._player_metric_snapshot()
+        invocation_id = str(result.get("invocation_id", ""))
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="action", source_id=invocation_id,
+            receipt_id=f"action:{invocation_id}", sim_time=self._sim_time,
+            display_name=str(preview.get("display_name", action_id)), action_id=action_id,
+            summary=f"{preview.get('display_name', action_id)} completed.",
+            reason=str(preview.get("display_name", action_id)),
+            changes=self._action_change_rows(result),
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="action",
+                source_id=invocation_id, reason=str(preview.get("display_name", action_id)),
+            ),
+            details={"action_id": action_id},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self.action_log.append({
             "kind": "dlc_action", "action_id": action_id,
-            "invocation_id": result.get("invocation_id", ""),
+            "invocation_id": invocation_id,
             "sim_time": self._sim_time, "generation": result.get("generation", 0),
             "replayed": bool(result.get("replayed", False)),
             "ok": bool(result.get("ok", False)),
@@ -1037,6 +1102,77 @@ class Orchestrator:
             issue_manager=self.issue_manager, sim_time=self._sim_time,
         )
 
+    def configure_outcome_feedback(
+        self, contract: OutcomeFeedbackContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish player-safe feedback rules while retaining compatible pending reports."""
+        self.outcome_feedback_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def outcome_feedback_public_state(self) -> dict[str, Any]:
+        return self.outcome_feedback_runtime.public_state()
+
+    def _feedback_condition_context(self) -> CausalConditionContext:
+        return CausalConditionContext(
+            sim_time=self._sim_time, world_state=self.world_state,
+            actor_manager=self.actor_manager, objective_manager=self.objective_manager,
+            event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+            derived_metric_provider=self.derived_metric_catalog,
+            knowledge_provider=self.player_knowledge_provider,
+            issue_manager=self.issue_manager, action_catalog=self.action_catalog,
+        )
+
+    def _player_metric_snapshot(self) -> dict[str, dict[str, Any]]:
+        context = DerivedMetricEvaluationContext(
+            world_state=self.world_state, actor_manager=self.actor_manager,
+            sim_time=self._sim_time,
+        )
+        return {
+            str(item.get("metric_id", "")): item
+            for item in self.derived_metric_catalog.evaluate_all(context, audience="player")
+            if item.get("status") == "ok" and item.get("metric_id")
+        }
+
+    def _metric_change_rows(
+        self, before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]],
+        *, source_kind: str, source_id: str, reason: str,
+    ) -> list[dict[str, Any]]:
+        epsilon = self.outcome_feedback_runtime.contract.metric_delta_epsilon
+        rows: list[dict[str, Any]] = []
+        for metric_id in sorted(set(before).intersection(after)):
+            try:
+                old_value = float(before[metric_id]["value"])
+                new_value = float(after[metric_id]["value"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            delta = new_value - old_value
+            if abs(delta) + 1e-12 < epsilon:
+                continue
+            rows.append({
+                "kind": "derived_metric", "metric_id": metric_id,
+                "display_name": str(after[metric_id].get("display_name", metric_id)),
+                "unit": str(after[metric_id].get("unit", "")),
+                "before": old_value, "after": new_value, "delta": delta,
+                "direction": "up" if delta > 0 else "down",
+                "reason": reason, "source_kind": source_kind, "source_id": source_id,
+            })
+        return rows
+
+    @staticmethod
+    def _action_change_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        batch = result.get("batch", {})
+        for item in batch.get("results", []) if isinstance(batch, dict) else []:
+            payload = item.get("result", {}) if isinstance(item, dict) else {}
+            if isinstance(payload, dict):
+                rows.append(dict(payload))
+        return rows
+
     def configure_lifecycle_system(
         self, contract: LifecycleContract, *, generation: int,
         preserve_state: bool = True,
@@ -1158,6 +1294,7 @@ class Orchestrator:
             "time_system_runtime": self.temporal_runtime.snapshot(),
             "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
             "rhythm_runtime": self.rhythm_runtime.snapshot(),
+            "outcome_feedback_runtime": self.outcome_feedback_runtime.snapshot(),
             "auto_pause_reason": self._auto_pause_reason,
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
@@ -1197,6 +1334,7 @@ class Orchestrator:
         self.lifecycle_runtime.restore(state.get("lifecycle_runtime", {}))
         self.rhythm_runtime.restore(state.get("rhythm_runtime", {}), sim_time=self._sim_time)
         self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        self.outcome_feedback_runtime.restore(state.get("outcome_feedback_runtime", {}), sim_time=self._sim_time)
         auto_pause_reason = state.get("auto_pause_reason")
         self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
@@ -1310,6 +1448,7 @@ class Orchestrator:
     async def _tick(self) -> TickResult:
         """一次 tick — 检查定时器、派发唤醒、处理玩家操作、收集状态."""
         result = TickResult(sim_time=self._sim_time)
+        tick_feedback_deliveries: list[dict[str, Any]] = []
 
         # 清理已完成的后台任务
         done = {t for t in self._agent_tasks if t.done()}
@@ -1331,6 +1470,20 @@ class Orchestrator:
             condition_context=rhythm_context,
         )
         result.rhythm = rhythm_poll.to_dict()
+        for index, item in enumerate(rhythm_poll.feedback):
+            feedback = self.outcome_feedback_runtime.record(
+                source_kind="rhythm",
+                source_id=str(item.get("issue_id", item.get("rule_id", f"rhythm-{index}"))),
+                receipt_id=f"rhythm:{item.get('kind', '')}:{item.get('issue_id', '')}:{item.get('rule_id', '')}:{item.get('sim_time', self._sim_time)}",
+                sim_time=self._sim_time,
+                display_name="Rhythm update",
+                issue_type_id=str(item.get("issue_type_id", "")),
+                summary=str(item.get("message", "Pacing state changed.")),
+                reason=str(item.get("kind", "rhythm")),
+                details={"issue_id": str(item.get("issue_id", "")), "rule_id": str(item.get("rule_id", ""))},
+                condition_context=rhythm_context,
+            )
+            tick_feedback_deliveries.extend(feedback["delivered"])
         if (rhythm_poll.activated or rhythm_poll.transitions) and self.persistor:
             self.persistor.mark_state_dirty()
 
@@ -1426,6 +1579,19 @@ class Orchestrator:
             }
         else:
             result.lifecycle = lifecycle_poll.to_dict()
+        for index, item in enumerate(lifecycle_poll.applied):
+            transition_id = str(item.get("transition_id", f"lifecycle-{index}"))
+            feedback = self.outcome_feedback_runtime.record(
+                source_kind="lifecycle", source_id=transition_id,
+                receipt_id=f"lifecycle:{transition_id}:{item.get('receipt_id', item.get('marker_id', self._sim_time))}",
+                sim_time=self._sim_time, display_name=str(item.get("display_name", transition_id)),
+                summary=str(item.get("summary", "A lifecycle transition was applied.")),
+                reason=str(item.get("reason", transition_id)),
+                changes=list(item.get("changes", [])) if isinstance(item.get("changes", []), list) else [],
+                details={"transition_id": transition_id},
+                condition_context=self._feedback_condition_context(),
+            )
+            tick_feedback_deliveries.extend(feedback["delivered"])
 
         random_poll = self.random_event_generator.poll(self._sim_time)
         for event in random_poll.events:
@@ -1723,6 +1889,35 @@ class Orchestrator:
         if self._pending_objective_transitions:
             result.objective_transitions.extend(self._pending_objective_transitions)
             self._pending_objective_transitions.clear()
+
+        for item in result.generated_events:
+            if item.get("source") != "causal" or not item.get("event_id"):
+                continue
+            feedback = self.outcome_feedback_runtime.record(
+                source_kind="causal_event", source_id=str(item.get("event_id", "")),
+                receipt_id=f"causal_event:{item.get('event_id', '')}", sim_time=self._sim_time,
+                display_name=str(item.get("event_type", "Causal event")),
+                event_type=str(item.get("event_type", "")),
+                summary=f"{item.get('event_type', 'Causal event')} occurred.",
+                reason=str(item.get("world_effect_status", item.get("source", "causal"))),
+                details={"event_type": str(item.get("event_type", ""))},
+                condition_context=self._feedback_condition_context(),
+            )
+            tick_feedback_deliveries.extend(feedback["delivered"])
+        feedback_poll = self.outcome_feedback_runtime.poll(
+            sim_time=self._sim_time, condition_context=self._feedback_condition_context(),
+        )
+        tick_feedback_deliveries.extend(feedback_poll["delivered"])
+        feedback_state = self.outcome_feedback_runtime.public_state()
+        result.outcome_feedback = {
+            "configured": feedback_state.get("configured", False),
+            "enabled": feedback_state.get("enabled", False),
+            "generation": feedback_state.get("generation", 0),
+            "delivered": tick_feedback_deliveries,
+            "pending_count": feedback_state.get("pending_count", 0),
+        }
+        if tick_feedback_deliveries and self.persistor:
+            self.persistor.mark_state_dirty()
 
         result.token_usage = self.router.llm.token_counter.to_dict()
         result.token_usage["pending_tasks"] = len(self._agent_tasks)

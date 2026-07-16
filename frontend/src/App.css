@@ -1607,3 +1607,153 @@ body {
   }
   .auto-pause-copy p { font-size: 11px; }
 }
+
+/* Outcome feedback: player-safe immediate, delayed, case, and causal receipts. */
+.outcome-feedback-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+.outcome-feedback-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.outcome-feedback-heading h2 { margin: 0; }
+.outcome-feedback-heading p {
+  margin: 5px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.outcome-feedback-heading .btn { flex: 0 0 auto; }
+.outcome-feedback-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 7px;
+  background: rgba(7, 11, 16, .38);
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.outcome-feedback-live {
+  display: grid;
+  gap: 9px;
+  max-height: min(60vh, 620px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.outcome-card {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-left: 3px solid var(--gold-dim);
+  border-radius: 8px;
+  background: rgba(7, 11, 16, .5);
+  overflow-wrap: anywhere;
+}
+.outcome-card-immediate { border-left-color: #67be89; }
+.outcome-card-delayed_report { border-left-color: #6fa8dc; }
+.outcome-card-case_summary { border-left-color: #d5a74d; }
+.outcome-card-causal_reveal { border-left-color: #a884d8; }
+.outcome-card header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+.outcome-card header strong {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.outcome-kind {
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 999px;
+  color: var(--gold);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.outcome-card > p {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.outcome-card .outcome-reason {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+}
+.outcome-reason > span {
+  color: var(--gold);
+  font-size: 10px;
+}
+.outcome-change-list {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.outcome-change-list li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .035);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.outcome-change-list small { color: var(--text-dim); line-height: 1.4; }
+.outcome-card blockquote {
+  margin: 9px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid #a884d8;
+  background: rgba(168, 132, 216, .08);
+  color: #cdb9e8;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+@media (max-width: 560px) {
+  .outcome-feedback-heading { align-items: center; }
+  .outcome-feedback-heading p { max-width: 230px; }
+  .outcome-feedback-live { max-height: none; overflow: visible; scrollbar-gutter: auto; }
+  .outcome-card header { grid-template-columns: 1fr; align-items: start; }
+  .outcome-kind { justify-self: start; }
+}
+/* Mobile manifest dashboards must grow with their stacked regions instead of clipping panels. */
+@media (max-width: 880px) {
+  .manifest-dashboard {
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
+  }
+  .manifest-layout {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .manifest-region {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .manifest-region > .panel {
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .manifest-layout-two_column .manifest-region-right {
+    max-height: none;
+  }
+}

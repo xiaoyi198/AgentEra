@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.34.0**
+> 当前版本：**v0.35.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -399,6 +399,19 @@ DLC 可在 `content.json.rhythm` 声明长期叙事节奏。框架以确定性�
 
 `example_frontier` v1.13.0 提供四条参考规则：边境安全危机升级链、稳定化情报确认、低成本常规报告，以及会被冷却和平静期抑制的边境流言噪声。
 
+## 玩家结果反馈：即时变化、延迟报告与因果揭示 (v0.35.0)
+
+DLC 可在顶层 `outcome_feedback` 声明玩家结果反馈契约。框架把行动、决策、结案、因果事件、生命周期与节奏事件转换为玩家可理解的公开结果，但不替 DLC 编写剧情，也不会泄露隐藏条件、世界真相或 Actor 私有认知。
+
+- 自动即时反馈从安全的 WorldCommand 差异和玩家可见派生指标中生成“发生了什么”与确定性原因，并通过 epsilon 和条数上限抑制噪声。
+- 自定义规则支持即时反馈、延迟报告与事后因果揭示，可按来源、Action、Issue Type、Event Type、派生指标和通用因果条件匹配。
+- 结案总结可汇总公开决策、变化与指标结果；延迟队列、最近反馈和幂等回执均为有界状态。
+- 结果反馈进入 Generation 初载、热重载、归档、回滚、重启恢复与存读档；兼容配置热重载时保留待交付反馈，重复 Tick 或读档不会重复发放。
+- `GET /api/outcome-feedback` 与 Tick 的 `outcome_feedback` 字段只返回玩家安全投影。主界面新增“结果反馈”Widget，展示即时变化、延迟报告、结案总结、因果揭示和指标原因。
+- DLC Studio 的“结果反馈”页签提供完整中文说明，覆盖容量、自动反馈、结案总结、规则来源、交付方式、延迟、引用、因果条件、公开文案、后续 Issue 与证据联动，并支持添加、复制、删除和排序。
+
+`example_frontier` v1.14.0 提供巡逻即时结果、边境决策延迟报告和稳定化因果揭示三条参考规则，并在 UI Manifest 中启用结果反馈 Widget。
+
 ## 测试
 
 ```powershell
@@ -443,6 +456,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.35.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P2.4“玩家可理解的结果反馈”：
+
+- 新增 Generation-bound `OutcomeFeedbackContract` / `OutcomeFeedbackRuntime`，统一处理自动即时反馈、延迟报告、结案总结、指标变化原因与事后因果揭示。
+- 反馈规则复用通用因果条件和 DLC 静态引用校验；最近反馈、待交付队列与幂等回执均有界，并支持存档、热重载、Generation 归档和回滚。
+- Orchestrator 将 Action、Decision、Case、因果事件、生命周期、节奏与 Tick 结果接入反馈运行时；新增 `GET /api/outcome-feedback`，所有公开字段使用玩家安全投影。
+- 主界面新增结果反馈面板；DLC Studio 新增完整中文“结果反馈”编辑器，并修复移动规则时展开状态错位及移动端 Manifest Dashboard 裁切。
+- `example_frontier` 升级到 v1.14.0，提供即时、延迟和因果揭示参考规则；AgentEra 四处产品版本统一升级为 `0.35.0`。
+- 长期 Goal 继续保持 active；P2.4 已完成，下一阶段进入跨题材 DLC 的端到端可玩性验收与剩余框架缺口收敛。
 
 ## v0.34.0 发布说明
 

@@ -2310,3 +2310,26 @@ The orchestrator installs the runtime as the Issue Manager rhythm controller and
 `frontend/src/RhythmEditor.jsx`, `RhythmEditorTools.js`, and `RhythmEditor.css` implement the “节奏导演” editor inside the existing DLC Studio save pipeline. The editor covers global budgets, urgency costs, rule ordering, Issue/Event matching, cooldowns, mutex and quiet periods, escalation tables, de-escalation conditions, climax conditions and settlement behavior, with Chinese field help and local reference validation. `RhythmEditorTools.test.js` covers normalization, serialization, event-type discovery, defaults, and invalid references/levels.
 
 `example_frontier` v1.13.0 is the reference package. It demonstrates a three-level border-security crisis, readiness-driven de-escalation, climax settlement, stabilization/intelligence rules, low-cost routine reports, and low-priority rumor suppression. AgentEra v0.34.0 completes gameplay-framework phase P2.3; the next phase is P2.4 player-understandable outcome feedback.
+
+## Outcome feedback architecture (v0.35.0)
+
+### Contract, sources and deterministic evaluation
+
+- `content.json.outcome_feedback` is normalized by `OutcomeFeedbackContract` and executed by the Generation-bound `OutcomeFeedbackRuntime`. The contract is optional; an absent block preserves legacy DLC behavior.
+- Feedback rules consume six framework-owned source kinds: `action`, `decision`, `case_closed`, `causal_event`, `lifecycle`, and `rhythm`. Rules may narrow matches by Action ID, Issue Type ID, Event Type, Derived Metric ID, and the shared causal-condition DSL. DLC data supplies declarations and player-facing copy only; it cannot inject executable code.
+- The runtime combines three complementary paths: automatic immediate command/metric deltas, authored rule feedback, and automatic case summaries. Delivery is deterministic and supports `immediate`, `delayed`, and `causal_reveal`; delayed entries are released by authoritative simulation time rather than wall-clock time.
+- Every source event uses a stable receipt. Replaying an Action, Decision, case closure, causal event, lifecycle event, or rhythm event therefore cannot create duplicate player messages. `recent_limit`, `pending_limit`, and `receipt_limit` keep delivered feedback, delayed work, and idempotency receipts bounded.
+
+### Persistence, reload and rollback
+
+- Snapshot state contains recent player-safe records, pending deliveries, receipts, and the active contract fingerprint. Restore validates and bounds every collection before it becomes authoritative runtime state.
+- Generation archive/restore and rollback include the outcome-feedback snapshot. A hot reload preserves compatible pending work and receipts when the contract fingerprint is unchanged; incompatible contracts are reconfigured without replaying old source events.
+- Delayed reports can create a follow-up Issue and optionally attach public evidence when delivered. The operation stays receipt-bound so restore, polling, or repeated API reads cannot duplicate side effects.
+
+### Public projection and UI surfaces
+
+- `GET /api/outcome-feedback` returns only the active Generation, enabled/capacity metadata, delivered player records, and bounded pending delivery summaries. Hidden causal-condition trees, thresholds, unrevealed facts, and internal source payloads are not exposed.
+- `TickResult.outcome_feedback` carries only newly delivered player-safe records. The React client merges them idempotently, while Generation changes, decisions, and restore operations refresh the authoritative endpoint state.
+- The `outcome_feedback` UI Manifest widget renders the main result panel. It presents immediate changes, delayed reports, case summaries, causal reveals, and deterministic metric reasons without a periodic live-region poll that would repeatedly announce the same message.
+- DLC Studio provides a detailed Chinese editor for global capacities, epsilon, automatic immediate feedback, case summaries, source kinds, delivery timing, cross-references, shared causal conditions, public copy, follow-up Issues, and evidence attachment. Editor-only stable card keys are stripped during serialization.
+- `example_frontier` v1.14.0 demonstrates an immediate patrol result, a delayed decision follow-up report, and a later causal reveal, and exposes the panel through its UI Manifest.

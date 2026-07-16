@@ -108,6 +108,18 @@ async def get_rhythm():
         }
     return state.orchestrator.rhythm_public_state()
 
+@router.get("/outcome-feedback")
+async def get_outcome_feedback():
+    """Return player-safe immediate, delayed, case, metric, and causal feedback."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "enabled": False, "generation": 0,
+            "rules": [], "recent": [], "pending": [],
+            "recent_count": 0, "pending_count": 0,
+        }
+    return state.orchestrator.outcome_feedback_public_state()
+
+
 
 @router.get("/time-scale")
 async def get_time_scale():

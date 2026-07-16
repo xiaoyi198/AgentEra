@@ -3298,3 +3298,87 @@ npm run build
 ```
 
 Before committing, validate `dlcs/example_frontier`, run `git diff --check`, scan the new editor and sample package for replacement characters, and confirm that runtime state, local API keys, Provider URLs, and generated `frontend/dist/` files are not staged.
+
+## Developing DLC outcome feedback rules (v0.35.0)
+
+### Minimal contract
+
+Add an optional `outcome_feedback` block to `content.json`:
+
+```json
+{
+  "outcome_feedback": {
+    "enabled": true,
+    "recent_limit": 128,
+    "pending_limit": 256,
+    "receipt_limit": 2048,
+    "metric_delta_epsilon": 0.000001,
+    "immediate": {
+      "enabled": true,
+      "include_command_changes": true,
+      "include_metric_changes": true,
+      "max_changes": 12,
+      "max_metric_changes": 8
+    },
+    "case_summaries": {
+      "enabled": true,
+      "include_decisions": true,
+      "include_changes": true,
+      "include_metric_changes": true
+    },
+    "rules": [
+      {
+        "rule_id": "supply_followup",
+        "display_name": "补给行动后续报告",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": ["action"],
+        "delivery": "delayed",
+        "action_ids": ["deliver_supplies"],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": ["regional_readiness"],
+        "delay_days": 2,
+        "conditions": [],
+        "title": "补给报告送达",
+        "summary": "前线已完成补给清点。",
+        "reason": "此前执行了补给行动。",
+        "reveal_text": "",
+        "create_issue_type_id": "supply_review",
+        "attach_evidence": true
+      }
+    ]
+  }
+}
+```
+
+Omit the whole block to disable this capability for a legacy DLC. Keep every `rule_id` stable after release because receipts, delayed work, snapshots, and reload compatibility use stable rule/source identity.
+
+### Field semantics and references
+
+- Top-level `recent_limit`, `pending_limit`, and `receipt_limit` bound delivered messages, future deliveries, and idempotency history. `metric_delta_epsilon` suppresses insignificant floating-point metric movement.
+- `immediate` controls automatic feedback derived from authoritative world commands and Derived Metric deltas. Keep the per-record limits small enough that a single action remains readable.
+- `case_summaries` controls automatic summaries when a Case closes and may include the selected Decision, command changes, and metric changes.
+- `source_kinds` accepts `action`, `decision`, `case_closed`, `causal_event`, `lifecycle`, and `rhythm`. `delivery` accepts `immediate`, `delayed`, or `causal_reveal`; `delay_days` uses game days and may be zero.
+- `action_ids`, `issue_type_ids`, `event_types`, and `metric_ids` are optional filters. Action, Issue Type, and Derived Metric references must resolve in the expanded DLC Registry. Event types must resolve through the DLC event catalogs used by initial, ongoing, random, causal, lifecycle, or rhythm content.
+- `conditions` uses the same generic causal-condition objects as gameplay rules. Do not encode hidden thresholds or secret facts into `title`, `summary`, or `reason`. For a `causal_reveal`, put the disclosure in `reveal_text`; it is emitted only after the rule actually matches.
+- `create_issue_type_id` optionally creates a follow-up Issue when feedback is delivered. Set `attach_evidence` only when the resulting public feedback is safe to attach to that Issue.
+
+### Reload, persistence and safe authoring
+
+- The runtime is Generation-bound. Snapshot/restore, Generation archive, rollback, and process restart preserve bounded recent messages, delayed work, and receipts. Replayed source events remain idempotent.
+- Hot reload preserves pending deliveries only when their contract/rule identity remains compatible. Treat changes to rule IDs, delivery semantics, filters, or text as behavior changes and test an existing save before publishing the DLC.
+- The player API deliberately excludes condition trees, thresholds, private source payloads, hidden facts, and unrevealed causes. Never add those fields to the public projection for editor convenience.
+- In DLC Studio, open “结果反馈”, edit the Chinese-described fields, use catalog selectors for references, then review the generated Diff before applying. Moving or editing a card must retain its editor state; internal `__editor_key` values must never be serialized.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_outcome_feedback_contract.py tests/unit/test_outcome_feedback_runtime.py tests/unit/test_outcome_feedback_orchestrator.py tests/unit/test_outcome_feedback_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Also validate the expanded example DLC through `DLCRegistry`, exercise snapshot/restore and same-fingerprint hot reload, and inspect `GET /api/outcome-feedback` plus Tick payloads to ensure hidden causal data never reaches the player projection.

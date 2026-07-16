@@ -6,9 +6,13 @@ import RelationsView from './RelationsView'
 import SettingsCenter from './SettingsCenter'
 import ObjectivePanel from './ObjectivePanel'
 import DerivedMetricPanel from './DerivedMetricPanel'
+import OutcomeFeedbackPanel from './OutcomeFeedbackPanel'
 import CapabilityPanel from './CapabilityPanel'
 import { normalizeCapabilityResponse } from './CapabilityTools.js'
 import { normalizeDerivedMetricResponse } from './DerivedMetricTools.js'
+import {
+  mergeOutcomeFeedbackState, normalizeOutcomeFeedbackResponse,
+} from './OutcomeFeedbackTools.js'
 import {
   activeTemporalCycles, formatAutoPauseNotice, formatCycleProgress,
   formatSeason, formatTemporalDate, normalizeTimeSystemState,
@@ -196,6 +200,7 @@ function App() {
     objectives: [], endings: [], current_ending: null, recent_transitions: [],
   })
   const [derivedMetricState, setDerivedMetricState] = useState(() => normalizeDerivedMetricResponse(null))
+  const [outcomeFeedbackState, setOutcomeFeedbackState] = useState(() => normalizeOutcomeFeedbackResponse(null))
   const [uiManifest, setUIManifest] = useState(() => normalizeUIManifestResponse(null))
   const [timeSystemState, setTimeSystemState] = useState(() => normalizeTimeSystemState(null))
   const [autoPauseNotice, setAutoPauseNotice] = useState(null)
@@ -247,6 +252,14 @@ function App() {
     } catch { /* keep the last generation-bound safe projection */ }
   }, [])
 
+  const refreshOutcomeFeedback = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/outcome-feedback`)
+      if (!response.ok) return
+      setOutcomeFeedbackState(normalizeOutcomeFeedbackResponse(await response.json()))
+    } catch { /* keep the last generation-bound player-safe feedback projection */ }
+  }, [])
+
 
   // WebSocket messages are external events; mirroring a completed tick into view state is intentional.
   useEffect(() => {
@@ -263,6 +276,9 @@ function App() {
     }
     if (data.objective_transitions?.length > 0 || Date.now() - objectiveRefreshAt.current > 5000) refreshObjectives()
     if (Date.now() - derivedMetricRefreshAt.current > 5000) refreshDerivedMetrics()
+    if (data.outcome_feedback) {
+      setOutcomeFeedbackState(previous => mergeOutcomeFeedbackState(previous, data.outcome_feedback))
+    }
     if (data.new_issues?.length > 0) {
       setIssues(prev => {
         const existingIds = new Set(prev.map(item => item.issue_id))
@@ -315,6 +331,11 @@ function App() {
     const timer = window.setInterval(refreshDerivedMetrics, 5000)
     return () => { window.clearTimeout(initial); window.clearInterval(timer) }
   }, [objectiveState.generation, refreshDerivedMetrics])
+
+  useEffect(() => {
+    const initial = window.setTimeout(refreshOutcomeFeedback, 0)
+    return () => window.clearTimeout(initial)
+  }, [objectiveState.generation, refreshOutcomeFeedback])
 
   useEffect(() => {
     let active = true
@@ -383,6 +404,7 @@ function App() {
       refreshUIManifest()
       refreshCapabilities()
       refreshDerivedMetrics()
+      refreshOutcomeFeedback()
       refreshTimeSystem()
       Promise.all([fetch(`${API_BASE}/issues`).then(r => r.json()), fetch(`${API_BASE}/decision-requests`).then(r => r.json())])
         .then(([issueData, requestData]) => { if (Array.isArray(issueData)) setIssues(issueData); if (Array.isArray(requestData)) setDecisionRequests(requestData) })
@@ -409,6 +431,10 @@ function App() {
     setIssues(prev => prev.map(item => item.issue_id === response.issue?.issue_id ? response.issue : item))
     setDecisionRequests(prev => prev.map(item => item.decision_request_id === response.decision_request?.decision_request_id ? response.decision_request : item))
     setSelectedIssue(response.issue || selectedIssue)
+    if (response.outcome_feedback) {
+      setOutcomeFeedbackState(previous => mergeOutcomeFeedbackState(previous, response.outcome_feedback))
+    }
+    refreshOutcomeFeedback()
     refreshObjectives()
   }
 
@@ -458,6 +484,15 @@ function App() {
     }
     if (widget.kind === 'derived_metrics') {
       return <DerivedMetricPanel key={widget.widget_id} state={derivedMetricState} onRefresh={refreshDerivedMetrics} title={terms.metrics || '派生指标'} />
+    }
+    if (widget.kind === 'outcome_feedback') {
+      return (
+        <OutcomeFeedbackPanel
+          key={widget.widget_id}
+          state={outcomeFeedbackState}
+          onRefresh={refreshOutcomeFeedback}
+        />
+      )
     }
     if (widget.kind === 'issue_list') {
       return (

@@ -97,6 +97,61 @@ def derived_metric(metric_id: str = "readiness", **overrides) -> dict:
     value.update(overrides)
     return value
 
+def outcome_feedback_content() -> dict:
+    return {
+        "enabled": True,
+        "recent_limit": 64,
+        "pending_limit": 128,
+        "receipt_limit": 512,
+        "metric_delta_epsilon": 0.1,
+        "immediate": {
+            "enabled": True,
+            "include_command_changes": True,
+            "include_metric_changes": True,
+            "max_changes": 6,
+            "max_metric_changes": 4,
+        },
+        "case_summaries": {
+            "enabled": True,
+            "include_decisions": True,
+            "include_changes": True,
+            "include_metric_changes": True,
+        },
+        "rules": [{
+            "rule_id": "inspection_result",
+            "display_name": "Inspection result",
+            "priority": 10,
+            "source_kinds": ["action", "case_closed"],
+            "delivery": "causal_reveal",
+            "action_ids": ["inspect"],
+            "issue_type_ids": ["followup"],
+            "event_types": ["inspection_complete"],
+            "metric_ids": ["readiness"],
+            "delay_days": 0.5,
+            "conditions": [
+                {
+                    "kind": "anchored_inventory",
+                    "entity_id": "place",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                },
+                {
+                    "kind": "derived_metric",
+                    "name": "readiness",
+                    "operator": "gte",
+                    "value": 1,
+                },
+            ],
+            "title": "Inspection complete",
+            "summary": "The command result is now visible.",
+            "reason": "Readiness and supplies met the configured threshold.",
+            "reveal_text": "The earlier inspection enabled this outcome.",
+            "create_issue_type_id": "followup",
+            "attach_evidence": True,
+        }],
+    }
+
 
 @pytest.fixture
 def registry(tmp_path: Path) -> DLCRegistry:
@@ -1241,4 +1296,79 @@ def test_rhythm_validation_reports_issue_and_condition_reference_errors(registry
         "rhythm.missing_entity",
         "rhythm.missing_resource",
         "rhythm.missing_derived_metric",
+    } <= codes
+
+def test_outcome_feedback_document_is_normalized_and_validated(registry: DLCRegistry):
+    registry.create(manifest("outcome-feedback"))
+    content = valid_content()
+    content["actions"] = [{"action_id": "inspect", "display_name": "Inspect"}]
+    content["issue_types"] = [{
+        "issue_type_id": "followup",
+        "display_name": "Follow-up",
+        "default_urgency": "normal",
+        "source": {"allowed_kinds": ["system"]},
+    }]
+    content["derived_metrics"] = [derived_metric()]
+    content["outcome_feedback"] = outcome_feedback_content()
+    registry.save_content("outcome-feedback", content)
+
+    loaded = registry.load_content("outcome-feedback")
+    rule = loaded["outcome_feedback"]["rules"][0]
+    assert rule["action_ids"] == ["inspect"]
+    assert rule["issue_type_ids"] == ["followup"]
+    assert rule["metric_ids"] == ["readiness"]
+    assert rule["conditions"][1]["kind"] == "derived_metric"
+    assert rule["reveal_text"] == "The earlier inspection enabled this outcome."
+    assert registry.validate("outcome-feedback") == []
+
+
+def test_outcome_feedback_validation_reports_missing_static_references(registry: DLCRegistry):
+    registry.create(manifest("broken-outcome-feedback"))
+    content = valid_content()
+    feedback = outcome_feedback_content()
+    rule = feedback["rules"][0]
+    rule["action_ids"] = ["missing_action"]
+    rule["issue_type_ids"] = ["missing_issue"]
+    rule["create_issue_type_id"] = "missing_followup"
+    rule["metric_ids"] = ["missing_metric"]
+    rule["conditions"] = [
+        {
+            "kind": "metric",
+            "entity_id": "missing_entity",
+            "name": "missing_resource",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "actor_attribute",
+            "entity_id": "missing_actor",
+            "name": "influence",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "objective_progress",
+            "entity_id": "missing_objective",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "derived_metric",
+            "name": "missing_condition_metric",
+            "operator": "gte",
+            "value": 1,
+        },
+    ]
+    content["outcome_feedback"] = feedback
+    registry.save_content("broken-outcome-feedback", content)
+
+    codes = {issue.code for issue in registry.validate("broken-outcome-feedback")}
+    assert {
+        "outcome_feedback.missing_action",
+        "outcome_feedback.missing_issue_type",
+        "outcome_feedback.missing_derived_metric",
+        "outcome_feedback.missing_entity",
+        "outcome_feedback.missing_resource",
+        "outcome_feedback.missing_actor",
+        "outcome_feedback.missing_objective",
     } <= codes

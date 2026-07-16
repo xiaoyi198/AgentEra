@@ -869,6 +869,13 @@
           "visible": true
         },
         {
+          "widget_id": "frontier_outcome_feedback",
+          "kind": "outcome_feedback",
+          "region": "right",
+          "order": 35,
+          "visible": true
+        },
+        {
           "widget_id": "frontier_transit",
           "kind": "in_transit",
           "region": "right",
@@ -2676,6 +2683,115 @@
           "quiet_period_days": 3,
           "feedback": ""
         }
+      }
+    ]
+  },
+  "outcome_feedback": {
+    "enabled": true,
+    "recent_limit": 128,
+    "pending_limit": 256,
+    "receipt_limit": 2048,
+    "metric_delta_epsilon": 0.1,
+    "immediate": {
+      "enabled": true,
+      "include_command_changes": true,
+      "include_metric_changes": true,
+      "max_changes": 12,
+      "max_metric_changes": 8
+    },
+    "case_summaries": {
+      "enabled": true,
+      "include_decisions": true,
+      "include_changes": true,
+      "include_metric_changes": true
+    },
+    "rules": [
+      {
+        "rule_id": "frontier_patrol_immediate_result",
+        "display_name": "巡逻行动即时结果",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": [
+          "action"
+        ],
+        "delivery": "immediate",
+        "action_ids": [
+          "frontier_patrol"
+        ],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "巡逻命令已执行",
+        "summary": "巡逻行动已转化为可见的边境状态、库存与战备度变化。",
+        "reason": "变化来自玩家已执行的边境巡逻行动。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": false
+      },
+      {
+        "rule_id": "frontier_decision_followup_report",
+        "display_name": "边境决策后续报告",
+        "enabled": true,
+        "priority": 80,
+        "source_kinds": [
+          "decision"
+        ],
+        "delivery": "delayed",
+        "action_ids": [],
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 2,
+        "conditions": [],
+        "title": "边境处置后续报告",
+        "summary": "两个模拟日后回报处置方案的实际执行结果。",
+        "reason": "该报告是对玩家边境决策的延迟效果追踪。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      },
+      {
+        "rule_id": "frontier_stabilization_causal_reveal",
+        "display_name": "稳定化因果揭示",
+        "enabled": true,
+        "priority": 60,
+        "source_kinds": [
+          "causal_event"
+        ],
+        "delivery": "causal_reveal",
+        "action_ids": [],
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [
+          "frontier_stabilization"
+        ],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "frontier_readiness",
+            "operator": "gte",
+            "value": 55
+          }
+        ],
+        "title": "边境稳定化原因已查明",
+        "summary": "边境战备度达到可持续水平后，系统交付事后因果说明。",
+        "reason": "揭示只在玩家可见的战备度达标后交付。",
+        "reveal_text": "事后核验表明，早期巡逻、支援组织与路线核验共同推动了边境稳定。",
+        "create_issue_type_id": "",
+        "attach_evidence": true
       }
     ]
   }
