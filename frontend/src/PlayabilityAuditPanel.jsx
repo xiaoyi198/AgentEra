@@ -16,6 +16,16 @@ const EVIDENCE_LABELS = {
   ui_manifest: '主界面',
 }
 
+const CHECK_ROUTES = {
+  player_surface: [{ tab: 'gameplay', label: '编辑玩家身份' }, { tab: 'ui_manifest', label: '编辑主界面' }],
+  action_roles: [{ tab: 'agents', label: '编辑 Agent' }, { tab: 'actions', label: '编辑行动' }],
+  issue_intake: [{ tab: 'issue_types', label: '编辑 Issue' }, { tab: 'initial_events', label: '编辑初始事件' }],
+  costly_decision: [{ tab: 'issue_types', label: '编辑决策选项' }, { tab: 'actions', label: '编辑成本行动' }],
+  world_simulation: [{ tab: 'causal_event_rules', label: '编辑因果链' }, { tab: 'time_system', label: '编辑时间系统' }],
+  outcome_feedback: [{ tab: 'outcome_feedback', label: '编辑结果反馈' }],
+  progression: [{ tab: 'objectives', label: '编辑目标' }, { tab: 'endings', label: '编辑结局' }],
+}
+
 function Evidence({ item }) {
   return <li>
     <span>{EVIDENCE_LABELS[item.kind] || item.kind}</span>
@@ -24,7 +34,7 @@ function Evidence({ item }) {
   </li>
 }
 
-export default function PlayabilityAuditPanel({ report, busy = false, onRefresh }) {
+export default function PlayabilityAuditPanel({ report, busy = false, onRefresh, onNavigate }) {
   const audit = normalizePlayabilityAudit(report)
 
   if (!audit.available) {
@@ -68,6 +78,9 @@ export default function PlayabilityAuditPanel({ report, busy = false, onRefresh 
         {check.evidence.length > 0 && <div className="dlc-playability-evidence">
           <h4>已识别证据</h4>
           <ul>{check.evidence.map((item, evidenceIndex) => <Evidence key={`${check.checkId}:evidence:${item.kind}:${item.itemId}:${evidenceIndex}`} item={item} />)}</ul>
+        </div>}
+        {onNavigate && <div className="dlc-playability-routes">
+          {(CHECK_ROUTES[check.checkId] || []).map(route => <button key={`${check.checkId}:${route.tab}`} type="button" onClick={() => onNavigate(route.tab)}>{check.passed ? '查看' : '去补齐'}：{route.label}</button>)}
         </div>}
       </article>)}
     </div>

@@ -2373,3 +2373,38 @@ flowchart LR
 `dlcs/example_orbital/` 是默认禁用、已发布的轨道救援参考 DLC。玩家是“轨道站长”，Agent 是“维护工程师”，维修额度使用资源目录的统一 `anchor_rate` 扣费。初始 Agent 报告生成 Issue，玩家基于有限证据选择巡查，行动唤醒 Agent 并发出 `orbital_patrol_started`；一游戏日后因果规则生成 `orbital_response_started`、应用世界效果、投递后果反馈并完成 `secure_orbital` 与 `orbital_safe` 胜利结局。所有关系类型使用 `orbital_*` 命名空间，避免与其他包发生全局 ID 冲突。
 
 `example_frontier` v1.15.0 新增等价的 Action→Causal 桥接规则。两个参考包 Registry 校验均为 0 error，七项审计均为 7/7。`tests/integration/test_cross_genre_dlc_playthrough.py` 使用临时 Registry 加载轨道包并执行完整运行时链路，证明新题材无需添加专属 Python/React 逻辑。
+
+## DLC Studio 快速创作架构（v0.37.0）
+
+### 快速创建模块与原子写入边界
+
+- `frontend/src/QuickCreatePanel.jsx` 提供全中文批量录入工作台，实体表与 Agent/Actor 套件表彼此独立预览；只有预览无错误且存在实际变更时才允许提交。
+- `frontend/src/QuickCreateTools.js` 是无 React 副作用的解析与 Draft 构造层。它接受竖线或 Tab 分隔文本、忽略注释行与空行、验证稳定 ID 和类型，并用深拷贝生成新内容，绝不直接修改 Studio 当前 Draft。
+- Agent 行被视为一个不可拆分套件：Agent 或 Actor 任一 ID 冲突时，`skip` 策略整套跳过；`overwrite` 策略同时重建基础 Agent 与 Actor，并明确提示高级字段会被重置。所在实体既可以来自现有 `content.entities`，也可以来自同批实体输入。
+- 快速创建不直接写 DLC 文件。`QuickCreatePanel` 只把构造后的完整 Content 交给 `DLCStudio.jsx` 的统一保存入口，继续经过 Content Diff、用户确认、History、Undo/Redo、后端 Registry 校验和持久化。
+
+### 玩家身份编辑与引用完整性
+
+- `frontend/src/GameplayEditor.jsx` 可视化编辑 `content.gameplay.player`：身份 ID、显示名称、绑定 Actor、控制对象及其界面别名均提供中文说明。
+- `frontend/src/GameplayEditorTools.js` 负责规范化、Agent 建议和保存前校验。`direct` 表示玩家直接操控目标；`command` 表示玩家通过命令或委派影响目标。控制目标只允许 `entity` 或 `agent`，并必须引用当前 Content 中存在的 ID。
+- 智能填充优先选择已有 `role=player` Agent，否则选择第一个启用 Agent；若其 Actor 或所在实体可解析，则一起生成合理的玩家身份和控制对象草稿。未知的 `gameplay` 扩展字段在规范化与保存时保持不变，避免编辑器破坏未来 Schema。
+
+### 七步审计到编辑器的导航
+
+`PlayabilityAuditPanel.jsx` 只消费后端审计结果，并用稳定 `check_id` 映射到 Studio 页签；它不会在浏览器端复制可玩性规则。`DLCStudio.jsx` 接收导航请求并切换到玩家身份、UI Manifest、Agent、行动、Issue、事件、因果、时间、结果反馈、目标或结局编辑页。导航只改变当前页签，不修改 Draft。
+
+```mermaid
+flowchart LR
+  Text["批量文本"] --> Parse["QuickCreateTools 解析与校验"]
+  Player["玩家身份表单"] --> Normalize["GameplayEditorTools 规范化与引用检查"]
+  Audit["后端七步审计"] --> Navigate["PlayabilityAuditPanel 页签导航"]
+  Parse --> Draft["完整 Content Draft"]
+  Normalize --> Draft
+  Draft --> Save["DLCStudio 统一保存入口"]
+  Save --> Diff["Diff 与确认"]
+  Diff --> Registry["后端 Registry 校验与持久化"]
+```
+
+### 发布状态
+
+v0.37.0 新增 9 项前端工具测试，覆盖中文解析、原子套件创建、缺失引用、冲突跳过/覆盖、玩家身份规范化、自动建议、引用与重复校验，以及 `gameplay` 扩展字段保留。发布回归要求运行完整前端测试、ESLint、生产构建和 `git diff --check`。

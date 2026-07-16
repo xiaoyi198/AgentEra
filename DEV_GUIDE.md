@@ -3435,3 +3435,53 @@ npm run build --prefix frontend
 ```
 
 Before publishing, validate both `example_frontier` and `example_orbital`, require 7/7 from `audit_playability()`, run `git diff --check`, scan edited UTF-8 files for the replacement character, and stage only the milestone files. Never stage local API keys, `config/models.json`, runtime databases, `.codex-local` helper scripts, or concurrent Settings/API work.
+
+## 开发 DLC Studio 快速创作流程（v0.37.0）
+
+### 批量输入格式
+
+快速创建页面接受竖线（`|`）或 Tab 分隔的纯文本。空行和以 `#` 开头的中文注释行会被忽略。实体列顺序为：
+
+```text
+实体 ID | 名称 | 类型 | 当前状态 | 中文说明
+```
+
+Agent/Actor 套件列顺序为：
+
+```text
+Agent ID | 显示名 | Actor ID | 所在实体 ID | 角色 | 中文说明 | Actor 类型
+```
+
+实体类型必须来自 `QuickCreateTools.js` 的题材无关白名单；Actor 类型也必须来自显式白名单。不要在 React 组件中另建一套解析规则。新增类型时应先扩展后端 Schema/Registry，再同步工具白名单、中文说明和测试。
+
+### 冲突与原子性规则
+
+- `skip`：实体 ID 冲突时跳过该实体；Agent ID 或 Actor ID 任一冲突时，Agent/Actor 整套跳过，禁止只创建一半。
+- `overwrite`：用当前快速创建基础模板替换冲突项。该模式会重置旧条目的高级字段，界面必须持续显示中文警告。
+- 同一批输入中的重复 ID、非法稳定 ID、未知类型和缺失所在实体都是阻断错误；只有警告而无错误时才可保存。
+- Agent 所在实体可以引用既有实体，也可以引用同批新实体。引用检查必须基于合并后的实体 ID 集合。
+- 工具函数必须返回新对象，不可原地修改传入的 `content`；保持 Agent 与 Actor 的创建、跳过和覆盖行为可预测且可测试。
+
+### 玩家 direct / command 语义
+
+`gameplay.player.controls[]` 的 `target_type` 只能是 `entity` 或 `agent`。`control_mode=direct` 表示玩家直接操作该目标；`control_mode=command` 表示玩家通过命令、授权或委派影响目标。相同 `target_type + target_id` 不得重复。保存前必须验证绑定 Actor 和所有控制目标存在。
+
+自动建议只用于生成可编辑草稿：优先玩家角色 Agent，其次第一个启用 Agent；不得在保存时偷偷重写用户选择。规范化时保留 `gameplay` 下未知扩展字段，确保未来 DLC Schema 扩展不会被旧版编辑器清除。
+
+### Studio 保存与导航约束
+
+快速创建和玩家身份编辑器必须调用 `DLCStudio.jsx` 提供的统一 Content 保存回调，不得直接请求文件写入 API。这样才能完整保留 Diff、确认、History、Undo/Redo、Registry 校验和错误反馈。七步审计按钮只做页签导航；审计规则继续由后端 `DLCRegistry.audit_playability()` 拥有，前端不得推断或篡改审计结论。
+
+所有新增字段、错误、警告、空状态和覆盖风险都必须有明确中文说明。新增交互时还需检查键盘操作、按钮禁用状态、`aria-label` 和窄屏布局。
+
+### 回归命令
+
+```powershell
+node --test frontend/src/QuickCreateTools.test.js frontend/src/GameplayEditorTools.test.js
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+git diff --check
+```
+
+提交前还要确认 `VERSION`、`multiagent_framework/version.py`、`frontend/package.json` 与 `frontend/package-lock.json` 四处版本一致。共享文档和并行 Settings/API 文件只能按本任务 hunk 暂存；不要提交本地 Key、`config/models.json`、运行数据库或 `.codex-local` 进度文件。

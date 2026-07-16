@@ -806,3 +806,130 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-playability-hero { grid-template-columns: 1fr; }
   .dlc-playability-score { grid-template-columns: auto auto; justify-content: start; align-items: baseline; border-top: 1px solid #40516a; border-left: 0; }
 }
+
+
+/* Guided DLC authoring: batch entity/Actor/Agent creation and player contract editor. */
+.dlc-quick-create,
+.dlc-gameplay-editor {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+
+.dlc-quick-create-hero,
+.dlc-gameplay-editor-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, .7fr);
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(201, 168, 76, .28);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(201, 168, 76, .12), rgba(12, 17, 24, .76));
+}
+
+.dlc-quick-create-hero > div:first-child > span,
+.dlc-gameplay-editor-hero > div:first-child > span {
+  color: #c9a84c;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .16em;
+}
+
+.dlc-quick-create-hero h2,
+.dlc-gameplay-editor-hero h2 { margin: 6px 0 8px; }
+.dlc-quick-create-hero p,
+.dlc-gameplay-editor-hero p { margin: 0; color: #aeb7c5; line-height: 1.75; }
+
+.dlc-quick-create-route {
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, .18);
+}
+.dlc-quick-create-route ol { margin: 10px 0 0; padding-left: 20px; color: #c9d0da; line-height: 1.8; }
+
+.dlc-quick-create-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.dlc-quick-create-card,
+.dlc-quick-create-review,
+.dlc-gameplay-controls,
+.dlc-gameplay-errors {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 16px;
+  background: rgba(13, 18, 25, .72);
+}
+.dlc-quick-create-card-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dlc-quick-create-card h3 { margin: 0 0 5px; }
+.dlc-quick-create-card p { margin: 0; color: #95a1b1; line-height: 1.55; }
+.dlc-quick-create-card > code { display: block; margin: 14px 0 8px; color: #d8c77c; white-space: normal; }
+.dlc-quick-create-card textarea { width: 100%; min-height: 245px; resize: vertical; font-family: Consolas, 'SFMono-Regular', monospace; line-height: 1.55; }
+.dlc-quick-create-card details { margin-top: 12px; color: #aeb7c5; }
+.dlc-quick-create-card summary { cursor: pointer; color: #d5dbe4; font-weight: 700; }
+.dlc-quick-create-card li { margin: 7px 0; line-height: 1.55; }
+
+.dlc-quick-create-options { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.dlc-quick-create-options label { min-width: min(430px, 100%); }
+.dlc-quick-create-options p { max-width: 620px; margin: 0; color: #95a1b1; line-height: 1.55; }
+.dlc-quick-create-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.dlc-quick-create-counts article { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.035); }
+.dlc-quick-create-counts strong { width: 100%; color: #eef2f7; }
+.dlc-quick-create-counts span { color: #aeb7c5; font-size: 12px; }
+.dlc-quick-create-messages { margin-top: 14px; padding: 14px 16px; border-radius: 12px; }
+.dlc-quick-create-messages h3 { margin: 0 0 8px; font-size: 14px; }
+.dlc-quick-create-messages ul { margin: 0; padding-left: 20px; line-height: 1.65; }
+.dlc-quick-create-messages.error { border: 1px solid rgba(222, 99, 91, .38); background: rgba(125, 36, 32, .16); color: #f0b2ad; }
+.dlc-quick-create-messages.warning { border: 1px solid rgba(214, 168, 64, .35); background: rgba(120, 82, 12, .14); color: #ddc27d; }
+.dlc-quick-create-actions,
+.dlc-gameplay-editor-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.dlc-quick-create-footnote { margin: 12px 0 0; color: #8390a0; font-size: 12px; line-height: 1.6; }
+
+.dlc-gameplay-editor-hero { align-items: center; }
+.dlc-gameplay-editor-hero > button { justify-self: end; }
+.dlc-gameplay-editor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.dlc-gameplay-editor-grid label,
+.dlc-gameplay-control-list label { display: grid; gap: 6px; }
+.dlc-gameplay-editor-grid small { color: #8491a1; line-height: 1.5; }
+.dlc-gameplay-controls .dlc-section-heading { align-items: center; }
+.dlc-gameplay-controls .dlc-section-heading > div:last-child { display: flex; gap: 8px; }
+.dlc-control-mode-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.dlc-control-mode-guide article { padding: 13px; border-radius: 12px; background: rgba(255,255,255,.035); }
+.dlc-control-mode-guide b { color: #d7c271; }
+.dlc-control-mode-guide p { margin: 6px 0 0; color: #98a4b4; line-height: 1.55; }
+.dlc-gameplay-empty { padding: 28px; border: 1px dashed rgba(255,255,255,.12); border-radius: 12px; text-align: center; color: #8996a6; }
+.dlc-gameplay-control-list { display: grid; gap: 9px; }
+.dlc-gameplay-control-list > article { display: grid; grid-template-columns: 42px minmax(110px,.55fr) minmax(180px,1fr) minmax(150px,.7fr) minmax(150px,.8fr) auto; gap: 10px; align-items: end; padding: 12px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(0,0,0,.14); }
+.dlc-gameplay-control-index { align-self: center; color: #c9a84c; font: 800 13px/1 Consolas, monospace; }
+.dlc-gameplay-errors { border-color: rgba(222, 99, 91, .38); background: rgba(125, 36, 32, .14); color: #f0b2ad; }
+.dlc-gameplay-errors h3 { margin: 0 0 8px; }
+.dlc-gameplay-errors ul { margin: 0; padding-left: 20px; line-height: 1.65; }
+.dlc-gameplay-editor-actions { justify-content: space-between; }
+.dlc-gameplay-editor-actions > div { display: flex; gap: 8px; }
+
+.dlc-playability-routes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dlc-playability-routes button { font-size: 12px; }
+
+@media (max-width: 1050px) {
+  .dlc-quick-create-hero,
+  .dlc-gameplay-editor-hero,
+  .dlc-quick-create-grid { grid-template-columns: 1fr; }
+  .dlc-gameplay-editor-grid,
+  .dlc-control-mode-guide { grid-template-columns: 1fr; }
+  .dlc-gameplay-control-list > article { grid-template-columns: 36px 1fr 1fr; }
+  .dlc-gameplay-control-list > article .danger { grid-column: 3; }
+}
+
+@media (max-width: 700px) {
+  .dlc-quick-create,
+  .dlc-gameplay-editor { padding: 12px; }
+  .dlc-quick-create-counts { grid-template-columns: 1fr; }
+  .dlc-quick-create-options,
+  .dlc-quick-create-actions,
+  .dlc-gameplay-editor-actions { align-items: stretch; flex-direction: column; }
+  .dlc-gameplay-control-list > article { grid-template-columns: 1fr; }
+  .dlc-gameplay-control-index,
+  .dlc-gameplay-control-list > article .danger { grid-column: auto; }
+}

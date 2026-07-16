@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.36.0**
+> 当前版本：**v0.37.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -15,8 +15,8 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查、派生指标与 UI Manifest；派生指标提供完整可视化公式树，新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
-- **七步可玩性验收**：DLC 列表与 Studio 中文面板按玩家界面、行动角色、Issue 入口、有限信息成本决策、世界模拟、结果反馈、目标/沙盒进程七项展示证据与缺口；静态审计和 Registry 合法性校验相互独立。
+- **DLC Studio**：新增“快速创建”与“玩家身份”页签，可批量生成实体、Actor、Agent 套件并可视化配置 direct/command 控制对象；其余关系、事件、资源、行动、Issue、目标、时间、因果、反馈、知识与 UI Manifest 继续提供中文说明、即时校验、Diff、撤销/重做和导入导出。
+- **七步可玩性验收**：DLC 列表与 Studio 中文面板按玩家界面、行动角色、Issue 入口、有限信息成本决策、世界模拟、结果反馈、目标/沙盒进程七项展示证据与缺口；每张卡片可直接跳到对应编辑页，静态审计和 Registry 合法性校验仍相互独立。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
@@ -457,6 +457,16 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.37.0 发布说明
+
+本版本继续推进 DLC Studio 快速创作流程：
+
+- 新增完整中文“玩家身份”编辑器，可配置 identity_id、显示名称、绑定 Actor，以及 entity/agent 的 direct / command 控制语义；支持从已有 Agent 智能填充，并在保存前检查引用、重复项和必填字段。
+- 新增实体、Actor、Agent 批量创建工作台，支持竖线或 Tab 表格输入、中文示例、缺失实体引用检查、跳过/覆盖冲突策略和原子 Agent/Actor 套件生成。
+- 批量写入和玩家身份编辑继续复用 Studio 的 Content Diff、确认、历史、撤销/重做与 Registry 保存链路，不直接覆盖 DLC 文件。
+- 七步可玩性审计卡片新增“查看/去补齐”导航，可直接定位玩家身份、界面、Agent、行动、Issue、事件、因果链、时间、结果反馈、目标与结局编辑页。
+- 前端新增 9 项工具回归测试；AgentEra 四处产品版本统一升级为 0.37.0。长期 Goal 保持 active，下一阶段继续做真实 API 多轮 Agent 与长对局世界模拟压力验收。
 
 ## v0.35.0 发布说明
 

@@ -12,6 +12,8 @@ import LifecycleEditor from './LifecycleEditor.jsx'
 import RhythmEditor from './RhythmEditor.jsx'
 import OutcomeFeedbackEditor from './OutcomeFeedbackEditor.jsx'
 import PlayabilityAuditPanel from './PlayabilityAuditPanel.jsx'
+import QuickCreatePanel from './QuickCreatePanel.jsx'
+import GameplayEditor from './GameplayEditor.jsx'
 import { playabilityBadge } from './PlayabilityAuditTools.js'
 import {
   commitContentHistory,
@@ -616,6 +618,8 @@ export default function DLCStudio() {
 
   const tabs = [
     { key: 'playability', label: `可玩性验收 ${detail?.playability?.passed_count ?? 0}/${detail?.playability?.total_count ?? 7}` },
+    { key: 'quick_create', label: '快速创建' },
+    { key: 'gameplay', label: '玩家身份' },
     { key: 'entities', label: `${UI.entities} ${counts.entities}` },
     { key: 'actors', label: `Actor / 角色组件 ${counts.actors}` },
     { key: 'agents', label: `${UI.agents} ${counts.agents}` },
@@ -674,11 +678,13 @@ export default function DLCStudio() {
             <button disabled={busy || !detail.editable || !contentHistory.future.length} onClick={stageRedo}>{UI.redo}</button>
           </div>
           <nav className="dlc-tabs">{tabs.map(item => <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => { setTab(item.key); setSelectedItem('') }}>{item.label}</button>)}</nav>
-          {tab === 'playability' ? <PlayabilityAuditPanel report={detail.playability} busy={busy} onRefresh={refreshPlayability} />
+          {tab === 'playability' ? <PlayabilityAuditPanel report={detail.playability} busy={busy} onRefresh={refreshPlayability} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
             : tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
-              : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
+              : tab === 'quick_create' ? <QuickCreatePanel key={`quick_create:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
+                : tab === 'gameplay' ? <GameplayEditor key={`gameplay:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
+                : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
                 : tab === 'time_system' ? <TemporalSystemEditor key={`time_system:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'lifecycle' ? <LifecycleEditor key={`lifecycle:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'rhythm' ? <RhythmEditor key={`rhythm:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
