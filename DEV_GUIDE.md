@@ -3382,3 +3382,56 @@ npm run build
 ```
 
 Also validate the expanded example DLC through `DLCRegistry`, exercise snapshot/restore and same-fingerprint hot reload, and inspect `GET /api/outcome-feedback` plus Tick payloads to ensure hidden causal data never reaches the player projection.
+
+## Developing cross-genre playability audits (v0.36.0)
+
+### Validation and audit responsibilities
+
+Do not add playability heuristics to `DLCRegistry.validate()`. Registry validation is authoritative for document shape, IDs, references, bounds, dependency safety, and runtime-load legality. `DLCRegistry.audit_playability()` is advisory authoring analysis: it checks whether legal content declares a credible seven-stage loop and returns Chinese, actionable gaps. A package may therefore be valid but not playable.
+
+The stable audit check IDs are:
+
+1. `player_surface` — player identity, controlled objects, and a visible UI surface.
+2. `action_roles` — player action plus Agent participation such as `wake_agent`.
+3. `issue_intake` — an enabled event/report can reach the player and create an Issue with evidence.
+4. `costly_decision` — a DecisionRequest points to an Action with an anchored cost or authoritative duration.
+5. `world_simulation` — Action output enters time/ongoing/causal processing and can change world state.
+6. `outcome_feedback` — enabled immediate/authored feedback can reach the player.
+7. `progression` — objectives/endings form a campaign, or an enabled time cycle sustains a sandbox.
+
+Keep `audit_version` stable when adding only labels or evidence. Increment it when check meaning or report shape changes. Report evidence must contain only authored IDs and player-safe labels; do not expose Prompt text, hidden knowledge, Provider configuration, or runtime secrets.
+
+### Authoring an auditable action chain
+
+For an Action-driven causal loop, the Action's `emit_event.event.event_type` must be consumed by an enabled `causal_event_rules[].source_event_types`. If the world change is delayed, declare an authoritative duration/ongoing event or causal delay, then apply a deterministic `world_effects` command. A disconnected emitted event may pass Schema validation but must fail `world_simulation`.
+
+The minimal evidence path should remain explicit in DLC JSON:
+
+```text
+initial/random/time/Agent report
+  → issue_type + evidence + decision option
+  → action cost/duration + wake_agent + emit_event
+  → causal rule + world effect
+  → outcome_feedback
+  → objective/ending or sandbox cycle
+```
+
+Use namespaced package-local IDs for relationship types and other globally merged catalogs. The `example_orbital` package uses `orbital_command`, `orbital_trust`, and `orbital_rivalry`; do not copy generic IDs from another enabled package.
+
+### Studio and API
+
+Both `GET /api/dlcs` and `GET /api/dlcs/{id}` include a `playability` object. The Studio must render this server-owned result rather than duplicate Python heuristics in JavaScript. `PlayabilityAuditTools.js` may normalize missing/old payloads only; it must not infer new gameplay rules. The refresh action reloads package detail and never writes content.
+
+When extending the panel, keep all gaps and explanations in Chinese, preserve accessible region/score labels, and keep the warning that static 7/7 does not replace a real playthrough. Do not hide Registry validation errors behind the playability score.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_dlc_playability.py tests/unit/test_dlc_playability_api.py tests/integration/test_cross_genre_dlc_playthrough.py -q
+node --test frontend/src/PlayabilityAuditTools.test.js
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+Before publishing, validate both `example_frontier` and `example_orbital`, require 7/7 from `audit_playability()`, run `git diff --check`, scan edited UTF-8 files for the replacement character, and stage only the milestone files. Never stage local API keys, `config/models.json`, runtime databases, `.codex-local` helper scripts, or concurrent Settings/API work.

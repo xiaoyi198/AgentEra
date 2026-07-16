@@ -759,3 +759,50 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .lifecycle-operation-select { grid-template-columns: 1fr; }
   .lifecycle-savebar { position: static; }
 }
+
+/* Seven-stage DLC playability audit */
+.dlc-tabs { flex-wrap: wrap; }
+.dlc-playability { max-width: 1180px; display: grid; gap: 14px; }
+.dlc-playability-hero { display: grid; grid-template-columns: minmax(0, 1fr) 190px; align-items: center; gap: 24px; padding: 22px 24px; border: 1px solid #38465c; border-radius: 10px; background: linear-gradient(130deg, #172237, #101722 68%); }
+.dlc-playability-hero.is-playable { border-color: #31664e; background: linear-gradient(130deg, #142b24, #101a19 68%); }
+.dlc-playability-hero.has-gaps { border-color: #765036; background: linear-gradient(130deg, #2b2119, #17191e 68%); }
+.dlc-playability-kicker { color: #7f91aa; font: 10px/1.4 Consolas, monospace; letter-spacing: .12em; }
+.dlc-playability-hero h2 { margin: 7px 0 8px; color: #eef3fa; font: 600 22px/1.25 Georgia, serif; }
+.dlc-playability-hero p { max-width: 790px; margin: 0; color: #9aa8bb; font-size: 13px; line-height: 1.65; }
+.dlc-playability-score { display: grid; justify-items: center; gap: 5px; padding: 15px; border-left: 1px solid #40516a; }
+.dlc-playability-score strong { color: #f2f6fb; font: 600 48px/1 Georgia, serif; }
+.dlc-playability-score strong small { color: #7f8ea2; font-size: 22px; }
+.dlc-playability-score span { color: #9eacbd; font-size: 11px; }
+.dlc-playability-progress { height: 5px; overflow: hidden; border-radius: 999px; background: #222c3a; }
+.dlc-playability-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4275bc, #67c492); transition: width .2s ease; }
+.dlc-playability-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 13px; border: 1px solid #2d394b; border-radius: 7px; background: #101620; }
+.dlc-playability-toolbar p { margin: 0; color: #8391a5; font-size: 12px; }
+.dlc-playability-toolbar button, .dlc-playability-empty button { padding: 8px 12px; color: #dce4ef; border: 1px solid #3b4b61; border-radius: 5px; background: #172131; white-space: nowrap; }
+.dlc-playability-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dlc-playability-checks article { min-width: 0; padding: 15px; border: 1px solid #2e3a4d; border-radius: 8px; background: #101620; }
+.dlc-playability-checks article.passed { border-left: 3px solid #3f9d70; }
+.dlc-playability-checks article.gap { border-left: 3px solid #c06b50; background: #1c1718; }
+.dlc-playability-check-title { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.dlc-playability-check-title > span { display: grid; place-items: center; width: 30px; height: 30px; color: #7890b0; border: 1px solid #34455d; border-radius: 50%; font: 11px Consolas, monospace; }
+.dlc-playability-check-title h3 { margin: 1px 0 5px; color: #dce4ee; font-size: 13px; }
+.dlc-playability-check-title p { margin: 0; color: #7f8da1; font-size: 11px; line-height: 1.55; }
+.dlc-playability-check-title b { padding: 3px 7px; color: #76d3a2; border: 1px solid #32694f; border-radius: 999px; font-size: 10px; font-weight: 500; }
+.dlc-playability-checks article.gap .dlc-playability-check-title b { color: #efa58e; border-color: #7a493a; }
+.dlc-playability-gaps, .dlc-playability-evidence { margin-top: 12px; padding-top: 10px; border-top: 1px solid #283345; }
+.dlc-playability-gaps h4, .dlc-playability-evidence h4 { margin: 0 0 7px; color: #77869b; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.dlc-playability-gaps ul, .dlc-playability-evidence ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dlc-playability-gaps li { padding: 7px 9px; color: #e4b1a1; border: 1px solid #583932; border-radius: 5px; background: #251a19; font-size: 11px; line-height: 1.5; }
+.dlc-playability-evidence ul { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.dlc-playability-evidence li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px 7px; padding: 7px 8px; border: 1px solid #2c3b4e; border-radius: 5px; background: #0c121b; }
+.dlc-playability-evidence li span { color: #6f88a8; font-size: 9px; }
+.dlc-playability-evidence li strong { overflow: hidden; color: #b9c7d8; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; }
+.dlc-playability-evidence li code { grid-column: 1 / -1; overflow: hidden; color: #65768d; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.dlc-playability > footer { padding: 10px 12px; color: #8f8268; border: 1px dashed #554b38; border-radius: 6px; background: #191813; font-size: 11px; line-height: 1.55; }
+.dlc-playability-empty { padding: 26px; color: #9aa8ba; border: 1px dashed #3a485c; border-radius: 8px; background: #101620; }
+.dlc-playability-empty h2 { margin-top: 0; color: #dce4ef; }
+.dlc-playability-empty button { justify-self: start; }
+@media (max-width: 1050px) {
+  .dlc-playability-checks { grid-template-columns: 1fr; }
+  .dlc-playability-hero { grid-template-columns: 1fr; }
+  .dlc-playability-score { grid-template-columns: auto auto; justify-content: start; align-items: baseline; border-top: 1px solid #40516a; border-left: 0; }
+}

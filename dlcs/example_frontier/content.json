@@ -1534,6 +1534,39 @@
   ],
   "causal_event_rules": [
     {
+      "rule_id": "frontier_action_to_response",
+      "source_event_types": [
+        "frontier_patrol_started"
+      ],
+      "child_event_type": "frontier_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "巡逻行动开始推动应急响应"
+      },
+      "inherit_payload_keys": [
+        "target_id",
+        "action_id"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "adjust_resource",
+          "entity_id": "边境哨站",
+          "resource_name": "警戒度",
+          "quantity_delta": 5,
+          "reason": "巡逻行动开始推动应急响应"
+        }
+      ],
+      "delay_days": 1,
+      "probability": 1,
+      "max_depth": 4,
+      "max_fires_per_chain": 1,
+      "severity_delta": 1,
+      "enabled": true,
+      "priority": 120
+    },
+    {
       "rule_id": "patrol_report_to_frontier_response",
       "template_id": "frontier_deterministic_follow_up",
       "condition_group_ids": [

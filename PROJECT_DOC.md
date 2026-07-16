@@ -2333,3 +2333,43 @@ The orchestrator installs the runtime as the Issue Manager rhythm controller and
 - The `outcome_feedback` UI Manifest widget renders the main result panel. It presents immediate changes, delayed reports, case summaries, causal reveals, and deterministic metric reasons without a periodic live-region poll that would repeatedly announce the same message.
 - DLC Studio provides a detailed Chinese editor for global capacities, epsilon, automatic immediate feedback, case summaries, source kinds, delivery timing, cross-references, shared causal conditions, public copy, follow-up Issues, and evidence attachment. Editor-only stable card keys are stripped during serialization.
 - `example_frontier` v1.14.0 demonstrates an immediate patrol result, a delayed decision follow-up report, and a later causal reveal, and exposes the panel through its UI Manifest.
+
+## DLC 七步可玩性审计与跨题材验收（v0.36.0）
+
+### 模块与数据流
+
+- `multiagent_framework/dlc_playability.py`：纯静态、无副作用的 DLC 可玩性审计器，输出 `DLCPlayabilityReport`。七个稳定检查 ID 为 `player_surface`、`action_roles`、`issue_intake`、`costly_decision`、`world_simulation`、`outcome_feedback`、`progression`。
+- `DLCRegistry.audit_playability(dlc_id)`：读取当前包内容并生成审计报告；它与 `validate(dlc_id)` 分离，避免把可玩性建议错误升级为 Schema/跨引用错误。
+- `routers/dlc.py::_package_payload()`：列表和详情响应都附加 `playability`，因此 Studio 不需要在浏览器重写审计规则。
+- `frontend/src/PlayabilityAuditPanel.jsx`：中文 7 项验收面板，展示总分、配置证据、待补缺口与静态审计边界。
+- `frontend/src/PlayabilityAuditTools.js`：对后端报告做有界、容错的只读投影，并生成 DLC 列表徽章。
+
+```mermaid
+flowchart LR
+  JSON["bundle-v1 content.json"] --> Registry["DLCRegistry"]
+  Registry --> Validate["validate：配置合法性"]
+  Registry --> Audit["audit_playability：七步闭环"]
+  Audit --> API["/api/dlcs 列表与详情"]
+  API --> Studio["DLC Studio 中文验收面板"]
+  JSON --> Runtime["真实 Runtime playthrough"]
+  Runtime --> Proof["Action→Agent→Time→Causal→Feedback→Objective/Ending"]
+```
+
+静态报告结构保持：
+
+```json
+{
+  "dlc_id": "example_orbital",
+  "audit_version": "1.0",
+  "playable": true,
+  "passed_count": 7,
+  "total_count": 7,
+  "checks": []
+}
+```
+
+### 第二题材参考包
+
+`dlcs/example_orbital/` 是默认禁用、已发布的轨道救援参考 DLC。玩家是“轨道站长”，Agent 是“维护工程师”，维修额度使用资源目录的统一 `anchor_rate` 扣费。初始 Agent 报告生成 Issue，玩家基于有限证据选择巡查，行动唤醒 Agent 并发出 `orbital_patrol_started`；一游戏日后因果规则生成 `orbital_response_started`、应用世界效果、投递后果反馈并完成 `secure_orbital` 与 `orbital_safe` 胜利结局。所有关系类型使用 `orbital_*` 命名空间，避免与其他包发生全局 ID 冲突。
+
+`example_frontier` v1.15.0 新增等价的 Action→Causal 桥接规则。两个参考包 Registry 校验均为 0 error，七项审计均为 7/7。`tests/integration/test_cross_genre_dlc_playthrough.py` 使用临时 Registry 加载轨道包并执行完整运行时链路，证明新题材无需添加专属 Python/React 逻辑。

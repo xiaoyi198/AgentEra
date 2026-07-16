@@ -11,6 +11,8 @@ import TemporalSystemEditor from './TemporalSystemEditor.jsx'
 import LifecycleEditor from './LifecycleEditor.jsx'
 import RhythmEditor from './RhythmEditor.jsx'
 import OutcomeFeedbackEditor from './OutcomeFeedbackEditor.jsx'
+import PlayabilityAuditPanel from './PlayabilityAuditPanel.jsx'
+import { playabilityBadge } from './PlayabilityAuditTools.js'
 import {
   commitContentHistory,
   createContentExport,
@@ -369,7 +371,7 @@ export default function DLCStudio() {
   const [packages, setPackages] = useState([])
   const [selectedId, setSelectedId] = useState('')
   const [detail, setDetail] = useState(null)
-  const [tab, setTab] = useState('entities')
+  const [tab, setTab] = useState('playability')
   const [selectedItem, setSelectedItem] = useState('')
   const [createForm, setCreateForm] = useState({ id: '', name: '', version: '0.1.0' })
   const [showCreate, setShowCreate] = useState(false)
@@ -471,6 +473,7 @@ export default function DLCStudio() {
   }, 'DLC draft created', { reloadDetail: false })
   const saveManifest = () => run(() => request(`${API}/${selectedId}/manifest`, { method: 'PUT', body: JSON.stringify(manifest) }), UI.manifestSaved)
   const validate = () => run(() => request(`${API}/${selectedId}/validate`, { method: 'POST' }), UI.validated)
+  const refreshPlayability = () => run(() => loadDetail(selectedId, false), '可玩性审计已刷新', { reloadDetail: false })
   const publish = () => run(() => request(`${API}/${selectedId}/publish`, { method: 'POST' }), UI.published)
   const toggleEnabled = () => run(() => request(`${API}/${selectedId}/enabled`, { method: 'POST', body: JSON.stringify({ enabled: !manifest.enabled }) }), manifest.enabled ? 'DLC disabled' : 'DLC enabled')
   const stageContentChange = (nextValue, success, options = {}) => {
@@ -612,6 +615,7 @@ export default function DLCStudio() {
   })
 
   const tabs = [
+    { key: 'playability', label: `可玩性验收 ${detail?.playability?.passed_count ?? 0}/${detail?.playability?.total_count ?? 7}` },
     { key: 'entities', label: `${UI.entities} ${counts.entities}` },
     { key: 'actors', label: `Actor / 角色组件 ${counts.actors}` },
     { key: 'agents', label: `${UI.agents} ${counts.agents}` },
@@ -652,7 +656,7 @@ export default function DLCStudio() {
       <aside className="dlc-sidebar">
         <div className="dlc-sidebar-title">{UI.contentPackages} <span>{packages.length}</span></div>
         {packages.map(item => <button key={item.manifest.id} className={selectedId === item.manifest.id ? 'active' : ''} onClick={() => setSelectedId(item.manifest.id)}>
-          <strong>{item.manifest.name}</strong><small>{item.manifest.id} &middot; v{item.manifest.version}</small><div><Badge tone={item.valid ? 'ok' : 'bad'}>{item.valid ? UI.statusValid : `${item.issues.length} issues`}</Badge><Badge>{item.manifest.status}</Badge>{item.manifest.enabled && <Badge tone="on">{UI.enabled}</Badge>}</div>
+          <strong>{item.manifest.name}</strong><small>{item.manifest.id} &middot; v{item.manifest.version}</small><div><Badge tone={item.valid ? 'ok' : 'bad'}>{item.valid ? UI.statusValid : `${item.issues.length} issues`}</Badge><Badge tone={playabilityBadge(item.playability).tone}>{playabilityBadge(item.playability).label}</Badge><Badge>{item.manifest.status}</Badge>{item.manifest.enabled && <Badge tone="on">{UI.enabled}</Badge>}</div>
         </button>)}
       </aside>
       <section className="dlc-main">
@@ -670,7 +674,8 @@ export default function DLCStudio() {
             <button disabled={busy || !detail.editable || !contentHistory.future.length} onClick={stageRedo}>{UI.redo}</button>
           </div>
           <nav className="dlc-tabs">{tabs.map(item => <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => { setTab(item.key); setSelectedItem('') }}>{item.label}</button>)}</nav>
-          {tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
+          {tab === 'playability' ? <PlayabilityAuditPanel report={detail.playability} busy={busy} onRefresh={refreshPlayability} />
+            : tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
               : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>

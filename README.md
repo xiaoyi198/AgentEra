@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.35.0**
+> 当前版本：**v0.36.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -16,6 +16,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
 - **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查、派生指标与 UI Manifest；派生指标提供完整可视化公式树，新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **七步可玩性验收**：DLC 列表与 Studio 中文面板按玩家界面、行动角色、Issue 入口、有限信息成本决策、世界模拟、结果反馈、目标/沙盒进程七项展示证据与缺口；静态审计和 Registry 合法性校验相互独立。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
@@ -643,3 +644,19 @@ ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`cons
 Release `0.20.0` introduces a theme-neutral `GameplayContract` for the primary DLC. It validates player identity and controlled entity/Agent references, distinguishes direct control from command authority, excludes directly controlled Agents from autonomous LLM construction, and lets explicit gameplay metadata override legacy `role=player` markers. The contract is carried through initial load, generation snapshots, encrypted archive blueprints, hot reload, rollback, Orchestrator player-recipient routing, and `GET /api/gameplay`.
 
 The bundled frontier example now declares a non-imperial station-commander contract while keeping its player-like Agent role set to `operator`, proving that runtime behavior no longer depends on a theme-specific role string. The React shell consumes the public contract for package title, identity, control count, and view labels. This is the first P0 gameplay-framework slice; generic actions, issues/objectives, permissions, and a complete DLC UI manifest remain future work. Release `0.20.0` is verified with **472 Python tests**, **16 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Git diff checks.
+
+## 跨题材 DLC 可玩性验收 (v0.36.0)
+
+`multiagent_framework.dlc_playability` 提供题材无关的七步静态审计。`GET /api/dlcs` 与 `GET /api/dlcs/{id}` 的每个包响应都包含 `playability`：`passed_count / total_count`、中文摘要、缺口和定位到具体 Action、Agent、Issue、因果规则、反馈、目标或结局的证据。Registry `validate()` 仍只回答“配置是否合法”，`audit_playability()` 回答“配置是否声明了可信的玩家循环”，两者不会互相替代。
+
+DLC Studio 默认打开“可玩性验收”页签，显示 7 项通过状态、中文补齐建议和配置证据。该面板用于作者快速发现“JSON 合法但玩法链断开”的问题；静态 7/7 仍必须配合真实运行测试。
+
+新增默认禁用的 `dlcs/example_orbital` 作为第二题材参考包。它不修改 Python 或 React 核心，仅通过 DLC JSON 声明轨道站长、维护工程师、冷却环报告、维修额度锚定成本、耗时巡查、Agent 唤醒、延迟因果世界效果、结果反馈、目标与胜利结局。集成测试真实执行以下证据链：
+
+```text
+Agent 报告 → Issue / DecisionRequest → 锚定成本行动
+→ wake_agent → 推进 1 游戏日 → causal world effect
+→ outcome feedback → objective completed → victory ending
+```
+
+`example_frontier` v1.15.0 同步补齐 `frontier_patrol_started` 到后续响应事件的 Action→Causal 桥接；它与 `example_orbital` 均通过 Registry 校验和七项可玩性审计。

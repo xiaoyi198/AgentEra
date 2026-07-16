@@ -54,6 +54,7 @@ from .outcome_feedback_contract import (
     OutcomeFeedbackContract, OutcomeFeedbackContractError,
     normalize_outcome_feedback_document,
 )
+from .dlc_playability import DLCPlayabilityReport, audit_dlc_playability
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -402,6 +403,12 @@ class DLCRegistry:
             if package.manifest.id in active:
                 visit(package.manifest.id)
         return ordered
+
+    def audit_playability(self, dlc_id: str) -> DLCPlayabilityReport:
+        """Audit the authored seven-stage player loop without changing validation."""
+
+        self.get(dlc_id)
+        return audit_dlc_playability(dlc_id, self.load_content(dlc_id))
 
     def load_content(self, dlc_id: str) -> dict[str, Any]:
         package = self.get(dlc_id)

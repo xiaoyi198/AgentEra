@@ -96,6 +96,7 @@ def _package_payload(registry: DLCRegistry, dlc_id: str, *, content: bool = Fals
         "editable": package.manifest.format == "bundle-v1",
         "valid": not any(item.severity == "error" for item in issues),
         "issues": [item.to_dict() for item in issues],
+        "playability": registry.audit_playability(dlc_id).to_dict(),
     }
     if content:
         payload["content"] = registry.load_content(dlc_id)
