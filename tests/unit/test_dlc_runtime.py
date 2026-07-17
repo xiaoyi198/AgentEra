@@ -33,8 +33,12 @@ class FakeOrchestrator:
         self.capability_configurations = []
         self.actor_configurations = []
         self.issue_configurations = []
+        self.derived_metric_configurations = []
         self.objective_configurations = []
         self.ui_manifest_configurations = []
+        self.lifecycle_configurations = []
+        self.rhythm_configurations = []
+        self.outcome_feedback_configurations = []
 
     def register_agent(self, agent) -> None:
         self.agents[agent.agent_id] = agent
@@ -72,6 +76,10 @@ class FakeOrchestrator:
         self.operations.append(("issues", [item["issue_type_id"] for item in definitions]))
         self.issue_configurations.append((definitions, generation, gameplay))
 
+    def configure_derived_metric_catalog(self, definitions, *, generation=0) -> None:
+        self.operations.append(("derived_metrics", [item["metric_id"] for item in definitions]))
+        self.derived_metric_configurations.append((definitions, generation))
+
     def configure_objective_catalog(
         self, objectives, endings, *, generation=0, gameplay=None
     ) -> None:
@@ -81,6 +89,126 @@ class FakeOrchestrator:
     def configure_ui_manifest(self, manifest, *, generation=0) -> None:
         self.operations.append(("ui_manifest", manifest.package_id))
         self.ui_manifest_configurations.append((manifest, generation))
+
+    def configure_lifecycle_system(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("lifecycle", contract.fingerprint()))
+        self.lifecycle_configurations.append((contract, generation, preserve_state))
+
+    def lifecycle_public_state(self):
+        if not self.lifecycle_configurations:
+            return {"configured": False, "enabled": False, "generation": 0}
+        contract, generation, _preserve_state = self.lifecycle_configurations[-1]
+        return contract.public_state(generation=generation)
+
+    def configure_rhythm_system(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("rhythm", contract.fingerprint()))
+        self.rhythm_configurations.append((contract, generation, preserve_state))
+
+    def rhythm_public_state(self):
+        if not self.rhythm_configurations:
+            return {"configured": False, "enabled": False, "generation": 0}
+        contract, generation, _preserve_state = self.rhythm_configurations[-1]
+        return contract.public_state(generation=generation)
+
+    def configure_outcome_feedback(
+        self, contract, *, generation=0, preserve_state=True
+    ) -> None:
+        self.operations.append(("outcome_feedback", contract.fingerprint()))
+        self.outcome_feedback_configurations.append((contract, generation, preserve_state))
+
+    def outcome_feedback_public_state(self):
+        if not self.outcome_feedback_configurations:
+            return {"configured": False, "enabled": False, "generation": 0, "recent": [], "pending": []}
+        contract, generation, _preserve_state = self.outcome_feedback_configurations[-1]
+        return {**contract.public_state(generation=generation), "recent": [], "pending": []}
+
+
+def rhythm_document(display_name: str = "Market Pressure") -> dict:
+    return {
+        "enabled": True,
+        "max_active_issues": 3,
+        "attention_budget": 8,
+        "attention_recovery_per_day": 2,
+        "rules": [{
+            "rule_id": "market_pressure",
+            "display_name": display_name,
+            "event_types": ["market_shift", "welcome"],
+            "priority": 7,
+            "max_active": 1,
+            "cooldown_days": 2,
+        }],
+    }
+
+
+def outcome_feedback_document(display_name: str = "Action Result") -> dict:
+    return {
+        "enabled": True,
+        "recent_limit": 64,
+        "pending_limit": 128,
+        "receipt_limit": 512,
+        "metric_delta_epsilon": 0.1,
+        "rules": [{
+            "rule_id": "city_action_result",
+            "display_name": display_name,
+            "source_kinds": ["action"],
+            "delivery": "delayed",
+            "action_ids": [],
+            "issue_type_ids": [],
+            "metric_ids": [],
+            "delay_days": 1,
+            "conditions": [],
+            "title": "City result",
+            "summary": "A safe player-facing result.",
+        }],
+    }
+
+
+def lifecycle_document(display_name: str = "Frontier Lifecycle") -> dict:
+    return {
+        "enabled": True,
+        "actor_templates": [
+            {
+                "template_id": "deputy",
+                "display_name": "Deputy",
+                "actor": {"actor_type": "person"},
+                "entity": {"entity_type": "person", "location_id": "city"},
+                "agent": {"source_agent_id": "mayor"},
+            }
+        ],
+        "positions": [
+            {
+                "position_id": "city_deputy",
+                "display_name": "City Deputy",
+                "organization_id": "city",
+                "role": "deputy",
+                "candidate_actor_ids": ["mayor"],
+            }
+        ],
+        "transitions": [
+            {
+                "transition_id": "appoint_deputy",
+                "display_name": display_name,
+                "kind": "promotion",
+                "trigger": "manual",
+                "operations": [
+                    {
+                        "operation": "spawn_actor",
+                        "template_id": "deputy",
+                        "actor_id_pattern": "deputy_{sequence}",
+                    },
+                    {
+                        "operation": "appoint_position",
+                        "position_id": "city_deputy",
+                        "actor_id": "{actor_id}",
+                    },
+                ],
+            }
+        ],
+    }
 
 
 def make_registry(tmp_path: Path) -> DLCRegistry:
@@ -127,6 +255,9 @@ def make_registry(tmp_path: Path) -> DLCRegistry:
             }],
         }],
         "ongoing_events": [{"event_id": "ongoing", "entity_id": "city", "end_time": 10}],
+        "lifecycle": lifecycle_document(),
+        "rhythm": rhythm_document(),
+        "outcome_feedback": outcome_feedback_document(),
         "gameplay": {
             "player": {
                 "identity_id": "station_commander",
@@ -162,6 +293,25 @@ def test_runtime_loader_materializes_world_agents_prompts_and_events(tmp_path: P
     assert report.entities == 1 and report.agents == 2 and report.seeded_world
     assert report.random_events == 1 and report.time_rules == 1
     assert report.causal_event_rules == 1
+    assert report.lifecycle_configured is True
+    assert report.lifecycle_actor_templates == 1
+    assert report.lifecycle_positions == 1
+    assert report.lifecycle_transitions == 1
+    assert report.rhythm_configured is True
+    assert report.rhythm_rules == 1
+    assert report.outcome_feedback_configured is True
+    assert report.outcome_feedback_rules == 1
+    feedback_contract, feedback_generation, feedback_preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert feedback_contract.rules[0].rule_id == "city_action_result"
+    assert (feedback_generation, feedback_preserve_state) == (1, False)
+    rhythm_contract, rhythm_generation, rhythm_preserve_state = orchestrator.rhythm_configurations[-1]
+    assert rhythm_contract.rules[0].rule_id == "market_pressure"
+    assert rhythm_generation == 1
+    assert rhythm_preserve_state is False
+    lifecycle_contract, lifecycle_generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert lifecycle_contract.transitions[0].transition_id == "appoint_deputy"
+    assert lifecycle_generation == 1
+    assert preserve_state is False
     assert orchestrator.random_event_configurations[-1][1] is False
     assert orchestrator.random_event_configurations[-1][0][0]["template_id"] == "market_cycle"
     assert orchestrator.time_rule_configurations[-1][0]["rule_id"] == "policy_time"
@@ -1230,3 +1380,237 @@ def test_relationship_contract_survives_materialization_reload_and_rollback(tmp_
     assert rollback["activation_kind"] == "rollback"
     assert rollback["generation"] == 3
     assert world.relationship_catalog.get("trust").display_name == "Trust v1"
+
+
+
+def test_derived_metric_catalog_survives_generation_reload_archive_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    content = registry.load_content("sample")
+    content["derived_metrics"] = [{
+        "metric_id": "city_readiness",
+        "display_name": "City readiness v1",
+        "audiences": ["player", "ui", "agent", "rule", "objective"],
+        "formula": {
+            "op": "source", "source": "metric", "entity_id": "city", "name": "morale",
+        },
+    }]
+    registry.save_content("sample", content)
+    world = WorldState(str(tmp_path / "derived-metrics.db"))
+    court = CourtGraph(str(tmp_path / "derived-metrics.db"))
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+
+    report = loader.load_active()
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert report[0].derived_metrics == 1
+    assert definitions[0]["display_name"] == "City readiness v1"
+    assert generation == 1
+    assert loader.preview_reload()["derived_metrics_changed"] is False
+    assert loader.public_runtime()["derived_metrics"]["metric_count"] == 1
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    assert restored.derived_metric_definitions[0]["metric_id"] == "city_readiness"
+    assert restored.derived_metric_packages == {"city_readiness": "sample"}
+
+    content = registry.load_content("sample")
+    content["derived_metrics"][0]["display_name"] = "City readiness v2"
+    registry.save_content("sample", content)
+    preview = loader.preview_reload()
+    assert preview["derived_metrics_changed"] is True
+    assert preview["world_changes"]["derived_metrics"] == 1
+    asyncio.run(loader.reload_active())
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert definitions[0]["display_name"] == "City readiness v2"
+    assert generation == 2
+
+    asyncio.run(loader.rollback_active(1))
+    definitions, generation = orchestrator.derived_metric_configurations[-1]
+    assert definitions[0]["display_name"] == "City readiness v1"
+    assert generation == 3
+
+
+def test_primary_dlc_owns_lifecycle_contract_when_dependency_also_declares_one(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    registry.save_manifest("sample", {"primary": True})
+    registry.create({"id": "addon", "name": "Addon", "version": "1.0.0"})
+    registry.save_content("addon", {
+        "schema_version": "1.0",
+        "entities": [
+            {"id": "addon_city", "type": "location", "name": "Addon City"},
+            {"id": "addon_org", "type": "organization", "name": "Addon Org"},
+        ],
+        "agents": [{"id": "addon_agent", "name": "Addon Agent", "location_id": "addon_city"}],
+        "lifecycle": {
+            "enabled": True,
+            "actor_templates": [{
+                "template_id": "addon_actor",
+                "display_name": "Addon Actor",
+                "actor": {"actor_type": "person"},
+                "agent": {"source_agent_id": "addon_agent"},
+            }],
+            "positions": [{
+                "position_id": "addon_position",
+                "display_name": "Addon Position",
+                "organization_id": "addon_org",
+                "role": "member",
+            }],
+            "transitions": [{
+                "transition_id": "addon_transition",
+                "display_name": "Addon Transition",
+                "kind": "birth",
+                "trigger": "manual",
+                "operations": [{"operation": "spawn_actor", "template_id": "addon_actor"}],
+            }],
+        },
+    })
+    registry.publish("addon")
+    registry.set_enabled("addon", True)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    loader = DLCBundleLoader(registry, world, court, FakeOrchestrator(), FakeLLM())
+
+    candidate = loader._materialize_active()
+
+    assert candidate.primary_package_id == "sample"
+    assert candidate.lifecycle_contract.transitions[0].transition_id == "appoint_deputy"
+    assert "addon_transition" not in {
+        item.transition_id for item in candidate.lifecycle_contract.transitions
+    }
+
+
+def test_lifecycle_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.lifecycle_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.lifecycle_contract.fingerprint() == original.fingerprint()
+    assert cloned.lifecycle_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["lifecycle"] = lifecycle_document("Reloaded Lifecycle")
+    content["lifecycle"]["transitions"][0]["cooldown_days"] = 3
+    registry.save_content("sample", content)
+    preview = loader.preview_reload()
+    assert preview["lifecycle_changed"] is True
+    assert preview["world_changes"]["lifecycle_actor_templates"] == 1
+    assert preview["world_changes"]["lifecycle_positions"] == 1
+    assert preview["world_changes"]["lifecycle_transitions"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert result["lifecycle_changed"] is True
+    assert contract.transitions[0].display_name == "Reloaded Lifecycle"
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["lifecycle"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert public["counts"]["transitions"] == 1
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.lifecycle_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"
+    assert rolled_back.fingerprint() == original.fingerprint()
+    assert generation == 3
+    assert preserve_state is True
+
+
+def test_rhythm_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.rhythm_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.rhythm_contract.fingerprint() == original.fingerprint()
+    assert cloned.rhythm_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["rhythm"] = rhythm_document("Reloaded Market Pressure")
+    content["rhythm"]["attention_budget"] = 13
+    content["rhythm"]["rules"][0]["cooldown_days"] = 4
+    registry.save_content("sample", content)
+
+    preview = loader.preview_reload()
+    assert preview["rhythm_changed"] is True
+    assert preview["world_changes"]["rhythm_rules"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.rhythm_configurations[-1]
+    assert result["rhythm_changed"] is True
+    assert contract.rules[0].display_name == "Reloaded Market Pressure"
+    assert contract.attention_budget == 13
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["rhythm"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert len(public["rules"]) == 1
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.rhythm_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"
+    assert rolled_back.fingerprint() == original.fingerprint()
+    assert generation == 3
+    assert preserve_state is True
+
+
+def test_outcome_feedback_contract_survives_reload_archive_public_state_and_rollback(tmp_path: Path):
+    registry = make_registry(tmp_path)
+    world = WorldState(str(tmp_path / "world.db"))
+    court = CourtGraph(str(tmp_path / "world.db"))
+    court.set_world_state(world)
+    orchestrator = FakeOrchestrator()
+    loader = DLCBundleLoader(registry, world, court, orchestrator, FakeLLM())
+    loader.load_active()
+    original = loader._active_snapshot.outcome_feedback_contract
+
+    blueprint = loader._snapshot_to_archive_blueprint(loader._active_snapshot)
+    restored = loader._snapshot_from_archive_blueprint(blueprint)
+    cloned = loader._clone_snapshot_blueprint(restored)
+    assert restored.outcome_feedback_contract.fingerprint() == original.fingerprint()
+    assert cloned.outcome_feedback_contract.fingerprint() == original.fingerprint()
+
+    content = registry.load_content("sample")
+    content["outcome_feedback"] = outcome_feedback_document("Reloaded Action Result")
+    content["outcome_feedback"]["recent_limit"] = 96
+    content["outcome_feedback"]["rules"][0]["delay_days"] = 2
+    registry.save_content("sample", content)
+
+    preview = loader.preview_reload()
+    assert preview["outcome_feedback_changed"] is True
+    assert preview["world_changes"]["outcome_feedback_rules"] == 1
+
+    result = asyncio.run(loader.reload_active())
+    contract, generation, preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert result["outcome_feedback_changed"] is True
+    assert contract.rules[0].display_name == "Reloaded Action Result"
+    assert contract.recent_limit == 96
+    assert contract.rules[0].delay_days == 2
+    assert generation == 2
+    assert preserve_state is True
+    public = loader.public_runtime()["outcome_feedback"]
+    assert public["configured"] is True
+    assert public["generation"] == 2
+    assert len(public["rules"]) == 1
+    assert public["recent"] == []
+    assert public["pending"] == []
+
+    rollback = asyncio.run(loader.rollback_active(1))
+    rolled_back, generation, preserve_state = orchestrator.outcome_feedback_configurations[-1]
+    assert rollback["activation_kind"] == "rollback"

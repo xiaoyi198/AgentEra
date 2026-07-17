@@ -36,7 +36,25 @@ from .objective_contract import (
     normalize_ending_document, normalize_objective_document,
     validate_objective_definitions,
 )
+from .derived_metrics import (
+    DerivedMetricCatalog, DerivedMetricContractError,
+    normalize_derived_metric_document,
+)
 from .ui_manifest import validate_ui_manifest_document
+from .temporal_contract import (
+    TemporalContract, TemporalContractError, normalize_time_system_document,
+)
+from .lifecycle_contract import (
+    LifecycleContract, LifecycleContractError, normalize_lifecycle_document,
+)
+from .rhythm_contract import (
+    RhythmContract, RhythmContractError, normalize_rhythm_document,
+)
+from .outcome_feedback_contract import (
+    OutcomeFeedbackContract, OutcomeFeedbackContractError,
+    normalize_outcome_feedback_document,
+)
+from .dlc_playability import DLCPlayabilityReport, audit_dlc_playability
 
 DLC_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 RANDOM_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -386,6 +404,12 @@ class DLCRegistry:
                 visit(package.manifest.id)
         return ordered
 
+    def audit_playability(self, dlc_id: str) -> DLCPlayabilityReport:
+        """Audit the authored seven-stage player loop without changing validation."""
+
+        self.get(dlc_id)
+        return audit_dlc_playability(dlc_id, self.load_content(dlc_id))
+
     def load_content(self, dlc_id: str) -> dict[str, Any]:
         package = self.get(dlc_id)
         if package.manifest.format == "legacy-v1":
@@ -407,12 +431,12 @@ class DLCRegistry:
         for key in (
             "resources", "entities", "inventory", "entity_values", "relations",
             "relationship_types", "actors", "agents", "initial_events", "ongoing_events", "random_events",
-            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "objectives", "endings",
+            "causal_condition_groups", "causal_rule_templates", "causal_event_rules", "time_rules", "actions", "capabilities", "issue_types", "derived_metrics", "objectives", "endings",
         ):
             value = normalized.setdefault(key, [])
             if not isinstance(value, list):
                 raise DLCRegistryError(f"DLC content field {key!r} must be a list")
-        for key in ("personas", "prompts", "ui_manifest"):
+        for key in ("personas", "prompts", "ui_manifest", "time_system", "lifecycle", "rhythm", "outcome_feedback"):
             value = normalized.setdefault(key, {})
             if not isinstance(value, dict):
                 raise DLCRegistryError(f"DLC content field {key!r} must be an object")
@@ -424,6 +448,11 @@ class DLCRegistry:
             normalized["actions"] = normalize_action_document(normalized.get("actions", []))
             normalized["capabilities"] = normalize_capability_document(normalized.get("capabilities", []))
             normalized["issue_types"] = normalize_issue_document(normalized.get("issue_types", []))
+            normalized["derived_metrics"] = normalize_derived_metric_document(normalized.get("derived_metrics", []))
+            normalized["time_system"] = normalize_time_system_document(normalized.get("time_system", {}))
+            normalized["lifecycle"] = normalize_lifecycle_document(normalized.get("lifecycle", {}))
+            normalized["rhythm"] = normalize_rhythm_document(normalized.get("rhythm", {}))
+            normalized["outcome_feedback"] = normalize_outcome_feedback_document(normalized.get("outcome_feedback", {}))
             normalized["objectives"] = normalize_objective_document(normalized.get("objectives", []))
             normalized["endings"] = normalize_ending_document(normalized.get("endings", []))
         except TypeError as exc:
@@ -676,6 +705,42 @@ class DLCRegistry:
         objective_ids = {str(item.get("objective_id", "")) for item in content["objectives"] if item.get("objective_id")}
         relationship_type_ids = RelationshipCatalog(content["relationship_types"]).ids
         resource_map = {str(item.get("name", "")): item for item in resources if item.get("name")}
+        derived_metric_catalog: DerivedMetricCatalog | None = None
+        try:
+            derived_metric_catalog = DerivedMetricCatalog(content["derived_metrics"])
+        except DerivedMetricContractError as exc:
+            add(exc.code, exc.code, exc.path or "derived_metrics")
+        derived_metric_ids = {
+            str(item.get("metric_id", item.get("id", "")))
+            for item in content["derived_metrics"]
+            if isinstance(item, dict) and item.get("metric_id", item.get("id"))
+        }
+        if derived_metric_catalog is not None:
+            for definition in (
+                derived_metric_catalog.get(metric_id)
+                for metric_id in sorted(derived_metric_ids)
+            ):
+                if definition is None:
+                    continue
+                for reference_index, reference in enumerate(definition.references):
+                    reference_path = f"derived_metrics.{definition.metric_id}.formula.references[{reference_index}]"
+                    source = reference.get("source", "")
+                    entity_id = reference.get("entity_id", "")
+                    name = reference.get("name", "")
+                    if source in {"entity_count", "anchored_inventory", "metric", "parameter", "ongoing_event"}:
+                        if entity_id and entity_id not in entity_ids:
+                            add("derived_metric.missing_entity", f"Unknown derived-metric entity: {entity_id}", reference_path + ".entity_id")
+                    if source == "actor_attribute" and entity_id and entity_id not in actor_ids:
+                        add("derived_metric.missing_actor", f"Unknown derived-metric actor: {entity_id}", reference_path + ".entity_id")
+                    if source in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(name)
+                        expected_kind = "asset" if source == "anchored_inventory" else source
+                        if resource is None:
+                            add("derived_metric.missing_resource", f"Unknown derived-metric resource: {name}", reference_path + ".name")
+                        elif resource.get("kind") != expected_kind:
+                            add("derived_metric.invalid_resource_kind", f"Derived metric requires resource kind {expected_kind}", reference_path + ".source")
+                    if source == "relation" and name and name not in relationship_type_ids:
+                        add("derived_metric.missing_relationship_type", f"Unknown derived-metric relationship type: {name}", reference_path + ".name")
         for gameplay_issue in validate_gameplay_document(
             content["gameplay"], entity_ids=entity_ids, agent_ids=agent_ids
         ):
@@ -711,10 +776,243 @@ class DLCRegistry:
         ):
             add(issue.code, issue.message, issue.path)
         issue_type_ids = {str(item.get("issue_type_id", "")) for item in content["issue_types"] if item.get("issue_type_id")}
+        temporal_contract: TemporalContract | None = None
+        try:
+            temporal_contract = TemporalContract.from_mapping(content.get("time_system", {}))
+        except TemporalContractError as exc:
+            add(exc.code, exc.code, exc.path or "time_system")
+        if temporal_contract is not None:
+            for index, definition in enumerate(temporal_contract.boundary_events):
+                path = f"time_system.boundary_events[{index}]"
+                for target in definition.target_agents:
+                    if target not in agent_ids:
+                        add("time_system.missing_agent", f"Unknown target agent: {target}", path + ".target_agents")
+                if definition.issue_type_id and definition.issue_type_id not in issue_type_ids:
+                    add("time_system.missing_issue_type", f"Unknown issue type: {definition.issue_type_id}", path + ".issue_type_id")
+            for pause_index, pause in enumerate(temporal_contract.auto_pause_conditions):
+                for condition_index, condition in enumerate(pause.conditions):
+                    path = f"time_system.auto_pause_conditions[{pause_index}].conditions[{condition_index}]"
+                    if condition.kind in {"anchored_inventory", "metric", "parameter", "entity_field", "entity_tag", "entity_state", "ongoing_event", "world_truth", "actor_belief", "player_knowledge", "knowledge_confidence", "knowledge_freshness", "knowledge_secrecy"} and condition.entity_id and condition.entity_id not in entity_ids:
+                        add("time_system.missing_entity", f"Unknown entity: {condition.entity_id}", path + ".entity_id")
+                    if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(condition.name)
+                        expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                        if resource is None:
+                            add("time_system.missing_resource", f"Unknown resource: {condition.name}", path + ".name")
+                        elif resource.get("kind") != expected_kind:
+                            add("time_system.invalid_resource_kind", f"Condition requires resource kind {expected_kind}", path + ".kind")
+                    if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"} and condition.entity_id not in actor_ids:
+                        add("time_system.missing_actor", f"Unknown actor: {condition.entity_id}", path + ".entity_id")
+                    if condition.kind == "relationship":
+                        for field_name in ("entity_id", "target_entity_id"):
+                            entity_id = getattr(condition, field_name)
+                            if entity_id and entity_id not in entity_ids:
+                                add("time_system.missing_entity", f"Unknown relationship endpoint: {entity_id}", path + "." + field_name)
+                        if condition.name and condition.name not in relationship_type_ids:
+                            add("time_system.missing_relationship_type", f"Unknown relationship type: {condition.name}", path + ".name")
+                    if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                        add("time_system.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
+                    if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                        add("time_system.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
+        rhythm_contract: RhythmContract | None = None
+        try:
+            rhythm_contract = RhythmContract.from_mapping(content.get("rhythm", {}))
+        except RhythmContractError as exc:
+            add(exc.code, exc.code, exc.path or "rhythm")
+        if rhythm_contract is not None:
+            def validate_rhythm_condition(condition: Any, path: str) -> None:
+                if condition.kind in {
+                    "anchored_inventory", "metric", "parameter", "entity_field",
+                    "entity_tag", "entity_state", "ongoing_event", "world_truth",
+                    "actor_belief", "player_knowledge", "knowledge_confidence",
+                    "knowledge_freshness", "knowledge_secrecy",
+                } and condition.entity_id and condition.entity_id not in entity_ids:
+                    add("rhythm.missing_entity", f"Unknown entity: {condition.entity_id}", path + ".entity_id")
+                if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                    resource = resource_map.get(condition.name)
+                    expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                    if resource is None:
+                        add("rhythm.missing_resource", f"Unknown resource: {condition.name}", path + ".name")
+                    elif resource.get("kind") != expected_kind:
+                        add("rhythm.invalid_resource_kind", f"Condition requires resource kind {expected_kind}", path + ".kind")
+                if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"} and condition.entity_id not in actor_ids:
+                    add("rhythm.missing_actor", f"Unknown actor: {condition.entity_id}", path + ".entity_id")
+                if condition.kind == "relationship":
+                    for field_name in ("entity_id", "target_entity_id"):
+                        entity_id = getattr(condition, field_name)
+                        if entity_id and entity_id not in entity_ids:
+                            add("rhythm.missing_entity", f"Unknown relationship endpoint: {entity_id}", path + "." + field_name)
+                    if condition.name and condition.name not in relationship_type_ids:
+                        add("rhythm.missing_relationship_type", f"Unknown relationship type: {condition.name}", path + ".name")
+                if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                    add("rhythm.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
+                if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                    add("rhythm.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
+
+            for rule_index, rule in enumerate(rhythm_contract.rules):
+                rule_path = f"rhythm.rules[{rule_index}]"
+                for issue_index, issue_type_id in enumerate(rule.issue_type_ids):
+                    if issue_type_id not in issue_type_ids:
+                        add("rhythm.missing_issue_type", f"Unknown issue type: {issue_type_id}", f"{rule_path}.issue_type_ids[{issue_index}]")
+                for section_name, transition in (("deescalation", rule.deescalation), ("climax", rule.climax)):
+                    for condition_index, condition in enumerate(transition.conditions):
+                        validate_rhythm_condition(condition, f"{rule_path}.{section_name}.conditions[{condition_index}]")
+
+        outcome_feedback_contract: OutcomeFeedbackContract | None = None
+        try:
+            outcome_feedback_contract = OutcomeFeedbackContract.from_mapping(content.get("outcome_feedback", {}))
+        except OutcomeFeedbackContractError as exc:
+            add(exc.code, exc.code, exc.path or "outcome_feedback")
+        if outcome_feedback_contract is not None:
+            for rule_index, rule in enumerate(outcome_feedback_contract.rules):
+                rule_path = f"outcome_feedback.rules[{rule_index}]"
+                for action_index, action_id in enumerate(rule.action_ids):
+                    if action_id not in action_ids:
+                        add("outcome_feedback.missing_action", f"Unknown action: {action_id}", f"{rule_path}.action_ids[{action_index}]")
+                for issue_index, issue_type_id in enumerate(rule.issue_type_ids):
+                    if issue_type_id not in issue_type_ids:
+                        add("outcome_feedback.missing_issue_type", f"Unknown issue type: {issue_type_id}", f"{rule_path}.issue_type_ids[{issue_index}]")
+                if rule.create_issue_type_id and rule.create_issue_type_id not in issue_type_ids:
+                    add("outcome_feedback.missing_issue_type", f"Unknown issue type: {rule.create_issue_type_id}", rule_path + ".create_issue_type_id")
+                for metric_index, metric_id in enumerate(rule.metric_ids):
+                    if metric_id not in derived_metric_ids:
+                        add("outcome_feedback.missing_derived_metric", f"Unknown derived metric: {metric_id}", f"{rule_path}.metric_ids[{metric_index}]")
+                for condition_index, condition in enumerate(rule.conditions):
+                    condition_path = f"{rule_path}.conditions[{condition_index}]"
+                    if condition.kind in {"anchored_inventory", "metric", "parameter", "entity_field", "entity_tag", "entity_state", "ongoing_event", "world_truth", "actor_belief", "player_knowledge", "knowledge_confidence", "knowledge_freshness", "knowledge_secrecy"} and condition.entity_id and condition.entity_id not in entity_ids:
+                        add("outcome_feedback.missing_entity", f"Unknown entity: {condition.entity_id}", condition_path + ".entity_id")
+                    if condition.kind in {"anchored_inventory", "metric", "parameter"} and condition.name not in resource_map:
+                        add("outcome_feedback.missing_resource", f"Unknown resource: {condition.name}", condition_path + ".name")
+                    if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"} and condition.entity_id not in actor_ids:
+                        add("outcome_feedback.missing_actor", f"Unknown actor: {condition.entity_id}", condition_path + ".entity_id")
+                    if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                        add("outcome_feedback.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", condition_path + ".entity_id")
+                    if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                        add("outcome_feedback.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", condition_path + ".name")
+
+        lifecycle_contract: LifecycleContract | None = None
+        try:
+            lifecycle_contract = LifecycleContract.from_mapping(content.get("lifecycle", {}))
+        except LifecycleContractError as exc:
+            add(exc.code, exc.code, exc.path or "lifecycle")
+        if lifecycle_contract is not None:
+            cycle_ids = {item.cycle_id for item in temporal_contract.cycles} if temporal_contract else set()
+            season_ids = {item.season_id for item in temporal_contract.seasons} if temporal_contract else set()
+            month_ids = (
+                {item.month_id for item in temporal_contract.calendar.months}
+                if temporal_contract and temporal_contract.calendar else set()
+            )
+
+            def lifecycle_dynamic_reference(value: Any) -> bool:
+                text = str(value or "")
+                return "{" in text and "}" in text
+
+            def validate_lifecycle_condition(condition: Any, path: str) -> None:
+                if condition.kind in {
+                    "anchored_inventory", "metric", "parameter", "entity_field",
+                    "entity_tag", "entity_state", "ongoing_event", "world_truth",
+                    "actor_belief", "player_knowledge", "knowledge_confidence",
+                    "knowledge_freshness", "knowledge_secrecy",
+                } and condition.entity_id and condition.entity_id not in entity_ids:
+                    add("lifecycle.missing_entity", f"Unknown entity: {condition.entity_id}", path + ".entity_id")
+                if condition.kind in {"anchored_inventory", "metric", "parameter"}:
+                    resource = resource_map.get(condition.name)
+                    expected_kind = "asset" if condition.kind == "anchored_inventory" else condition.kind
+                    if resource is None:
+                        add("lifecycle.missing_resource", f"Unknown resource: {condition.name}", path + ".name")
+                    elif resource.get("kind") != expected_kind:
+                        add("lifecycle.invalid_resource_kind", f"Condition requires resource kind {expected_kind}", path + ".kind")
+                if condition.kind in {"actor_attribute", "actor_state", "actor_trait", "actor_membership"}:
+                    if condition.entity_id not in actor_ids and not lifecycle_dynamic_reference(condition.entity_id):
+                        add("lifecycle.missing_actor", f"Unknown actor: {condition.entity_id}", path + ".entity_id")
+                if condition.kind == "relationship":
+                    for field_name in ("entity_id", "target_entity_id"):
+                        endpoint = getattr(condition, field_name)
+                        if endpoint and endpoint not in entity_ids and not lifecycle_dynamic_reference(endpoint):
+                            add("lifecycle.missing_entity", f"Unknown relationship endpoint: {endpoint}", path + "." + field_name)
+                    if condition.name and condition.name not in relationship_type_ids:
+                        add("lifecycle.missing_relationship_type", f"Unknown relationship type: {condition.name}", path + ".name")
+                if condition.kind == "objective_progress" and (condition.entity_id or condition.name) not in objective_ids:
+                    add("lifecycle.missing_objective", f"Unknown objective: {condition.entity_id or condition.name}", path + ".entity_id")
+                if condition.kind == "derived_metric" and (condition.name or condition.entity_id) not in derived_metric_ids:
+                    add("lifecycle.missing_derived_metric", f"Unknown derived metric: {condition.name or condition.entity_id}", path + ".name")
+                if condition.kind == "aggregate_metric":
+                    if condition.entity_id and condition.field != "actor_attribute" and condition.entity_id not in entity_ids:
+                        add("lifecycle.missing_entity", f"Unknown aggregate entity: {condition.entity_id}", path + ".entity_id")
+                    if condition.field == "actor_attribute" and condition.entity_id and condition.entity_id not in actor_ids and not lifecycle_dynamic_reference(condition.entity_id):
+                        add("lifecycle.missing_actor", f"Unknown aggregate actor: {condition.entity_id}", path + ".entity_id")
+                    if condition.field in {"anchored_inventory", "metric", "parameter"}:
+                        resource = resource_map.get(condition.name)
+                        expected_kind = "asset" if condition.field == "anchored_inventory" else condition.field
+                        if resource is None:
+                            add("lifecycle.missing_resource", f"Unknown aggregate resource: {condition.name}", path + ".name")
+                        elif resource.get("kind") != expected_kind:
+                            add("lifecycle.invalid_resource_kind", f"Aggregate requires resource kind {expected_kind}", path + ".field")
+                    if condition.field == "relation" and condition.name and condition.name not in relationship_type_ids:
+                        add("lifecycle.missing_relationship_type", f"Unknown aggregate relationship type: {condition.name}", path + ".name")
+
+            for template_index, template in enumerate(lifecycle_contract.actor_templates):
+                path = f"lifecycle.actor_templates[{template_index}]"
+                source_agent_id = str(template.agent.get("source_agent_id", ""))
+                if source_agent_id and source_agent_id not in agent_ids:
+                    add("lifecycle.missing_source_agent", f"Unknown static source agent: {source_agent_id}", path + ".agent.source_agent_id")
+                actor_entity_id = str(template.actor.get("entity_id", ""))
+                if actor_entity_id and not template.entity and actor_entity_id not in entity_ids and not lifecycle_dynamic_reference(actor_entity_id):
+                    add("lifecycle.missing_entity", f"Unknown Actor entity: {actor_entity_id}", path + ".actor.entity_id")
+                location_id = str(template.entity.get("location_id", ""))
+                if location_id and location_id not in entity_ids and not lifecycle_dynamic_reference(location_id):
+                    add("lifecycle.missing_entity", f"Unknown template location: {location_id}", path + ".entity.location_id")
+                memberships = template.actor.get("memberships", [])
+                if isinstance(memberships, list):
+                    for membership_index, membership in enumerate(memberships):
+                        if not isinstance(membership, Mapping):
+                            continue
+                        organization_id = str(membership.get("organization_id", ""))
+                        if organization_id and organization_id not in entity_ids and not lifecycle_dynamic_reference(organization_id):
+                            add("lifecycle.missing_organization", f"Unknown organization: {organization_id}", f"{path}.actor.memberships[{membership_index}].organization_id")
+
+            for position_index, position in enumerate(lifecycle_contract.positions):
+                path = f"lifecycle.positions[{position_index}]"
+                if position.organization_id not in entity_ids:
+                    add("lifecycle.missing_organization", f"Unknown organization: {position.organization_id}", path + ".organization_id")
+                for field_name, values in (("incumbent_actor_ids", position.incumbent_actor_ids), ("candidate_actor_ids", position.candidate_actor_ids)):
+                    for actor_index, actor_id in enumerate(values):
+                        if actor_id not in actor_ids and not lifecycle_dynamic_reference(actor_id):
+                            add("lifecycle.missing_actor", f"Unknown initial Actor: {actor_id}", f"{path}.{field_name}[{actor_index}]")
+
+            for transition_index, transition in enumerate(lifecycle_contract.transitions):
+                path = f"lifecycle.transitions[{transition_index}]"
+                if transition.cycle_id and transition.cycle_id not in cycle_ids:
+                    add("lifecycle.missing_cycle", f"Unknown time cycle: {transition.cycle_id}", path + ".cycle_id")
+                if transition.season_id and transition.season_id not in season_ids:
+                    add("lifecycle.missing_season", f"Unknown season: {transition.season_id}", path + ".season_id")
+                if transition.month_id and transition.month_id not in month_ids:
+                    add("lifecycle.missing_month", f"Unknown calendar month: {transition.month_id}", path + ".month_id")
+                for condition_index, condition in enumerate(transition.conditions):
+                    validate_lifecycle_condition(condition, f"{path}.conditions[{condition_index}]")
+                for operation_index, operation in enumerate(transition.operations):
+                    operation_path = f"{path}.operations[{operation_index}]"
+                    data = operation.data
+                    if operation.operation == "transform_entity":
+                        entity_id = str(data.get("entity_id", ""))
+                        if entity_id not in entity_ids and not lifecycle_dynamic_reference(entity_id):
+                            add("lifecycle.missing_entity", f"Unknown entity: {entity_id}", operation_path + ".entity_id")
+                    elif operation.operation == "split_organization":
+                        organization_id = str(data.get("source_organization_id", ""))
+                        if organization_id not in entity_ids and not lifecycle_dynamic_reference(organization_id):
+                            add("lifecycle.missing_organization", f"Unknown source organization: {organization_id}", operation_path + ".source_organization_id")
+                    elif operation.operation == "merge_organizations":
+                        source_ids = data.get("source_organization_ids", [])
+                        if isinstance(source_ids, list):
+                            for source_index, organization_id in enumerate(source_ids):
+                                if str(organization_id) not in entity_ids and not lifecycle_dynamic_reference(organization_id):
+                                    add("lifecycle.missing_organization", f"Unknown source organization: {organization_id}", f"{operation_path}.source_organization_ids[{source_index}]")
+
         for objective_issue in validate_objective_definitions(
             content["objectives"], content["endings"], entity_ids=entity_ids,
             resources=action_resources, action_ids=action_ids,
-            issue_type_ids=issue_type_ids, gameplay=gameplay_contract,
+            issue_type_ids=issue_type_ids, derived_metric_ids=derived_metric_ids,
+            gameplay=gameplay_contract,
         ):
             add(objective_issue.code, objective_issue.message, objective_issue.path, objective_issue.severity)
         for ui_issue in validate_ui_manifest_document(content["ui_manifest"]):
@@ -910,6 +1208,10 @@ class DLCRegistry:
                     objective_id = condition.entity_id or condition.name
                     if objective_id not in objective_ids:
                         add("causal_event.missing_objective", f"Unknown objective: {objective_id}", f"{condition_path}.entity_id")
+                if condition.kind == "derived_metric":
+                    metric_id = condition.name or condition.entity_id
+                    if metric_id not in derived_metric_ids:
+                        add("causal_event.missing_derived_metric", f"Unknown derived metric: {metric_id}", f"{condition_path}.name")
                 if condition.kind == "aggregate_metric":
                     if condition.entity_id and condition.entity_id not in entity_ids and condition.field != "actor_attribute":
                         add("causal_event.missing_entity", f"Unknown aggregate entity: {condition.entity_id}", f"{condition_path}.entity_id")
@@ -1282,6 +1584,7 @@ class DLCRegistry:
                 ("actor", own_actor_ids, {str(item.get("actor_id", item.get("id", ""))) for item in other_actors}),
                 ("agent", agent_ids, {str(item.get("id", "")) for item in other_content["agents"]}),
                 ("resource", set(resource_map), {str(item.get("name", "")) for item in other_content["resources"]}),
+                ("derived_metric", derived_metric_ids, {str(item.get("metric_id", "")) for item in other_content["derived_metrics"]}),
                 ("capability", own_capability_ids, other_capability_ids),
                 (
                     "relationship_type",

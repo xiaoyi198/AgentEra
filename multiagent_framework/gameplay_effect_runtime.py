@@ -9,8 +9,9 @@ from .knowledge_contract import empty_knowledge_state, normalize_knowledge_state
 from .knowledge_runtime import KNOWLEDGE_COMMAND_TYPES, KnowledgeRuntime, reduce_knowledge_state
 from .world_commands import WorldCommandError
 
-_SCHEMA_VERSION = "2.0"
+_SCHEMA_VERSION = "3.0"
 _MAX_BUCKET = 10_000
+_MAX_LIFECYCLE_FEEDBACK = 500
 
 
 def empty_gameplay_effect_state() -> dict[str, Any]:
@@ -25,6 +26,13 @@ def empty_gameplay_effect_state() -> dict[str, Any]:
         "objectives": {},
         "action_unlocks": {},
         "phase": {},
+        "lifecycle": {
+            "dynamic_actors": {},
+            "dynamic_agents": {},
+            "positions": {},
+            "receipts": {},
+            "recent_feedback": [],
+        },
     }
 
 
@@ -42,6 +50,17 @@ def normalize_gameplay_effect_state(value: Any) -> dict[str, Any]:
     phase = value.get("phase", {})
     if isinstance(phase, Mapping):
         state["phase"] = copy.deepcopy(dict(phase))
+    lifecycle = value.get("lifecycle", {})
+    if isinstance(lifecycle, Mapping):
+        for key in ("dynamic_actors", "dynamic_agents", "positions", "receipts"):
+            raw = lifecycle.get(key, {})
+            if isinstance(raw, Mapping):
+                state["lifecycle"][key] = copy.deepcopy(dict(list(raw.items())[-_MAX_BUCKET:]))
+        feedback = lifecycle.get("recent_feedback", [])
+        if isinstance(feedback, list):
+            state["lifecycle"]["recent_feedback"] = copy.deepcopy(
+                feedback[-_MAX_LIFECYCLE_FEEDBACK:]
+            )
     state["knowledge_runtime"] = normalize_knowledge_state(
         value.get("knowledge_runtime"), legacy_knowledge=value.get("knowledge", {}),
     )
@@ -109,6 +128,9 @@ def reduce_gameplay_effect_state(
                 "organization_id": organization_id,
                 "role": str(data.get("role", "member")),
                 "status": str(data.get("status", "active")),
+                "rank": data.get("rank"),
+                "primary": bool(data.get("primary", False)),
+                "description": str(data.get("description", "")),
                 "metadata": copy.deepcopy(dict(data.get("metadata", {}))),
                 "updated_at": float(sim_time),
                 "command_id": str(command_id),
@@ -116,6 +138,172 @@ def reduce_gameplay_effect_state(
         actor = _versioned(actor, {"actor_id": actor_id, "memberships": memberships}, sim_time=sim_time, command_id=command_id)
         next_state["actors"][actor_id] = actor
         return next_state, {"actor_id": actor_id, "organization_id": organization_id, "operation": operation, "version": actor["version"]}
+
+    if command_type == "apply_lifecycle_transition":
+        transition_id = str(data.get("transition_id", "")).strip()
+        receipt_id = str(data.get("receipt_id", "")).strip()
+        if not transition_id or not receipt_id:
+            raise WorldCommandError(
+                "lifecycle_transition_invalid",
+                "transition_id and receipt_id are required",
+            )
+        lifecycle = next_state["lifecycle"]
+        existing_receipt = lifecycle["receipts"].get(receipt_id)
+        if isinstance(existing_receipt, Mapping):
+            return next_state, {
+                "transition_id": transition_id,
+                "receipt_id": receipt_id,
+                "already_applied": True,
+                "receipt": copy.deepcopy(dict(existing_receipt)),
+            }
+
+        def records(name: str, *, limit: int = 1024) -> list[Mapping[str, Any]]:
+            raw = data.get(name, [])
+            if not isinstance(raw, list) or len(raw) > limit or any(not isinstance(item, Mapping) for item in raw):
+                raise WorldCommandError(
+                    "lifecycle_transition_invalid", f"{name} must be a list of objects"
+                )
+            return list(raw)
+
+        counts = {
+            "dynamic_actors_upserted": 0,
+            "dynamic_actors_retired": 0,
+            "dynamic_agents_upserted": 0,
+            "dynamic_agents_retired": 0,
+            "positions_updated": 0,
+            "feedback_added": 0,
+        }
+        for raw in records("dynamic_actor_upserts"):
+            actor_id = str(raw.get("actor_id", "")).strip()
+            if not actor_id:
+                raise WorldCommandError("lifecycle_actor_invalid", "actor_id is required")
+            row = _versioned(
+                lifecycle["dynamic_actors"].get(actor_id),
+                {**copy.deepcopy(dict(raw)), "actor_id": actor_id, "active": True, "retired": False},
+                sim_time=sim_time, command_id=command_id,
+            )
+            lifecycle["dynamic_actors"][actor_id] = row
+            counts["dynamic_actors_upserted"] += 1
+        for raw in records("dynamic_actor_retirements"):
+            actor_id = str(raw.get("actor_id", "")).strip()
+            if not actor_id:
+                raise WorldCommandError("lifecycle_actor_invalid", "actor_id is required")
+            previous = lifecycle["dynamic_actors"].get(actor_id, {"actor_id": actor_id})
+            row = _versioned(
+                previous,
+                {
+                    "actor_id": actor_id, "active": False, "retired": True,
+                    "retired_reason": str(raw.get("reason", "")),
+                    "retired_by_transition_id": transition_id,
+                },
+                sim_time=sim_time, command_id=command_id,
+            )
+            lifecycle["dynamic_actors"][actor_id] = row
+            counts["dynamic_actors_retired"] += 1
+        for raw in records("dynamic_agent_upserts"):
+            agent_id = str(raw.get("agent_id", "")).strip()
+            if not agent_id:
+                raise WorldCommandError("lifecycle_agent_invalid", "agent_id is required")
+            row = _versioned(
+                lifecycle["dynamic_agents"].get(agent_id),
+                {**copy.deepcopy(dict(raw)), "agent_id": agent_id, "enabled": bool(raw.get("enabled", True)), "retired": False},
+                sim_time=sim_time, command_id=command_id,
+            )
+            lifecycle["dynamic_agents"][agent_id] = row
+            counts["dynamic_agents_upserted"] += 1
+        for raw in records("dynamic_agent_retirements"):
+            agent_id = str(raw.get("agent_id", "")).strip()
+            if not agent_id:
+                raise WorldCommandError("lifecycle_agent_invalid", "agent_id is required")
+            previous = lifecycle["dynamic_agents"].get(agent_id, {"agent_id": agent_id})
+            row = _versioned(
+                previous,
+                {
+                    "agent_id": agent_id, "enabled": False, "retired": True,
+                    "retired_reason": str(raw.get("reason", "")),
+                    "retired_by_transition_id": transition_id,
+                },
+                sim_time=sim_time, command_id=command_id,
+            )
+            lifecycle["dynamic_agents"][agent_id] = row
+            counts["dynamic_agents_retired"] += 1
+        for raw in records("position_updates"):
+            position_id = str(raw.get("position_id", "")).strip()
+            if not position_id:
+                raise WorldCommandError("lifecycle_position_invalid", "position_id is required")
+            incumbents_raw = raw.get("incumbent_actor_ids", [])
+            if not isinstance(incumbents_raw, list) or len(incumbents_raw) > 128:
+                raise WorldCommandError("lifecycle_position_invalid", "incumbent_actor_ids is invalid")
+            incumbents = []
+            for item in incumbents_raw:
+                actor_id = str(item).strip()
+                if actor_id and actor_id not in incumbents:
+                    incumbents.append(actor_id)
+            try:
+                capacity = int(raw.get("capacity", 1))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise WorldCommandError("lifecycle_position_invalid", "capacity is invalid") from exc
+            if capacity < 1 or capacity > 128 or len(incumbents) > capacity:
+                raise WorldCommandError("lifecycle_position_invalid", "position capacity is invalid")
+            row = _versioned(
+                lifecycle["positions"].get(position_id),
+                {
+                    **copy.deepcopy(dict(raw)),
+                    "position_id": position_id,
+                    "capacity": capacity,
+                    "incumbent_actor_ids": incumbents,
+                    "vacant": len(incumbents) < capacity,
+                },
+                sim_time=sim_time, command_id=command_id,
+            )
+            lifecycle["positions"][position_id] = row
+            counts["positions_updated"] += 1
+
+        receipt_data = data.get("receipt", {})
+        if not isinstance(receipt_data, Mapping):
+            raise WorldCommandError("lifecycle_receipt_invalid", "receipt must be an object")
+        receipt = _versioned(
+            None,
+            {
+                **copy.deepcopy(dict(receipt_data)),
+                "receipt_id": receipt_id,
+                "transition_id": transition_id,
+                "kind": str(data.get("kind", receipt_data.get("kind", "custom"))),
+                "applied": True,
+            },
+            sim_time=sim_time, command_id=command_id,
+        )
+        lifecycle["receipts"][receipt_id] = receipt
+
+        feedback_raw = data.get("feedback", [])
+        if isinstance(feedback_raw, Mapping):
+            feedback_items = [feedback_raw]
+        elif isinstance(feedback_raw, list) and len(feedback_raw) <= 64 and all(isinstance(item, Mapping) for item in feedback_raw):
+            feedback_items = feedback_raw
+        else:
+            raise WorldCommandError("lifecycle_feedback_invalid", "feedback must be an object or list of objects")
+        for raw in feedback_items:
+            lifecycle["recent_feedback"].append({
+                **copy.deepcopy(dict(raw)),
+                "transition_id": transition_id,
+                "kind": str(raw.get("kind", data.get("kind", "custom"))),
+                "sim_time": float(sim_time),
+                "command_id": str(command_id),
+            })
+        try:
+            feedback_limit = int(data.get("feedback_limit", _MAX_LIFECYCLE_FEEDBACK))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise WorldCommandError("lifecycle_feedback_invalid", "feedback_limit is invalid") from exc
+        feedback_limit = max(1, min(_MAX_LIFECYCLE_FEEDBACK, feedback_limit))
+        lifecycle["recent_feedback"] = lifecycle["recent_feedback"][-feedback_limit:]
+        counts["feedback_added"] = len(feedback_items)
+        return next_state, {
+            "transition_id": transition_id,
+            "receipt_id": receipt_id,
+            "already_applied": False,
+            "receipt": copy.deepcopy(receipt),
+            **counts,
+        }
 
     if command_type == "create_issue":
         issue_id = str(data.get("issue_id", "")).strip()
@@ -201,6 +389,12 @@ class GameplayEffectRuntime:
         self, *, actor_manager: Any, issue_manager: Any, objective_manager: Any,
         action_catalog: Any, sim_time: float, project_issues: bool = True,
     ) -> None:
+        lifecycle_setter = getattr(actor_manager, "set_lifecycle_definitions", None)
+        if callable(lifecycle_setter):
+            lifecycle = self._state.get("lifecycle", {})
+            lifecycle_setter(
+                lifecycle.get("dynamic_actors", {}) if isinstance(lifecycle, Mapping) else {}
+            )
         setter = getattr(actor_manager, "set_effect_overrides", None)
         if callable(setter):
             setter(self._state.get("actors", {}))
@@ -285,6 +479,7 @@ class GameplayEffectRuntime:
             "investigations": player["investigations"],
             "objectives": copy.deepcopy(self._state.get("objectives", {})),
             "action_unlocks": copy.deepcopy(self._state.get("action_unlocks", {})),
+            "lifecycle": copy.deepcopy(self._state.get("lifecycle", {})),
             "counts": {
                 "actors": len(self._state.get("actors", {})),
                 "issues": len(self._state.get("issues", {})),

@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.30.0**
+> 当前版本：**v0.43.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -10,12 +10,14 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 
 - **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
+- **持久唤醒投递**：Agent 唤醒采用有界 Outbox 与 `pending → inflight → ack/retry` 状态机，崩溃恢复提供明确的 at-least-once 语义。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
 - **行动因果桥接**：`request_action` 可显式选择把有界、脱敏的 `ActionResult` 摘要发布为因果源事件。
 - **经济不变量监控**：汇总当前价值、累计发行/销毁、转移守恒与因果效果拒绝/故障，提供安全 API、Prometheus 指标和世界状态仪表盘。
-- **DLC Studio**：编辑 DLC、实体、Actor、Agent、关系、事件、资源、人格、Prompt、模型绑定、时间规则、通用行动、目标、里程碑、结局、三层知识、传播、调查与 UI Manifest；新增配置均提供中文说明、即时校验、高级 JSON、Diff、撤销/重做与导入导出。
+- **DLC Studio**：新增“快速创建”与“玩家身份”页签，可批量生成实体、Actor、Agent 套件并可视化配置 direct/command 控制对象；其余关系、事件、资源、行动、Issue、目标、时间、因果、反馈、知识与 UI Manifest 继续提供中文说明、即时校验、Diff、撤销/重做和导入导出。
+- **七步可玩性验收**：DLC 列表与 Studio 中文面板按玩家界面、行动角色、Issue 入口、有限信息成本决策、世界模拟、结果反馈、目标/沙盒进程七项展示证据与缺口；每张卡片可直接跳到对应编辑页，静态审计和 Registry 合法性校验仍相互独立。
 - **通用 Actor 组件**：DLC 可声明与 LLM Agent 解耦的角色属性、Trait、需求、目标、能力、身份、组织成员关系和状态；Actor 可独立存在，也可被 Agent 显式绑定，运行时状态随 Generation、存档、热重载和回滚管理。
 - **DLC 玩法契约**：DLC 可声明题材无关的玩家身份、演员和直接/命令控制对象；运行时、热重载、回滚、API 与主界面按同一 Generation 切换。
 - **DLC 关系契约**：DLC 可声明有向/无向关系、强度区间、公开性、有效期、多维值和图样式；关系目录与边随 Generation、存档、热重载和回滚一致切换。
@@ -26,6 +28,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **Causal graph replay workbench**: inspect resolved rule edges and authoring provenance, export secret-free deterministic replay fixtures, and compare old baselines against the current unsaved Studio draft without mutating saved content or live runtime.
 - **事务化通用因果效果**：23 种效果覆盖资源/状态、持续事件、锚值守恒转移、实体生命周期、Agent 启停、关系/职位、Issue、三层知识、传播、调查、目标、行动解锁和世界阶段；整批原子提交、失败回滚，并使用稳定命令 ID 保证重启重放幂等。
 - **三层知识与调查**：显式区分世界真相、Actor 主观认知与玩家知识，记录来源、置信度、新鲜度、保密、作用域、失真和状态；过期信息禁止继续传播，调查可按受限结果策略把核验结果投影到 Actor 或玩家层。
+- **DLC 派生指标**：DLC 可用确定性公式组合实体指标、参数、Actor 属性、关系、持续事件、模拟天数与统一锚定库存价值；Objective、因果规则、Agent Prompt、主界面和安全 API 按受众读取同一 Generation 的结果。
 - **晋级工作台**：导入已批准 Promotion Gate，快速生成 DLC/Agent cohort mapping，执行 generation-bound Preview/Apply。
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
@@ -111,7 +114,7 @@ npm run dev -- --host
 - 模型 Profile：配置 Provider、模型 ID、能力标签、并发和重试；Profile 改名会同步更新三级任务路由引用。
 - 任务路由：可视化编辑全局 `task_policies`、DLC `dlc_task_policies` 和 Agent `agent_task_policies`，候选 Profile 顺序即失败回退顺序。
 - Agent 多轮调用：分别控制普通 Agent 与 ActionAgent 的轮数、工具调用数、Token、耗时和无进展终止预算。
-- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度。
+- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度；`knowledge_context_max_records` / `knowledge_context_char_budget` 限制每轮可见知识条数与字符数，`derived_metric_context_max_records` / `derived_metric_context_char_budget` 限制只读派生指标条数与字符数。后两项设为 `0` 可关闭派生指标注入，四项均支持热更新。
 - 世界模拟：控制游戏日与现实秒换算及后台 Tick 间隔；保存后可热更新当前 Orchestrator。
 - 安全与运维：只读展示管理 API、管理令牌、归档加密密钥和告警相关环境变量是否配置，不展示其值。
 - 高级 JSON：只编辑模型文档中的 Provider、Profile 与三级路由五个段；保存前统一经过后端 Schema 校验，并展示 Warning 与变更 Diff。
@@ -271,7 +274,8 @@ DLC 可以声明：
 - 行动耗时规则
 - 通用行动、Issue / Case / DecisionRequest 题型、目标、里程碑、失败条件与结局
 - DLC/Agent 显式模型绑定
-- 因果规则的通用条件（18 种事实来源、12 种操作符、多类型值与 Filter JSON）和事务化通用效果（18 种资源、实体、Agent、关系、Issue、知识、目标、行动与阶段效果）
+- 因果规则的通用条件（25 种事实来源、12 种操作符、多类型值与 Filter JSON）和事务化通用效果（23 种资源、实体、Agent、关系、Issue、知识、目标、行动与阶段效果）
+- 派生指标、聚合公式、受众权限、缺失策略，以及用于 UI、目标、规则和 Agent 的稳定指标 ID
 
 DLC Studio 支持草稿校验、发布、Generation 归档、热重载和回滚。运行时不会因为新版本发布而重算已经承诺的延迟结果。
 
@@ -345,6 +349,71 @@ DLC Studio 的“Actor / 角色组件”页签提供完整中文说明、即时�
 - 调查由 `start_investigation` 创建并由 `advance_investigation` 推进。完成时可使用受限 `result_policy` 读取指定来源层，并以置信度倍率、保密级别、失真或值覆盖投影到调查者 Actor 或玩家知识层。
 - `example_frontier` v1.9.0 提供完整链路：声明边境路线真相，为守卫写入部分失真的判断，向玩家传播未核验消息，启动并完成调查，再把核验后的 World Truth 以 0.9 置信度投影到玩家知识层，最后用七类知识/调查条件推进第三阶段。
 
+## DLC 派生指标与聚合公式 (v0.31.0)
+
+主 DLC 与依赖 DLC 都可在 `content.json.derived_metrics` 中声明题材无关的只读指标。`DerivedMetricCatalog` 在 Registry 校验时解析依赖图并拒绝缺失引用或循环，在 Generation 发布、热重载、归档恢复和回滚时与其他 DLC 目录原子切换。
+
+- 公式支持 `constant`、`source`、`derived_metric`、`aggregate`、`add`、`subtract`、`multiply`、`divide`、`min`、`max`、`avg`、`sum`、`weighted_sum`、`clamp`、`round`、`coalesce` 共 17 类节点。
+- 直接来源支持统一锚定库存价值、实体指标、实体参数、Actor 属性和模拟天数；聚合来源还支持实体数量、关系边和持续事件，并可执行 `sum/avg/min/max/count`。
+- `audiences` 将同一指标显式授权给 `player`、`ui`、`agent`、`rule`、`objective`。玩家 API 仅返回 `player` 指标；Agent 只接收 `agent` 指标摘要；规则和目标分别要求对应受众，不会跨受众旁路读取。
+- `missing_policy` 可设为 `fail` 或 `zero`。公式有 12 层深度、256 节点、64 子项和有限数值限制；除零、缺失来源、非有限结果与循环均产生稳定错误状态。
+- `GET /api/derived-metrics` 与 `GET /api/derived-metrics/{metric_id}` 返回当前 Generation 的安全结果，不暴露公式、Metadata、底层 Provider 异常或隐藏受众指标。UI Manifest 可添加 `kind: "derived_metrics"` 的 Dashboard Widget。
+- DLC Studio 的“派生指标”页签提供五类受众、缺失策略、全部公式节点、Catalog 引用、常用 Filter、依赖图、循环/缺失检查、有限数值与深度/节点检查，并纳入导入导出、Keyed Diff、历史和撤销/重做。
+
+`example_frontier` v1.10.0 的“边境综合战备度”按 55% 哨站警戒度、25% 守备 Actor 警觉属性和 20% 边境银券统一锚定库存价值计算，供玩家、界面、Agent、因果规则和目标共同读取。
+
+## DLC 日历、季节、玩法周期与自动暂停 (v0.32.0)
+
+DLC 可在 `content.json.time_system` 声明完整的题材历法和长期玩法节奏，框架只负责解释、调度和安全展示，不写死朝代、月份、星期或回合文案。
+
+- 历法支持自定义纪元、起始年/月/日/星期、1-64 个非均匀月份和自定义星期循环；当前日期由权威 `sim_time` 确定性换算。
+- 季节支持普通与跨年区间；Registry 拒绝越界或重叠定义。
+- `turn`、`meeting`、`task`、`custom` 周期分别配置周期、持续时长和偏移，可同时激活并向主界面公开进度。
+- 日/周/月/年、季节开始/结束、周期开始/结束均可生成确定性边界事件，选择 Agent 唤醒目标、Issue Type 和安全 Payload。
+- 自动暂停既可复用通用因果条件，也可绑定时间边界，并支持 `all/any`、冷却天数、仅一次和上升沿语义；暂停提示可关闭，但不会隐式恢复模拟。
+- `GET /api/time-system` 与 Tick WebSocket 返回当前日期、季节、周期和脱敏暂停回执，不公开条件值或隐藏事实引用。DLC Studio 的“历法与周期”页提供完整中文编辑、引用检查、JSON Payload、Diff、History 和导入导出。
+
+`example_frontier` v1.11.0 演示 360 天边境驻防历、四季、7 天指挥回合、30 天联席会议、14 天巡防任务、回合报告事件、会议自动暂停和战备度低于 30 的上升沿告警。
+
+## DLC 动态 Actor、Agent、职位与组织生命周期 (v0.33.0)
+
+DLC 可在 `content.json.lifecycle` 声明动态角色模板、职位和确定性生命周期规则。生命周期与 DLC Generation 绑定，首次加载、热重载、历史回滚、存档和读档都使用同一份契约；运行时变更统一经过 WorldCommand 原子批次，不允许 DLC 执行任意 Python 或前端代码。
+
+- Actor 模板可同时创建动态 Actor、可选世界实体和可选动态 Agent。动态 Agent 从 `source_agent_id` 对应静态 Agent 继承模型 Profile、任务模型路由、多轮预算、工具权限、记忆窗口和 API Provider 路由；生成后拥有独立 ID，并支持记忆迁移后继续分化。
+- 职位声明组织、角色、等级、容量、初始任职者、候选 Actor 和确定性评分字段。评分支持 Actor 属性、状态、组织成员等级与 Actor ID；同分时以 Actor ID 保证重放稳定。
+- 规则支持出生、死亡、晋升、继任、空缺、组织分裂、组织合并、实体转化和自定义九类语义，可绑定条件、日/周/月/年、季节和玩法周期边界，并支持 `all/any`、`once`、`cooldown_days` 与上升沿。
+- 七类白名单操作为 `spawn_actor`、`retire_actor`、`appoint_position`、`vacate_position`、`transform_entity`、`split_organization`、`merge_organizations`。同一规则的全部操作要么整体成功，要么整体回滚。
+- Receipt、序列号、冷却与条件 Latch 会进入存档；Actor 退休使用 Tombstone，避免热重载或回放时意外复活；动态 Agent 会同步停用，相关职位会自动腾空。
+- DLC Studio 的“动态生命周期”页签提供完整中文可视化编辑器，可创建模板、职位、评分、规则、时间过滤、通用因果条件、七类操作和玩家反馈，并在保存前检查 ID、引用、数值范围与 JSON 结构。
+
+`example_frontier` v1.12.0 提供动态巡防副官模板、巡防队长职位、双周生成、评分继任、退役、瞭望塔季节转化、守军分裂和组织合并示例。
+
+## DLC 节奏导演：注意力、升级与高潮收束 (v0.34.0)
+
+DLC 可在 `content.json.rhythm` 声明长期叙事节奏。框架以确定性预算和规则控制 Issue 与随机事件的进入时机，不替 DLC 编写剧情，也不会把隐藏条件或内部队列泄露给玩家。
+
+- 全局配置包含活跃 Issue 上限、注意力预算、每游戏日恢复量、排队上限、最近反馈数量、全局平静期，以及 critical 紧迫度是否绕过平静期。
+- 每条规则可按 Issue Type 或 Event Type 匹配，并配置优先级、注意力覆盖成本、规则级活跃上限、冷却、互斥组、规则平静期及绕过策略。
+- Issue 可按经过的游戏日确定性升级紧迫度；满足通用因果条件后可降级到指定等级与状态；达到高潮等级且满足条件后可收束 Issue、同组 Case 和 DecisionRequest，并进入高潮后平静期。
+- 随机事件在注入前经过同一节奏准入层；低优先级噪声会因预算、冷却、互斥组或平静期被抑制，结果记录在有界的安全反馈中。
+- 节奏契约、注意力、队列、冷却、升级/降级/高潮状态随 Generation 热重载、归档、回滚与存读档恢复。`GET /api/rhythm` 返回脱敏的当前预算、队列、规则摘要和最近反馈。
+- DLC Studio 的“节奏导演”页签提供全中文可视化编辑，覆盖全局预算、规则排序、Issue/Event 匹配、升级、降级因果条件、高潮因果条件和本地引用校验，并沿用统一 Diff、确认、撤销/重做与保存流程。
+
+`example_frontier` v1.13.0 提供四条参考规则：边境安全危机升级链、稳定化情报确认、低成本常规报告，以及会被冷却和平静期抑制的边境流言噪声。
+
+## 玩家结果反馈：即时变化、延迟报告与因果揭示 (v0.35.0)
+
+DLC 可在顶层 `outcome_feedback` 声明玩家结果反馈契约。框架把行动、决策、结案、因果事件、生命周期与节奏事件转换为玩家可理解的公开结果，但不替 DLC 编写剧情，也不会泄露隐藏条件、世界真相或 Actor 私有认知。
+
+- 自动即时反馈从安全的 WorldCommand 差异和玩家可见派生指标中生成“发生了什么”与确定性原因，并通过 epsilon 和条数上限抑制噪声。
+- 自定义规则支持即时反馈、延迟报告与事后因果揭示，可按来源、Action、Issue Type、Event Type、派生指标和通用因果条件匹配。
+- 结案总结可汇总公开决策、变化与指标结果；延迟队列、最近反馈和幂等回执均为有界状态。
+- 结果反馈进入 Generation 初载、热重载、归档、回滚、重启恢复与存读档；兼容配置热重载时保留待交付反馈，重复 Tick 或读档不会重复发放。
+- `GET /api/outcome-feedback` 与 Tick 的 `outcome_feedback` 字段只返回玩家安全投影。主界面新增“结果反馈”Widget，展示即时变化、延迟报告、结案总结、因果揭示和指标原因。
+- DLC Studio 的“结果反馈”页签提供完整中文说明，覆盖容量、自动反馈、结案总结、规则来源、交付方式、延迟、引用、因果条件、公开文案、后续 Issue 与证据联动，并支持添加、复制、删除和排序。
+
+`example_frontier` v1.14.0 提供巡逻即时结果、边境决策延迟报告和稳定化因果揭示三条参考规则，并在 UI Manifest 中启用结果反馈 Widget。
+
 ## 测试
 
 ```powershell
@@ -389,6 +458,141 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.43.0 发布说明
+
+v0.43.0 新增第三种 JSON-only 跨题材参考 DLC“沧渊深海栖站”，用真实运行时 playthrough 证明现有通用玩法契约可以在不修改 Python/React 核心代码的情况下复用到深海生存题材。
+
+- 新增 `dlcs/example_abyssal/`，包含玩家身份、直接/命令控制对象、Actor/Agent、统一价值锚定维护配额、有限证据 Issue、耗时行动、Agent 唤醒、因果链、三层知识、调查、生命周期、节奏、结果反馈、目标与胜负结局。
+- 深潜修复巡检消耗 `维护配额` 的统一基础价值，提高 `压力壳完整度`，唤醒“潜航工程师”并发布 `abyssal_patrol_started`；推进一游戏日后由通用因果引擎生成响应、应用世界效果、投递反馈并完成 `secure_abyssal` / `abyssal_safe`。
+- 新增 `tests/integration/test_abyssal_dlc_playthrough.py`，独立临时加载该包并真实执行七步循环；frontier、orbital、abyssal 三个参考包均为 Registry 0 error、静态审计 7/7。
+- 版本同步更新到 `0.43.0`。完整发布门禁继续如实保留并行 LLM HTTP timeout 浮点边界这一项外部失败，未越界修改对应文件。
+
+当前验证：深海与轨道真实 playthrough **2 passed**；三个参考包 Registry 校验均为 **0 error**、可玩性审计均为 **7/7**；完整单元集 **820 passed, 1 failed**（唯一失败仍为并行 LLM HTTP timeout 浮点边界 `0.2000000000007276 <= 0.2`）；集成测试 **12 passed, 2 skipped**；前端测试 **97 passed**，ESLint、Vite build、Python compileall 与版本一致性测试通过。
+
+## v0.42.0 发布说明
+
+v0.42.0 将 Agent 唤醒从进程内临时列表升级为持久 Wakeup Outbox，并统一自动存档与手工存档的运行时快照字段。该版本承诺 **at-least-once**（至少一次）投递，不宣称 exactly-once；下游 World Command、Issue external ID 与 Lifecycle Receipt 继续承担幂等边界。
+
+- 新增 `WakeupOutboxRuntime`：条目按 `pending → inflight → ack/remove` 流转；失败、Router 异常或任务取消会回到 `pending`，重启时持久化的 `inflight` 也会重排为 `pending`。
+- Timer 改为 `claim_due()` / `ack()` / `release_claim()`：到期后先离开内存 heap，但 SQLite 行要等对应 wakeup 完成后才删除，关闭“Timer 已删除、唤醒尚未持久化”的崩溃窗口。
+- Timer、Event、路由 Chain 使用稳定 delivery ID；缺少 chain 的旧路径由持久 sequence 生成 ID，并从 delivery ID 派生稳定 chain ID。重复重放可被 Outbox 去重，已执行但尚未 ACK 的崩溃仍可能产生允许的重复。
+- `request_action` 在后台 wakeup 任务内等待 ActionAgent 分发完成后再 ACK，不再只创建易丢失的子任务。
+- Outbox 最多 32,768 条；单 payload 最大 256 KiB、总 payload 最大 64 MiB，并限制嵌套深度、节点数、ID 长度以及 JSON-safe 数据类型；损坏或越界快照原子 fail closed。
+- `Orchestrator.runtime_snapshot()` / `restore_runtime_snapshot()` 统一 `save_state()`、启动加载与 `RuntimePersistor.flush()`，自动 `state.json` 现在与手工存档覆盖同一组时间、生命周期、timeline、wakeup、节奏、反馈、Issue、目标和 Actor 运行时。
+- Operational Metrics JSON / Prometheus 新增 pending、inflight、Outbox 总量与 payload 字节数，只暴露聚合值，不暴露 payload、Agent ID、delivery ID 或隐藏世界状态。
+
+当前验证：Wakeup/Timer/Persistor/Event/Metrics 定向测试 **57 passed**；集成测试 **11 passed, 2 skipped**；前端测试 **97 passed**，ESLint、Vite build、Python compileall 与版本一致性测试通过。完整单元集为 **820 passed, 1 failed**；唯一失败位于并行修改中的 LLM HTTP timeout 浮点边界（观测值 `0.2000000000007276`，断言上限 `0.2`），本提交未越界修改该文件，发布前需由对应修改方修复并复跑。
+
+## v0.41.0 发布说明
+
+v0.41.0 为持久 deferred timeline 补齐长对局运维、背压和崩溃重放验证，不改变既有 `(occurrence_time, source_rank, sequence)` 排序契约。
+
+- `DeferredTimelineRuntime` 持久记录发布背压与恢复失败计数，并提供 pending、容量利用率、最老条目年龄、archive 使用量和最近快照测量等聚合状态。
+- 新增安全接口 `GET /api/timeline`；只返回聚合运维字段，不暴露事件 payload、Agent ID、实体身份或隐藏世界信息。
+- Operational Metrics JSON 与 Prometheus 新增 timeline 队列、背压、恢复失败、快照字节数和构建/序列化耗时指标；错误代码经过白名单投影，异常返回类型按空状态 fail closed。
+- Temporal/Random producer 在 timeline 满载时回滚各自游标并报告 `timeline_backpressure`，避免“游标已推进但事件未发布”的静默丢失。
+- 新增 World Command 提交后 queue ack 前、Lifecycle Receipt 提交后 cursor ack 前的崩溃恢复回归；修复空 `reason` 字段在命令重放规范化时被删除而触发幂等冲突的问题。
+- 增加 20,000 条 lifecycle marker 的快照体积、JSON 序列化、恢复和稳定顺序 drain 压力测试；失败恢复会清空不可信队列，同时保留已累计的运维计数。
+
+Validation: **799 Python unit tests passed**; **11 integration tests passed, 2 skipped**; **97 frontend tests passed**; Python compileall、版本一致性、ESLint、Vite build 与 `git diff --check` 通过。
+
+## v0.40.0 Release Notes
+
+v0.40.0 upgrades the v0.39.0 per-tick heap into a persistent deferred timeline. Materialized temporal events, lifecycle markers, random events, and lifecycle condition continuations now survive tick budgets, save/load, rollback, and process restarts without allowing later work to overtake earlier work.
+
+- Added `DeferredTimelineRuntime`, ordered by `(occurrence_time, source_rank, sequence)`, with a 32,768-entry hard limit and fail-closed snapshot restore.
+- Preserved the causal budget of 128 and lifecycle budget of 256 while deferring later sources whenever an older causal item or lifecycle continuation remains.
+- Added `start_transition_index` / `next_transition_index` lifecycle cursors, so a marker matching more than 256 transitions resumes from the exact unattempted transition instead of replaying receipts or starving the tail.
+- Archived lifecycle contracts once per generation fingerprint. DLC hot reload affects future materialization, while already queued lifecycle work keeps its committed semantics.
+- Added `deferred_timeline` to `save_state()` / `load_state()`, including stable sequence numbers, event payloads, lifecycle cursors, and deduplicated contract archives. Old saves without the field remain compatible.
+- Restored the generated Issue source label to `time system` in Chinese UI text.
+- Added regressions for 129 earlier causal events blocking later temporal/random work, restart recovery, 300 lifecycle transitions resuming as 256 + 44, hot-reload preservation, and malformed/oversized snapshots.
+
+Validation: **791 Python unit tests passed**; **11 integration tests passed, 2 skipped**; **97 frontend tests passed**; ESLint and Vite build passed.
+
+## v0.39.0 发布说明
+
+- Orchestrator 将时间边界、生命周期 marker、随机事件和已到期因果事件放入同一 tick 时间队列，长跳时按权威 `generated_at` / marker `sim_time` 跨来源归并，不再先执行全部生命周期后再处理更早的因果效果。
+- 同一时刻采用稳定优先级：时间边界 → 生命周期 marker → 随机事件 → 因果事件 → 当前时刻条件型生命周期；零延迟因果链会在其来源之后继续参与排序。
+- `CausalEventEngine.next_due_key()` 支持不消费 pending 的最早到期窥视；历史 marker 轮询通过 `evaluate_conditions=False` 避免重复评估当前条件，条件型生命周期只在 tick 当前时刻评估一次。
+- 因果事件仍保留每 tick 128 条硬预算，生命周期仍保留 256 次尝试预算。严格跨来源排序适用于预算内；因果风暴超出预算时旧 pending 留到下一 tick，而已物化的非因果条目继续完成，本版本不宣称任意负载下的无限严格排序。
+- 新增跨 temporal/random/causal、历史 causal 与未来 lifecycle、因果 peek 稳定性、生命周期条件延迟评估回归；相关定向验证 **78 passed**，完整 Integration **11 passed, 2 skipped**，前端 **97 passed** 且 lint/build 通过。完整 Unit 运行达到 **784 passed**，另有 1 个由并行 LLM/API 改动产生的 deadline 浮点边界失败，不属于本时间队列改动。
+- `VERSION`、Python 包版本和前端 package/lock 四处统一升级到 `0.39.0`。
+
+## v0.38.0 发布说明
+
+本版本修复长对局、大步推进时间时历史事件被压平到当前时刻的问题：
+
+- Orchestrator 统一计算事件有效时间，将 DLC 时间边界、随机事件和因果事件携带的 `generated_at` 限定在 `0..当前模拟时间`，并用于因果观察、条件上下文、节奏准入和因果世界命令。
+- 历史事件触发的因果延迟从真实发生时间开始计算；例如一次推进到第 5 天时，第 1 天事件的 1 天延迟后果会在第 2 天到期，而不会被错误推迟到第 6 天。
+- 玩家 Issue 的 `created_at`、截止期与逾期状态，以及因果结果反馈的 `created_at/due_at` 均保留来源事件时间；已经逾期的延迟反馈会在当前 catch-up tick 交付。
+- Agent 唤醒负载新增规范化 `generated_at`，Rhythm 冷却按第 1、2、3……天的历史发生时间逐条判定，不再把同批历史事件视为同时发生。
+- 新增长跳时回归，覆盖因果 pending 边界、Issue 逾期、Rhythm 两天冷却、世界命令账本时间和延迟反馈立即补发；四处产品版本统一升级为 `0.38.0`。
+- 当前仍保留时间边界、随机事件、因果事件的既有阶段顺序；本版本修复各事件自身的权威时间语义，但不宣称已实现跨来源的全局时间归并队列。
+
+## v0.37.0 发布说明
+
+本版本继续推进 DLC Studio 快速创作流程：
+
+- 新增完整中文“玩家身份”编辑器，可配置 identity_id、显示名称、绑定 Actor，以及 entity/agent 的 direct / command 控制语义；支持从已有 Agent 智能填充，并在保存前检查引用、重复项和必填字段。
+- 新增实体、Actor、Agent 批量创建工作台，支持竖线或 Tab 表格输入、中文示例、缺失实体引用检查、跳过/覆盖冲突策略和原子 Agent/Actor 套件生成。
+- 批量写入和玩家身份编辑继续复用 Studio 的 Content Diff、确认、历史、撤销/重做与 Registry 保存链路，不直接覆盖 DLC 文件。
+- 七步可玩性审计卡片新增“查看/去补齐”导航，可直接定位玩家身份、界面、Agent、行动、Issue、事件、因果链、时间、结果反馈、目标与结局编辑页。
+- 前端新增 9 项工具回归测试；AgentEra 四处产品版本统一升级为 0.37.0。长期 Goal 保持 active，下一阶段继续做真实 API 多轮 Agent 与长对局世界模拟压力验收。
+
+## v0.35.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P2.4“玩家可理解的结果反馈”：
+
+- 新增 Generation-bound `OutcomeFeedbackContract` / `OutcomeFeedbackRuntime`，统一处理自动即时反馈、延迟报告、结案总结、指标变化原因与事后因果揭示。
+- 反馈规则复用通用因果条件和 DLC 静态引用校验；最近反馈、待交付队列与幂等回执均有界，并支持存档、热重载、Generation 归档和回滚。
+- Orchestrator 将 Action、Decision、Case、因果事件、生命周期、节奏与 Tick 结果接入反馈运行时；新增 `GET /api/outcome-feedback`，所有公开字段使用玩家安全投影。
+- 主界面新增结果反馈面板；DLC Studio 新增完整中文“结果反馈”编辑器，并修复移动规则时展开状态错位及移动端 Manifest Dashboard 裁切。
+- `example_frontier` 升级到 v1.14.0，提供即时、延迟和因果揭示参考规则；AgentEra 四处产品版本统一升级为 `0.35.0`。
+- 长期 Goal 继续保持 active；P2.4 已完成，下一阶段进入跨题材 DLC 的端到端可玩性验收与剩余框架缺口收敛。
+
+## v0.34.0 发布说明
+
+本版本完成长期玩法框架 Goal 的 P2.3：
+
+- 新增 Generation-bound `RhythmContract` / `RhythmRuntime`，统一处理活跃 Issue 上限、注意力预算与按游戏日恢复、排队上限、规则优先级、冷却、互斥组和全局/规则平静期。
+- Issue 创建接入节奏准入与排队；运行时支持按时间升级紧迫度、按通用因果条件降级，以及高潮阶段对 Issue、同组 Case 和 DecisionRequest 的确定性收束。
+- 随机事件进入世界前复用节奏规则，可抑制低优先级噪声；critical 绕过、反馈上限和安全公开状态均由 DLC 配置。
+- 节奏契约和运行时状态进入 DLC 初载、热重载、Generation 归档、历史回滚、重启恢复与存读档，并新增 `GET /api/rhythm`。
+- DLC Studio 新增完整中文“节奏导演”编辑器；`example_frontier` 升级到 v1.13.0，提供危机升级、条件降级、高潮收束、稳定化、常规报告和随机流言抑制示例。
+- AgentEra 发布版本统一升级为 `0.34.0`；长期 Goal 保持 active，P2.3 已完成，下一阶段进入 P2.4“玩家可理解的结果反馈”。
+
+## v0.33.0 发布说明
+
+- 新增 Generation-bound `LifecycleContract` 与 `LifecycleRuntime`，覆盖动态 Actor、动态 Agent、职位、出生/死亡/晋升/继任/空缺、实体转化和组织分合。
+- 七类生命周期操作统一展开为原子 WorldCommand Batch；Receipt、序列、冷却、上升沿 Latch、Actor Tombstone、职位状态和玩家反馈可存档恢复，并支持热重载、Generation Archive 与回滚。
+- 动态 Agent 从静态来源 Agent 继承模型选择、多轮预算、工具、记忆和 Provider 路由，并在创建时迁移记忆；退休时同步停用，避免孤立 Agent。
+- DLC Registry 新增生命周期结构、跨目录引用和时间引用校验；Orchestrator Tick、存档、读档和公共状态已接入生命周期运行时。
+- DLC Studio 新增完整中文“动态生命周期”编辑器；`example_frontier` 升级到 `1.12.0`，AgentEra 四处产品版本同步到 `0.33.0`。
+
+长期 Goal 继续保持 active；P0、P1.1-P1.6、P2.1 与 P2.2 已完成，下一阶段进入 P2.3。
+
+## v0.32.0 发布说明
+
+- 新增 Generation-bound `TemporalContract` 与 `TemporalRuntime`，支持 DLC 自定义历法、非均匀月份、星期、普通/跨年季节和回合/会议/任务/自定义周期。
+- 新增八类时间边界、确定性事件 ID、Agent/Issue 投影，以及条件型和边界型自动暂停；暂停回执支持冷却、仅一次、上升沿、存档恢复和热重载继承，公开状态不泄露隐藏条件值。
+- 新增 `GET /api/time-system` 和 Tick 时间投影；主界面显示 DLC 日期、季节、活跃周期与明显的中文自动暂停原因，保留旧模拟时间作为兼容信息。
+- DLC Studio 新增“历法与周期”详细中文编辑器，覆盖月份排序、跨年季节、周期、边界事件、Issue/Agent 引用、Payload JSON、自动暂停和通用因果条件，并纳入导入导出、Diff、History 与撤销/重做。
+- `example_frontier` 升级到 `1.11.0`；AgentEra 四处产品版本同步到 `0.32.0`。
+
+长期 Goal 继续保持 active；P0、P1.1-P1.6 与 P2.1 已完成，下一阶段进入 P2.2 动态生命周期。P2.2-P2.4 尚未完成。
+
+## v0.31.0 发布说明
+
+- 新增 Generation-bound `DerivedMetricCatalog`，DLC 可用 17 类确定性公式节点组合直接世界来源、聚合来源和其他派生指标；Registry 拒绝缺失依赖、循环、超限结构、非有限数值与非法引用。
+- Objective DSL、因果条件、Agent Prompt、主界面和 UI Manifest 共用同一指标目录；`player/ui/agent/rule/objective` 五类受众彼此隔离，Catalog 热切换后既有 Agent 也只读取当前 Generation。
+- 新增安全派生指标 API 和主游戏指标面板；公开接口只暴露 `player` 受众结果，不返回公式、Metadata、隐藏指标或底层异常。
+- DLC Studio 新增完整中文派生指标编辑器，覆盖全部公式树节点、世界来源、聚合方式、Catalog/Filter 辅助、依赖图与循环/缺失/结构检查，并接入导入导出、Diff、History 和撤销/重做。
+- 详细中文设置中心新增知识上下文与派生指标上下文的条数/字符预算；`example_frontier` 升级至 `1.10.0`，用统一锚定库存价值、实体指标和 Actor 属性计算“边境综合战备度”，并接入目标、失败条件、规则和 Dashboard。AgentEra 四处产品版本同步到 `0.31.0`。
+- 发布门禁：全量 Python `665 passed, 2 skipped`、前端 `58 passed`，Python compile、ESLint、Vite production build、`git diff --check`、新增/未跟踪行凭据与乱码扫描、四处版本一致性检查和 `example_frontier` Registry `0 issues` 均通过；2 个外部 API 测试因当前进程未注入 `AGENTERA_TEST_*` 环境变量而按设计跳过，未发起外部网络请求。
+
+长期 Goal 继续保持 active；P0 与 P1.1-P1.6 已完成，下一阶段进入 P2.1 DLC 日历、季节、回合/会议/任务周期和自动暂停条件。P2 尚未完成。
 
 ## v0.30.0 发布说明
 
@@ -523,3 +727,21 @@ ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`cons
 Release `0.20.0` introduces a theme-neutral `GameplayContract` for the primary DLC. It validates player identity and controlled entity/Agent references, distinguishes direct control from command authority, excludes directly controlled Agents from autonomous LLM construction, and lets explicit gameplay metadata override legacy `role=player` markers. The contract is carried through initial load, generation snapshots, encrypted archive blueprints, hot reload, rollback, Orchestrator player-recipient routing, and `GET /api/gameplay`.
 
 The bundled frontier example now declares a non-imperial station-commander contract while keeping its player-like Agent role set to `operator`, proving that runtime behavior no longer depends on a theme-specific role string. The React shell consumes the public contract for package title, identity, control count, and view labels. This is the first P0 gameplay-framework slice; generic actions, issues/objectives, permissions, and a complete DLC UI manifest remain future work. Release `0.20.0` is verified with **472 Python tests**, **16 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Git diff checks.
+
+## 跨题材 DLC 可玩性验收 (v0.36.0)
+
+`multiagent_framework.dlc_playability` 提供题材无关的七步静态审计。`GET /api/dlcs` 与 `GET /api/dlcs/{id}` 的每个包响应都包含 `playability`：`passed_count / total_count`、中文摘要、缺口和定位到具体 Action、Agent、Issue、因果规则、反馈、目标或结局的证据。Registry `validate()` 仍只回答“配置是否合法”，`audit_playability()` 回答“配置是否声明了可信的玩家循环”，两者不会互相替代。
+
+DLC Studio 默认打开“可玩性验收”页签，显示 7 项通过状态、中文补齐建议和配置证据。该面板用于作者快速发现“JSON 合法但玩法链断开”的问题；静态 7/7 仍必须配合真实运行测试。
+
+新增默认禁用的 `dlcs/example_orbital` 作为第二题材参考包。它不修改 Python 或 React 核心，仅通过 DLC JSON 声明轨道站长、维护工程师、冷却环报告、维修额度锚定成本、耗时巡查、Agent 唤醒、延迟因果世界效果、结果反馈、目标与胜利结局。集成测试真实执行以下证据链：
+
+```text
+Agent 报告 → Issue / DecisionRequest → 锚定成本行动
+→ wake_agent → 推进 1 游戏日 → causal world effect
+→ outcome feedback → objective completed → victory ending
+```
+
+`example_frontier` v1.15.0 同步补齐 `frontier_patrol_started` 到后续响应事件的 Action→Causal 桥接；它与 `example_orbital` 均通过 Registry 校验和七项可玩性审计。
+
+新增第三题材参考包 `dlcs/example_abyssal`：玩家担任“栖站指挥官”，根据潜航工程师提交的有限证据决定是否消耗统一价值锚定的维护配额，组织一日深潜修复巡检，并通过 Agent 唤醒、延迟因果世界效果、结果反馈、目标与胜利结局完成同一七步闭环。该包同样默认禁用，不需要任何题材专属 Python/React 代码。

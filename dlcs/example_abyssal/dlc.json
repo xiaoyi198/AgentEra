@@ -1,0 +1,25 @@
+{
+  "id": "example_abyssal",
+  "name": "沧渊深海栖站示例",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "description": "跨题材 bundle-v1 参考 DLC：仅通过 JSON 声明深海栖站的玩家身份、Agent 报告、有限信息决策、锚定维护成本、耗时行动、因果链、结果反馈、目标与结局。",
+  "enabled": false,
+  "status": "published",
+  "format": "bundle-v1",
+  "priority": 9,
+  "primary": false,
+  "dependencies": [],
+  "dependency_constraints": {},
+  "entrypoints": {
+    "content": "content.json",
+    "prompts": "prompts"
+  },
+  "model_bindings": {},
+  "metadata": {
+    "example": true,
+    "locale": "zh-CN",
+    "genre": "deepsea-survival",
+    "playability_reference": true
+  }
+}

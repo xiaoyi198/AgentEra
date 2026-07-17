@@ -20,10 +20,11 @@ const ARRAY_SECTIONS = [
   'actions',
   'capabilities',
   'issue_types',
+  'derived_metrics',
   'objectives',
   'endings',
 ]
-const OBJECT_SECTIONS = ['personas', 'prompts', 'ui_manifest']
+const OBJECT_SECTIONS = ['personas', 'prompts', 'ui_manifest', 'time_system']
 const KNOWN_SECTIONS = new Set(['schema_version', ...ARRAY_SECTIONS, ...OBJECT_SECTIONS])
 
 const KEYERS = {
@@ -45,6 +46,7 @@ const KEYERS = {
   actions: item => item?.action_id,
   capabilities: item => item?.capability_id,
   issue_types: item => item?.issue_type_id,
+  derived_metrics: item => item?.metric_id,
   objectives: item => item?.objective_id,
   endings: item => item?.ending_id,
 }

@@ -77,6 +77,68 @@ async def resume_simulation():
 # ── 时间倍率 ──
 
 
+@router.get("/time-system")
+async def get_time_system():
+    """Return the active DLC calendar, season, cycles, and safe pause receipts."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "enabled": False, "generation": 0,
+            "calendar": None, "current_date": None, "current_season": None,
+            "cycles": [], "auto_pause_conditions": [],
+            "recent_auto_pauses": [], "auto_pause": None,
+        }
+    return state.orchestrator.time_system_public_state()
+
+
+@router.get("/timeline")
+async def get_timeline():
+    """Return safe deferred-work queue health without event or Agent payloads."""
+    if not state.orchestrator:
+        return {
+            "pending_count": 0, "capacity": 0, "utilization": 0.0,
+            "oldest_occurrence_time": None, "oldest_age_seconds": 0.0,
+            "archive_count": 0, "archive_capacity": 0,
+            "backpressure_count": 0, "restore_failure_count": 0,
+            "last_restore_error": "",
+            "last_snapshot": {
+                "entry_count": 0, "build_ms": 0.0,
+                "serialization_ms": 0.0, "serialized_bytes": 0,
+            },
+        }
+    return state.orchestrator.deferred_timeline_status()
+
+
+@router.get("/rhythm")
+async def get_rhythm():
+    """Return the active DLC pacing budget, queue, rules, and recent feedback."""
+    if not state.orchestrator:
+        return {
+            "configured": False,
+            "enabled": False,
+            "generation": 0,
+            "attention_available": 0.0,
+            "attention_used": 0.0,
+            "active_issue_count": 0,
+            "queued_issue_count": 0,
+            "rules": [],
+            "recent_feedback": [],
+            "recent_suppressed_events": [],
+        }
+    return state.orchestrator.rhythm_public_state()
+
+@router.get("/outcome-feedback")
+async def get_outcome_feedback():
+    """Return player-safe immediate, delayed, case, metric, and causal feedback."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "enabled": False, "generation": 0,
+            "rules": [], "recent": [], "pending": [],
+            "recent_count": 0, "pending_count": 0,
+        }
+    return state.orchestrator.outcome_feedback_public_state()
+
+
+
 @router.get("/time-scale")
 async def get_time_scale():
     if not state.orchestrator:
@@ -296,6 +358,32 @@ async def get_issue_types():
     if not state.orchestrator:
         return {"configured": False, "generation": 0, "issue_types": [], "counts": {}}
     return state.orchestrator.issues_public_state()
+
+
+@router.get("/derived-metrics")
+async def get_derived_metrics():
+    """Return only player-visible deterministic projections for the active Generation."""
+    if not state.orchestrator:
+        return {
+            "configured": False, "generation": 0, "evaluated_at": 0.0,
+            "metric_count": 0, "metrics": [],
+        }
+    return state.orchestrator.derived_metrics_public_state()
+
+
+@router.get("/derived-metrics/{metric_id}")
+async def get_derived_metric(metric_id: str):
+    """Return one player-visible metric; hidden IDs are indistinguishable from missing IDs."""
+    if not state.orchestrator:
+        raise HTTPException(
+            status_code=503, detail={"code": "derived_metric.orchestrator_unavailable"},
+        )
+    result = state.orchestrator.derived_metric_public_state(metric_id)
+    if result.get("status") in {"hidden", "missing"} and result.get("error_code") in {
+        "", "derived_metric.not_found",
+    }:
+        raise HTTPException(status_code=404, detail={"code": "derived_metric.not_found"})
+    return result
 
 
 @router.get("/objectives")

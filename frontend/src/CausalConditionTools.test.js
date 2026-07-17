@@ -15,7 +15,7 @@ test('catalog exposes every runtime condition kind, operator, and aggregate sour
   assert.deepEqual(CAUSAL_CONDITION_KINDS.map(item => item.key), [
     'anchored_inventory', 'metric', 'parameter', 'entity_field', 'entity_tag', 'entity_state',
     'actor_attribute', 'actor_state', 'actor_trait', 'actor_membership', 'relationship',
-    'ongoing_event', 'event_history', 'time', 'objective_progress', 'aggregate_metric', 'world_truth', 'actor_belief',
+    'ongoing_event', 'event_history', 'time', 'objective_progress', 'derived_metric', 'aggregate_metric', 'world_truth', 'actor_belief',
     'player_knowledge', 'knowledge_confidence', 'knowledge_freshness', 'knowledge_secrecy', 'investigation', 'phase',
   ])
   assert.deepEqual(CAUSAL_CONDITION_OPERATORS.map(item => item.key), [
@@ -43,6 +43,7 @@ test('default conditions use available entity actor resource relationship and ob
     resources: [{ name: 'grain', kind: 'asset' }, { name: 'morale', kind: 'metric' }],
     relationshipTypes: [{ relationship_type_id: 'allied' }],
     objectives: [{ objective_id: 'hold_frontier' }],
+    derivedMetrics: [{ metric_id: 'frontier_readiness' }],
     eventTypes: ['shortage'], ongoingEvents: [{ event_type: 'relief_operation' }],
   }
   assert.equal(defaultCausalCondition('anchored_inventory', catalogs).name, 'grain')
@@ -52,6 +53,8 @@ test('default conditions use available entity actor resource relationship and ob
     target_entity_id: 'fort', field: 'strength',
   })
   assert.equal(defaultCausalCondition('objective_progress', catalogs).entity_id, 'hold_frontier')
+  assert.equal(defaultCausalCondition('derived_metric', catalogs).name, 'frontier_readiness')
+  assert.deepEqual(serializeCausalCondition(defaultCausalCondition('derived_metric', catalogs)), { kind: 'derived_metric', name: 'frontier_readiness', operator: 'gte', value: 0 })
   assert.equal(defaultCausalCondition('ongoing_event', catalogs).name, 'relief_operation')
   assert.equal(defaultCausalCondition('actor_belief', catalogs).target_entity_id, 'guard')
   assert.equal(defaultCausalCondition('knowledge_confidence', catalogs)._knowledge_layer, 'player_knowledge')
@@ -103,6 +106,7 @@ test('serialization rejects incomplete references malformed JSON and unsafe valu
   assert.throws(() => serializeCausalCondition({ kind: 'time', operator: 'eq', _value_type: 'number', _value_text: 'Infinity', _filters_text: '{}' }), /有限数字/)
   assert.throws(() => serializeCausalCondition({ kind: 'time', operator: 'eq', _value_type: 'text', _value_text: 'x', _filters_text: '[]' }), /JSON 对象/)
   assert.throws(() => serializeCausalCondition({ kind: 'phase', field: 'chapter', operator: 'eq', _value_type: 'number', _value_text: '2', _filters_text: '{}' }), /phase_id 或 metadata\.xxx/)
+  assert.throws(() => serializeCausalCondition({ kind: 'derived_metric', operator: 'gte', _value_type: 'number', _value_text: '1', _filters_text: '{}' }), /派生指标/)
   assert.throws(() => serializeCausalConditions([], { requireOne: true }), /至少添加一个完整条件/)
 })
 

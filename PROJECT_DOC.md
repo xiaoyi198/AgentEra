@@ -61,6 +61,7 @@
 │   ├── orchestrator.py              # 【核心】主循环，驱动整个模拟
 │   ├── court_graph.py               # 朝廷层级图（官员查询 + 坐标委托 WorldState）
 │   ├── timer_system.py              # 定时器系统（heapq + SQLite 持久化）
+│   ├── wakeup_runtime.py            # 持久 Agent Wakeup Outbox（at-least-once）
 │   ├── chain_log.py                 # 调用链日志（JSONL 追加写入）
 │   ├── world_state.py               # 世界状态数据库（实体/库存/关系/事件/资源代币）
 │   ├── memory_compressor.py         # 【核心】LLM 记忆压缩（Agent 记忆超阈值时自动摘要）
@@ -146,11 +147,12 @@ run() 主循环（0.25s 间隔）
   ├─ 用真实流逝时间推进 sim_time（不被 LLM 阻塞）
   │
   └─ _tick() 每帧处理
-      ├─ 1. 检查到期定时器 → 加入待唤醒队列
+      ├─ 1. claim 到期定时器 → 以稳定 ID 加入持久 Wakeup Outbox
       ├─ 1.5 弹出到期的 OngoingEvent → _apply_matured_event()（写回实体状态/库存）
-      ├─ 2. 处理待唤醒
-      │     ├─ 皇帝奏折 → 添加到 TickResult.new_memorials
-      │     └─ Agent 调用 → 后台 asyncio.Task（不阻塞主循环）
+      ├─ 2. claim Outbox pending 唤醒
+      │     ├─ 皇帝奏折 → Issue/奏折落地后 ACK
+      │     ├─ Agent 调用 → 后台 asyncio.Task（不阻塞主循环）
+      │     └─ 成功 ACK；Agent/Router 异常或取消则 retry 为 pending
       ├─ 3. 处理玩家操作队列
       ├─ 4. 收集在途公文状态
       └─ 5. Token 统计
@@ -162,6 +164,7 @@ run() 主循环（0.25s 间隔）
 | `run(tick_interval=0.25)` | 主循环，实时推进 sim_time；启动 persistor 后台任务 |
 | `_tick()` | 单次 tick：检查定时器 → 弹出到期事件 → 派发唤醒 → 处理玩家操作 |
 | `_process_agents_background()` | 后台并行调用 Agent → Router 批量处理 → 执行指令 |
+| `runtime_snapshot()` / `restore_runtime_snapshot()` | 统一自动存档、手工存档与启动恢复的运行时字段 |
 | `_call_agent_safe()` | 调用单个 Agent，记录 chain log，异常安全 |
 | `_apply_matured_event(ev)` | 应用到期 OngoingEvent 的 expected_result（更新状态 + 库存） |
 | `_build_fc_context()` | 组装 FCContext |
@@ -424,7 +427,19 @@ BaseAgent (抽象基类)
 
 ### 3.10 timer_system.py — 定时器系统
 
-与 DEV_GUIDE 一致，无重大变更。
+- `claim_due(current_time)`：从 heap claim 到期 Timer，但保留 SQLite 行并进入进程内 claimed 集合。
+- `ack(timer_id)`：只有对应 Wakeup 已完成时才删除 SQLite 行。
+- `release_claim(timer_id)`：Outbox 容量或校验失败时把 Timer 放回 heap。
+- `pop_due()` 保留兼容语义，内部执行 claim 后立即 ACK；新 Orchestrator 路径必须使用 claim/ack。
+- 重启会从 SQLite 重新加载尚未 ACK 的 Timer；结合稳定 `timer:<timer_id>` delivery ID，可与已持久 Outbox 条目幂等汇合。
+
+### 3.10a wakeup_runtime.py — 持久唤醒 Outbox
+
+- 状态机：`pending → inflight → ack/remove`；失败和取消执行 retry，重启把 `inflight` 恢复为 `pending`。
+- 交付契约是 **at-least-once**，不是 exactly-once。崩溃可能重放，但不能因为 Timer 先删除或内存列表丢失而静默漏投。
+- 稳定 ID：Timer 使用 `timer:<timer_id>`，Event 使用 `event_id + target` 哈希，Chain 使用 `chain_id + target + canonical payload` 哈希；无来源 ID 的兼容路径使用持久 sequence。
+- 容量边界：32,768 条、单 payload 256 KiB、总 payload 64 MiB，并限制嵌套深度、节点数和 ID 长度；仅接受 JSON-safe 数据，损坏快照原子 fail closed。
+- 兼容旧 FC handler 的 list-like 表面（`append`、遍历、下标、`len`、`clear`），新代码应使用 `enqueue/claim_pending/ack/retry`。
 
 ---
 
@@ -547,6 +562,8 @@ BaseAgent (抽象基类)
   - `start()` / `stop()` — 启停 flush loop
 
 设计要点：mark_*_dirty 只标记，不做 IO；flush() 批量序列化并原子写入（.tmp → rename）。
+
+自动 flush、手工 `save_state()` 与启动加载统一通过 `Orchestrator.runtime_snapshot()` / `restore_runtime_snapshot()`，覆盖 sim time、时间倍率、随机/因果事件、时间规则、Temporal/Lifecycle、Deferred Timeline、Wakeup Outbox、Rhythm、Outcome Feedback、Action、Issue、Objective 与 Actor runtime，避免自动存档遗漏新运行时字段。
 
 ---
 
@@ -2199,3 +2216,315 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 
 - The v0.30.0 release gate passed 637 Python tests with 2 external-API environment-gated tests skipped, 50 frontend tests, Python compile, ESLint, Vite production build, zero-issue `example_frontier` Registry validation, added-line credential/encoding scans, and `git diff --check`. No external API request was attempted.
 - P1.5 is complete, while the persistent gameplay-framework goal remains **active**. The next phase is P1.6 DLC-derived metrics and aggregate formulas; P2 remains open.
+
+## Frontend display-text encoding fix (2026-07-15)
+
+- React only interprets `\uXXXX` escapes inside JavaScript string literals. The same characters inside a raw JSX text node or a quoted JSX attribute are emitted to the DOM literally, which caused empty-state and DLC capability copy to display as `\u5f53\u524d...`.
+- Display copy in `frontend/src/App.jsx`, `frontend/src/CapabilityPanel.jsx`, and `frontend/src/DLCContentEditors.jsx` now uses real UTF-8 characters for JSX text and quoted attributes. JavaScript string literals may continue to use Unicode escapes because the JavaScript parser decodes them before rendering.
+- The fix stays at the source boundary rather than adding a global runtime decoder, avoiding accidental reinterpretation of user-authored text, JSON, backslashes, or already-decoded content.
+- Browser verification scanned `/`, `/editor.html`, `/tianji.html`, and `/dlc.html` with no visible `\uXXXX` sequences. The frontend test suite (58 tests), ESLint, and the Vite production build passed.
+
+## Release architecture note: Generation-bound DLC derived metrics (v0.31.0)
+
+### Deterministic metric contract and evaluation
+
+- `multiagent_framework/derived_metrics.py` owns the single `DerivedMetricCatalog` contract. A definition contains stable `metric_id`, presentation fields, bounds/precision, `enabled`, `audiences`, `missing_policy`, safe Metadata and one normalized formula tree.
+- Formula evaluation is deterministic and LLM-free. The 17 operations cover constants, direct sources, derived dependencies, world aggregation, arithmetic, weighted sums, range limiting, rounding and fallback. Direct sources read anchored inventory base value, entity metric/parameter, Actor attribute or simulation day; aggregate sources additionally cover entity count, relation edges and ongoing events with `sum/avg/min/max/count`.
+- Catalog construction computes a topological order, rejects missing dependencies and cycles, and enforces 128 definitions, 12 levels, 256 nodes and 64 children per node. Runtime evaluation rejects non-finite numbers and division by zero, applies definition bounds/precision, implements `fail`/`zero` missing policies and reuses a batch-local dependency cache.
+
+### Generation ownership and shared consumers
+
+- `DLCRuntimeGeneration` stores the metric catalog together with the DLC package snapshot. Publish, reload, encrypted archive recovery, rollback and restart restore it as part of the same Generation; no consumer should retain a catalog from an older Generation.
+- Objective conditions with `kind: derived_metric`, causal conditions with the same fact kind, Agent prompt context, the main UI and API all delegate to the active catalog. Rule and Objective evaluation require the `rule` and `objective` audiences respectively; Agent prompt assembly requests only `agent` metrics and labels them as deterministic read-only context.
+- Public endpoints `GET /api/derived-metrics` and `GET /api/derived-metrics/{metric_id}` expose only `player` metrics from the current Generation. Public payloads omit authored formula trees, Metadata and internal exception details. The UI Manifest renderer accepts a controlled `derived_metrics` Dashboard widget and never executes DLC code.
+
+### Audience isolation and prompt budgets
+
+- `player`, `ui`, `agent`, `rule` and `objective` are explicit allow-list audiences, not display hints. A metric hidden from an audience returns no usable value to that consumer, preventing Objective/Rule/Prompt code paths from bypassing authored visibility.
+- Runtime settings add `knowledge_context_max_records`, `knowledge_context_char_budget`, `derived_metric_context_max_records` and `derived_metric_context_char_budget`. The derived-metric limits are bounded to 0-64 records and 0-16000 characters; zero disables metric prompt injection. Only evaluated names/IDs/values/units enter the prompt, never formulas or Metadata.
+
+### DLC Studio formula-tree authoring
+
+- `frontend/src/DerivedMetricEditor.jsx` and `DerivedMetricEditorTools.js` provide a Chinese visual tree editor for all operations, sources, aggregates, audience flags, missing policy, common filters and safe Metadata. Catalog-backed suggestions cover entities, Actors, resources, entity values, relationship types, events and existing derived metrics.
+- Client validation mirrors the backend's finite-number, source-field, range, precision, depth and node constraints, and performs self-reference, missing dependency, duplicate ID and full-graph cycle analysis before save. `derived_metrics` participates in Studio normalization, import/export, Keyed Diff, History and Undo/Redo.
+- `example_frontier` v1.10.0 demonstrates a bounded readiness projection that combines entity metric, Actor attribute and anchored inventory base value, then reuses the result in Objective, failure Objective, causal rules and a Dashboard widget.
+
+### Release state
+
+- The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
+- P1.6 is complete while the persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete; the next phase is P2.1 DLC calendars, seasons, turn/meeting/task cycles and automatic pause conditions. P2 remains open.
+
+## Release architecture note: DLC temporal contracts and runtime cycles (v0.32.0)
+
+### Contract and validation boundary
+
+- `content.json.time_system` is normalized and parsed by `multiagent_framework/temporal_contract.py`. A contract owns one optional calendar, seasons, cycles, boundary-event projections and automatic-pause definitions; topic-specific names and descriptions remain DLC data.
+- Calendars support non-uniform month lengths, custom weekday loops and arbitrary epoch/start dates. Seasons are day-of-year ranges and may cross the year boundary, but the Registry rejects overlaps. Cycles use stable IDs plus `kind`, `period_days`, `duration_days` and `offset_days`.
+- Cross-reference validation covers cycle/season/month filters, boundary target Agent IDs, projected Issue Type IDs and `derived_metric` pause conditions. The time contract is part of the active expanded DLC plan and therefore changes atomically with its Generation.
+
+### Runtime ownership and deterministic boundaries
+
+- `TemporalRuntime` converts authoritative game seconds to DLC dates and polls day boundaries in deterministic order. Supported markers are `day_start`, `week_start`, `month_start`, `year_start`, `season_start`, `season_end`, `cycle_start` and `cycle_end`.
+- Boundary events use stable IDs derived from the boundary definition and marker identity. Dense-day polling is atomic and bounded, so snapshot cursors never skip the tail of a partially processed day. Generated events continue through the framework-owned Event/Issue/Agent pipeline; DLC data never supplies executable Python.
+- Automatic pauses can be condition-based or marker-based, reuse the causal condition evaluator, and support `all/any`, cooldown, once and edge-triggered receipts. Snapshot/restore persists the poll cursor, receipts and recent safe pause summaries. Hot reload preserves receipts with stable pause IDs and advances the cursor to the current time, preventing historical boundary replay.
+
+### Public state and authoring surfaces
+
+- `TickResult.time_system` and `GET /api/time-system` expose only the current calendar date, current season, enabled cycle states, authored public pause descriptions and bounded receipts. Condition trees, threshold values and hidden fact references are excluded. `TickResult.auto_pause` carries only the fired public reason and safe marker summary.
+- The main React application normalizes that projection through `TemporalStateTools.js`, displays the DLC date/season and active cycle progress, and keeps an auto-pause notice separate from the resume action. `TemporalSystemEditor.jsx` provides the detailed Chinese Studio authoring surface and serializes through `TemporalSystemTools.js`.
+- `example_frontier` v1.11.0 is the reference package for calendars, four seasons, concurrent command/meeting/task cycles, boundary Issue projection and condition/boundary pauses. AgentEra v0.32.0 completes P2.1; the persistent gameplay-framework goal remains active for P2.2-P2.4.
+
+## Dynamic lifecycle architecture (v0.33.0)
+
+### Contract and validation
+
+- `content.json.lifecycle` is normalized by `normalize_lifecycle_document()` and parsed by `LifecycleContract`. The contract is Generation-bound and contains `actor_templates`, `positions`, `transitions`, `enabled`, and `recent_feedback_limit`.
+- `DLCRegistry.validate()` checks template source Agents, entity/location/organization references, initial incumbents and candidates, calendar month/season/cycle references, causal-condition resources, and organization/entity operation targets. Dynamic formatted references are allowed only where the lifecycle runtime can resolve them.
+- The operation allowlist is fixed to `spawn_actor`, `retire_actor`, `appoint_position`, `vacate_position`, `transform_entity`, `split_organization`, and `merge_organizations`; authored lifecycle data cannot name Python handlers, React components, URLs, or executable code.
+
+### Runtime and atomicity
+
+`LifecycleRuntime` evaluates manual calls, temporal markers, and continuous conditions. A matched transition is expanded into one WorldCommand batch and applied atomically by the gameplay effect runtime. A later command failure rolls back the entire batch, including Actor, entity, membership, position, and Agent projections. Stable receipt IDs provide idempotency; transition sequence, once receipts, cooldown timestamps, edge-trigger latches, feedback, and dynamic definitions are stored in the gameplay-effect lifecycle state.
+
+Actor retirement writes a tombstone rather than deleting authoritative history. It disables the dynamic Agent, vacates every held position, removes active memberships, and can remove the projected entity. Organization split/merge creates or transforms organization entities and moves memberships through the same atomic command path. Position selection is deterministic: configured score fields are evaluated in order and Actor ID is the final stable tie-breaker.
+
+### Dynamic Agent projection and memory
+
+A template Agent must reference a static `source_agent_id`. At spawn time the runtime copies the source Agent's model profile, task-model policies, tool permissions, multi-round limits, memory policy, and Provider routing, then applies the template/operation patch. The new Agent receives its own stable ID. Existing memory is migrated into the dynamic Agent's namespace before later turns diverge. Tombstoning the Actor disables the Agent, while hot reload only preserves definitions and state that remain valid in the promoted Generation.
+
+### Orchestrator, archive, and public state
+
+The orchestrator polls lifecycle transitions during simulation ticks and includes runtime snapshots in save/load. DLC initial load, hot reload, promotion rollback, encrypted Generation Archive, and restart recovery publish the lifecycle contract with the other DLC catalogs. Public gameplay state exposes only the bounded lifecycle projection and recent feedback; it does not expose hidden causal operands, prompt bodies, Provider credentials, or source-Agent private memory.
+
+### DLC Studio and reference package
+
+`frontend/src/LifecycleEditor.jsx` and `LifecycleEditorTools.js` implement the “动态生命周期” editor. It covers template Actor/entity/Agent fields, position candidates and scoring, nine transition semantics, ten trigger types, common causal conditions, seven operations, feedback, local validation, normalization, serialization, and editor-only-field stripping. The editor is integrated into `DLCStudio.jsx` and uses the existing import/export, diff, history, and save pipeline.
+
+`example_frontier` v1.12.0 is the reference package: it defines a dynamic patrol-deputy Actor/entity/Agent template, a scored patrol-captain position, cycle recruitment, succession, retirement, seasonal entity transformation, organization split, and organization merge. AgentEra v0.33.0 completes gameplay-framework phase P2.2.
+
+## Rhythm director architecture (v0.34.0)
+
+### Generation-bound contract
+
+`content.json.rhythm` is normalized by `normalize_rhythm_document()` and parsed into an immutable `RhythmContract`. The contract contains global admission limits, attention capacity and per-game-day recovery, queue and feedback bounds, urgency costs, global quiet-period policy, and up to 256 ordered `RhythmRule` entries. Rules match declared Issue Types and/or Event Types and may override attention cost, active limits, cooldowns, mutex groups, quiet periods, escalation, condition-driven de-escalation, and climax settlement.
+
+`DLCRegistry.validate()` checks safe and unique rule IDs, referenced Issue Types, numeric bounds, urgency levels, escalation/de-escalation/climax level consistency, and all causal-condition references. The resolved primary DLC owns the active rhythm contract. The contract is published with its Generation during initial load, hot reload, encrypted archive restore, and rollback; an absent rhythm document preserves legacy behavior through a disabled empty contract.
+
+### Runtime admission and deterministic progression
+
+`RhythmRuntime` is the single admission controller for Issue creation and authored random-event injection. It restores attention according to authoritative `sim_time`, evaluates global and rule-specific active limits, attention cost, queue capacity, cooldown, mutex-group occupancy, and quiet periods, then records a bounded safe decision. Critical traffic can bypass quiet periods only when the DLC explicitly enables it. Suppressed random events never enter the world event queue.
+
+Accepted Issue candidates retain their matched rule and attention reservation. Candidates that cannot enter immediately may wait in the bounded rhythm queue and are retried deterministically. Polling during simulation ticks advances due escalation levels, evaluates de-escalation and climax conditions through the shared `CausalConditionEvaluator`, updates urgency/status, settles same-group Case and DecisionRequest records when configured, starts post-climax quiet periods, and releases attention when work reaches a terminal state.
+
+### State, orchestration, and public API
+
+The orchestrator installs the runtime as the Issue Manager rhythm controller and calls `RhythmRuntime.poll()` with the current world/knowledge/objective/time condition context. Save/load snapshots preserve attention, queued candidates, cooldowns, mutex/quiet-period state, matched rule state, escalation/de-escalation/climax receipts, and recent feedback. Reconfiguration preserves only state compatible with the promoted contract and current simulation time.
+
+`GET /api/rhythm` exposes capability-safe budget totals, active/queued counts, public rule summaries, recent feedback, and recent suppressed events. It excludes hidden causal operands and internal authored condition values. Tick results include the bounded rhythm transition summary so the UI and diagnostics can explain pacing changes without exposing world truth.
+
+### DLC Studio and reference package
+
+`frontend/src/RhythmEditor.jsx`, `RhythmEditorTools.js`, and `RhythmEditor.css` implement the “节奏导演” editor inside the existing DLC Studio save pipeline. The editor covers global budgets, urgency costs, rule ordering, Issue/Event matching, cooldowns, mutex and quiet periods, escalation tables, de-escalation conditions, climax conditions and settlement behavior, with Chinese field help and local reference validation. `RhythmEditorTools.test.js` covers normalization, serialization, event-type discovery, defaults, and invalid references/levels.
+
+`example_frontier` v1.13.0 is the reference package. It demonstrates a three-level border-security crisis, readiness-driven de-escalation, climax settlement, stabilization/intelligence rules, low-cost routine reports, and low-priority rumor suppression. AgentEra v0.34.0 completes gameplay-framework phase P2.3; the next phase is P2.4 player-understandable outcome feedback.
+
+## Outcome feedback architecture (v0.35.0)
+
+### Contract, sources and deterministic evaluation
+
+- `content.json.outcome_feedback` is normalized by `OutcomeFeedbackContract` and executed by the Generation-bound `OutcomeFeedbackRuntime`. The contract is optional; an absent block preserves legacy DLC behavior.
+- Feedback rules consume six framework-owned source kinds: `action`, `decision`, `case_closed`, `causal_event`, `lifecycle`, and `rhythm`. Rules may narrow matches by Action ID, Issue Type ID, Event Type, Derived Metric ID, and the shared causal-condition DSL. DLC data supplies declarations and player-facing copy only; it cannot inject executable code.
+- The runtime combines three complementary paths: automatic immediate command/metric deltas, authored rule feedback, and automatic case summaries. Delivery is deterministic and supports `immediate`, `delayed`, and `causal_reveal`; delayed entries are released by authoritative simulation time rather than wall-clock time.
+- Every source event uses a stable receipt. Replaying an Action, Decision, case closure, causal event, lifecycle event, or rhythm event therefore cannot create duplicate player messages. `recent_limit`, `pending_limit`, and `receipt_limit` keep delivered feedback, delayed work, and idempotency receipts bounded.
+
+### Persistence, reload and rollback
+
+- Snapshot state contains recent player-safe records, pending deliveries, receipts, and the active contract fingerprint. Restore validates and bounds every collection before it becomes authoritative runtime state.
+- Generation archive/restore and rollback include the outcome-feedback snapshot. A hot reload preserves compatible pending work and receipts when the contract fingerprint is unchanged; incompatible contracts are reconfigured without replaying old source events.
+- Delayed reports can create a follow-up Issue and optionally attach public evidence when delivered. The operation stays receipt-bound so restore, polling, or repeated API reads cannot duplicate side effects.
+
+### Public projection and UI surfaces
+
+- `GET /api/outcome-feedback` returns only the active Generation, enabled/capacity metadata, delivered player records, and bounded pending delivery summaries. Hidden causal-condition trees, thresholds, unrevealed facts, and internal source payloads are not exposed.
+- `TickResult.outcome_feedback` carries only newly delivered player-safe records. The React client merges them idempotently, while Generation changes, decisions, and restore operations refresh the authoritative endpoint state.
+- The `outcome_feedback` UI Manifest widget renders the main result panel. It presents immediate changes, delayed reports, case summaries, causal reveals, and deterministic metric reasons without a periodic live-region poll that would repeatedly announce the same message.
+- DLC Studio provides a detailed Chinese editor for global capacities, epsilon, automatic immediate feedback, case summaries, source kinds, delivery timing, cross-references, shared causal conditions, public copy, follow-up Issues, and evidence attachment. Editor-only stable card keys are stripped during serialization.
+- `example_frontier` v1.14.0 demonstrates an immediate patrol result, a delayed decision follow-up report, and a later causal reveal, and exposes the panel through its UI Manifest.
+
+## DLC 七步可玩性审计与跨题材验收（v0.36.0）
+
+### 模块与数据流
+
+- `multiagent_framework/dlc_playability.py`：纯静态、无副作用的 DLC 可玩性审计器，输出 `DLCPlayabilityReport`。七个稳定检查 ID 为 `player_surface`、`action_roles`、`issue_intake`、`costly_decision`、`world_simulation`、`outcome_feedback`、`progression`。
+- `DLCRegistry.audit_playability(dlc_id)`：读取当前包内容并生成审计报告；它与 `validate(dlc_id)` 分离，避免把可玩性建议错误升级为 Schema/跨引用错误。
+- `routers/dlc.py::_package_payload()`：列表和详情响应都附加 `playability`，因此 Studio 不需要在浏览器重写审计规则。
+- `frontend/src/PlayabilityAuditPanel.jsx`：中文 7 项验收面板，展示总分、配置证据、待补缺口与静态审计边界。
+- `frontend/src/PlayabilityAuditTools.js`：对后端报告做有界、容错的只读投影，并生成 DLC 列表徽章。
+
+```mermaid
+flowchart LR
+  JSON["bundle-v1 content.json"] --> Registry["DLCRegistry"]
+  Registry --> Validate["validate：配置合法性"]
+  Registry --> Audit["audit_playability：七步闭环"]
+  Audit --> API["/api/dlcs 列表与详情"]
+  API --> Studio["DLC Studio 中文验收面板"]
+  JSON --> Runtime["真实 Runtime playthrough"]
+  Runtime --> Proof["Action→Agent→Time→Causal→Feedback→Objective/Ending"]
+```
+
+静态报告结构保持：
+
+```json
+{
+  "dlc_id": "example_orbital",
+  "audit_version": "1.0",
+  "playable": true,
+  "passed_count": 7,
+  "total_count": 7,
+  "checks": []
+}
+```
+
+### 第二题材参考包
+
+`dlcs/example_orbital/` 是默认禁用、已发布的轨道救援参考 DLC。玩家是“轨道站长”，Agent 是“维护工程师”，维修额度使用资源目录的统一 `anchor_rate` 扣费。初始 Agent 报告生成 Issue，玩家基于有限证据选择巡查，行动唤醒 Agent 并发出 `orbital_patrol_started`；一游戏日后因果规则生成 `orbital_response_started`、应用世界效果、投递后果反馈并完成 `secure_orbital` 与 `orbital_safe` 胜利结局。所有关系类型使用 `orbital_*` 命名空间，避免与其他包发生全局 ID 冲突。
+
+`example_frontier` v1.15.0 新增等价的 Action→Causal 桥接规则。两个参考包 Registry 校验均为 0 error，七项审计均为 7/7。`tests/integration/test_cross_genre_dlc_playthrough.py` 使用临时 Registry 加载轨道包并执行完整运行时链路，证明新题材无需添加专属 Python/React 逻辑。
+
+### 第三题材参考包（v0.43.0）
+
+`dlcs/example_abyssal/` 是默认禁用、已发布的深海生存参考 DLC。玩家是“栖站指挥官”，命令控制“潜航工程师”，使用按资源目录 `anchor_rate` 计价的“维护配额”发起一游戏日深潜修复巡检，提高“压力壳完整度”并发布 `abyssal_patrol_started`。后续通用因果规则生成 `abyssal_response_started`，应用世界效果、投递结果反馈、完成 `secure_abyssal` 并锁定 `abyssal_safe` 胜利结局。
+
+该包完整声明 `abyssal_*` 命名空间的关系、能力、事件、目标、结局、时间、生命周期、节奏、三层知识和调查规则，不引入题材专属 Python/React 分支。`tests/integration/test_abyssal_dlc_playthrough.py` 在临时 Registry、WorldState、TimerSystem 与 Orchestrator 上执行真实七步链路。frontier、orbital、abyssal 三个参考包均为 Registry 0 error、静态审计 7/7。
+
+## DLC Studio 快速创作架构（v0.37.0）
+
+### 快速创建模块与原子写入边界
+
+- `frontend/src/QuickCreatePanel.jsx` 提供全中文批量录入工作台，实体表与 Agent/Actor 套件表彼此独立预览；只有预览无错误且存在实际变更时才允许提交。
+- `frontend/src/QuickCreateTools.js` 是无 React 副作用的解析与 Draft 构造层。它接受竖线或 Tab 分隔文本、忽略注释行与空行、验证稳定 ID 和类型，并用深拷贝生成新内容，绝不直接修改 Studio 当前 Draft。
+- Agent 行被视为一个不可拆分套件：Agent 或 Actor 任一 ID 冲突时，`skip` 策略整套跳过；`overwrite` 策略同时重建基础 Agent 与 Actor，并明确提示高级字段会被重置。所在实体既可以来自现有 `content.entities`，也可以来自同批实体输入。
+- 快速创建不直接写 DLC 文件。`QuickCreatePanel` 只把构造后的完整 Content 交给 `DLCStudio.jsx` 的统一保存入口，继续经过 Content Diff、用户确认、History、Undo/Redo、后端 Registry 校验和持久化。
+
+### 玩家身份编辑与引用完整性
+
+- `frontend/src/GameplayEditor.jsx` 可视化编辑 `content.gameplay.player`：身份 ID、显示名称、绑定 Actor、控制对象及其界面别名均提供中文说明。
+- `frontend/src/GameplayEditorTools.js` 负责规范化、Agent 建议和保存前校验。`direct` 表示玩家直接操控目标；`command` 表示玩家通过命令或委派影响目标。控制目标只允许 `entity` 或 `agent`，并必须引用当前 Content 中存在的 ID。
+- 智能填充优先选择已有 `role=player` Agent，否则选择第一个启用 Agent；若其 Actor 或所在实体可解析，则一起生成合理的玩家身份和控制对象草稿。未知的 `gameplay` 扩展字段在规范化与保存时保持不变，避免编辑器破坏未来 Schema。
+
+### 七步审计到编辑器的导航
+
+`PlayabilityAuditPanel.jsx` 只消费后端审计结果，并用稳定 `check_id` 映射到 Studio 页签；它不会在浏览器端复制可玩性规则。`DLCStudio.jsx` 接收导航请求并切换到玩家身份、UI Manifest、Agent、行动、Issue、事件、因果、时间、结果反馈、目标或结局编辑页。导航只改变当前页签，不修改 Draft。
+
+```mermaid
+flowchart LR
+  Text["批量文本"] --> Parse["QuickCreateTools 解析与校验"]
+  Player["玩家身份表单"] --> Normalize["GameplayEditorTools 规范化与引用检查"]
+  Audit["后端七步审计"] --> Navigate["PlayabilityAuditPanel 页签导航"]
+  Parse --> Draft["完整 Content Draft"]
+  Normalize --> Draft
+  Draft --> Save["DLCStudio 统一保存入口"]
+  Save --> Diff["Diff 与确认"]
+  Diff --> Registry["后端 Registry 校验与持久化"]
+```
+
+### 发布状态
+
+v0.37.0 新增 9 项前端工具测试，覆盖中文解析、原子套件创建、缺失引用、冲突跳过/覆盖、玩家身份规范化、自动建议、引用与重复校验，以及 `gameplay` 扩展字段保留。发布回归要求运行完整前端测试、ESLint、生产构建和 `git diff --check`。
+
+## Long-session catch-up event time architecture (v0.38.0)
+
+### Effective event time
+
+`EventObject.generated_at` is the authoritative occurrence time for authored temporal boundaries, scheduled random events, and materialized causal children. `Orchestrator._effective_event_time()` normalizes that value to the elapsed simulation window `[0, current_sim_time]`; invalid or non-finite external values fall back to the current simulation time. This prevents future timestamps from executing world effects ahead of the simulation while preserving valid historical timestamps during catch-up.
+
+`inject_event()` passes the normalized time to `CausalEventEngine.observe()` and to its `CausalConditionContext`. Therefore a child with `delay_days=1` is scheduled one game day after the source occurrence, not one day after the catch-up poll. Event wakeups also carry the normalized `generated_at` so downstream player projection retains the same clock.
+
+### Runtime consumers
+
+The temporal, random, and causal admission paths call `RhythmRuntime.allow_event()` with each event occurrence time. Causal world-command batches execute with the child event time, preserving command receipts and inventory-ledger timestamps. Player-facing Issues are opened through the internal `_open_issue_at()` path, so `created_at`, deadlines, DecisionRequest deadlines, and overdue projection are derived from the source occurrence. Causal outcome feedback is recorded at the child event time; the normal end-of-tick feedback poll at current time immediately delivers delayed reports whose due time has already elapsed.
+
+The public `open_issue()` API remains current-time based for ordinary callers. Historical time is only selected when the orchestrator has an authoritative source event timestamp.
+
+### Ordering boundary
+
+This release does not introduce a single global chronological merge across temporal, lifecycle, random, and causal producers. Existing tick phases remain intact. v0.38.0 guarantees that each produced event keeps its own authoritative time inside those phases, which fixes delay, cooldown, receipt, Issue, and feedback semantics without changing the broader phase-order contract.
+
+## 跨来源统一时间队列架构（v0.39.0）
+
+v0.39.0 在 `Orchestrator._tick()` 内引入统一的、仅存在于当前 tick 的最小堆时间线。时间边界事件、生命周期 marker 和随机事件先由各自的确定性生产者物化，再按以下稳定键入队：
+
+```text
+(effective_event_time, source_rank, insertion_sequence)
+```
+
+`effective_event_time` 来自事件权威 `generated_at` 或 marker `sim_time`，并统一经过 `_effective_event_time()` 校正。`source_rank` 只负责同一时刻的稳定兼容顺序：
+
+```text
+0 temporal boundary
+1 lifecycle marker
+2 random event
+3 causal event
+4 current-time condition lifecycle（队列清空后执行）
+```
+
+因果 pending 不会一次性提前弹出。`CausalEventEngine.next_due_key(now)` 返回最早到期的 `(due_at, event_id)`，Orchestrator 每次将该键与堆顶比较，只有因果事件确实更早或轮到同刻 rank 3 时才用 `poll(max_events=1)` 消费。这样 temporal/random 注入产生的零延迟因果事件也能在下一次循环立即加入比较，而不会被固定阶段推迟到所有较晚条目之后。
+
+生命周期 marker 按各自历史 `sim_time` 单独轮询，反馈、Receipt、条件上下文和结果中的 `sim_time` 都使用 marker 时间。历史轮询传入 `evaluate_conditions=False`，因此 condition-triggered transition 不会在每个补算日重复更新 latch；队列完成后只在当前 `_sim_time` 评估一次条件型生命周期。
+
+### 安全预算边界
+
+统一队列不取消既有防风暴预算：每 tick 最多消费 128 条因果事件，生命周期总尝试预算为 256。预算内保证上述跨来源顺序。若同一 tick 的到期因果事件超过 128 条，剩余 pending 会保留到下一 tick；因为 temporal/random 生产者游标已经推进，已物化的非因果条目仍会完成，因此不能把该模式描述为任意负载下的无限严格排序。生命周期超过 256 次尝试时返回 `truncated=true`；DLC 作者应避免单次 catch-up 触发超过预算的大规模 marker transition，后续阶段需要设计可持久化的 deferred timeline 才能消除此边界。
+
+### 状态与兼容性
+
+统一时间线本身不进入存档，持久状态仍由 Temporal cursor、Random generator snapshot、Causal pending、Lifecycle Receipt/latch 和世界命令账本承担。同刻来源优先级保持 v0.38.0 以前的来源顺序，因此普通短 tick 行为不变；变化只发生在长跳时不同来源拥有不同历史时间的场景。
+
+## Persistent budget-deferred timeline architecture (v0.40.0)
+
+v0.40.0 replaces the v0.39.0 `_tick()`-local heap with `multiagent_framework.timeline_runtime.DeferredTimelineRuntime`. Once a producer materializes a temporal event, lifecycle marker, random event, or condition continuation, the JSON-safe item enters the persistent queue before execution. The stable key is:
+
+```text
+(occurrence_time, source_rank, sequence)
+source_rank: temporal=0, lifecycle marker=1, random=2, causal=3, condition lifecycle=4
+```
+
+Causal work remains authoritative in `CausalEventEngine.pending` rather than being copied. Every drain iteration compares `next_due_key()` with the deferred head. When the 128-event causal budget is exhausted and the oldest causal item precedes the head, the tick stops and preserves every later item. Temporal and Random producers are not polled while the deferred queue is non-empty, preventing cursor advancement from producing unbounded newer work.
+
+### Lifecycle continuation and generation semantics
+
+`LifecycleRuntime.poll()` accepts `start_transition_index`; `LifecyclePollResult` exposes `next_transition_index`. If a marker or condition set exceeds the remaining 256-attempt lifecycle budget, the head entry is updated in place and the next tick begins at the first unattempted transition. This avoids both receipt-prefix replay and permanent tail starvation.
+
+Deferred lifecycle entries store only `archive_id`, generation, fingerprint, cursor, and runtime state. The full `LifecycleContract.to_dict()` is deduplicated in a bounded archive keyed by generation fingerprint. If a DLC hot reload changes the current fingerprint, the Orchestrator constructs an isolated runtime from the archived contract, preserving committed semantics for already materialized work. Unreferenced archives are pruned.
+
+### Persistence, backpressure, and failure behavior
+
+`save_state()` now includes `deferred_timeline`: the next sequence, sorted entries, and contract archives. `load_state()` restores it atomically; missing data from older saves means an empty queue. The entry limit is 32,768 and the archive limit is 64. If publication exceeds capacity, Temporal and Random snapshots are restored and the tick reports `timeline_backpressure` rather than silently losing cursor output.
+
+Malformed kinds, duplicate or regressing sequences, non-finite timestamps, invalid payloads, and oversized entry/archive collections fail closed: the timeline is cleared, `last_restore_error` is recorded, and the remainder of the save can still load. World Command and Lifecycle Receipt ledgers continue to provide idempotency for replayable side effects.
+
+### Remaining boundary
+
+v0.40.0 removes the two v0.39.0 budget-ordering gaps: later temporal/random work no longer crosses the 129th earlier causal event, and lifecycle marker tails no longer disappear after the Temporal cursor advances. The queue and per-tick execution budgets remain intentionally bounded. Agent wakeups are still not a transactional message queue, so future long-session work should add crash-point injection, save-size stress, and explicit delivery semantics.
+
+## Deferred timeline operations and crash replay architecture (v0.41.0)
+
+v0.41.0 keeps the v0.40.0 snapshot schema additive and backward compatible while adding an aggregate operational projection. `DeferredTimelineRuntime.public_status(sim_time=...)` exposes only queue counts, capacity utilization, oldest occurrence age, archive usage, persistent backpressure/restore-failure counters, and the latest opt-in snapshot measurement. It never returns timeline payloads, Agent IDs, entity IDs, archive contents, or hidden world facts.
+
+### Snapshot pressure and operational counters
+
+`measure_snapshot()` builds the canonical snapshot, serializes it with deterministic compact JSON, and records exact UTF-8 bytes plus build/serialization milliseconds. The measurement is opt-in because encoding a large queue is real work; routine metrics reads only return the last aggregate measurement. Backpressure and restore-failure counters are stored in `deferred_timeline.operational`, so long-session evidence survives save/load. A malformed restore atomically clears untrusted entries and archives but preserves already accumulated local operational evidence before incrementing the failure counter.
+
+A 20,000-entry lifecycle-marker stress regression covers snapshot construction, exact byte measurement, restore, and complete heap drain. The hard runtime limits remain 32,768 pending entries and 64 archived lifecycle contracts.
+
+### Safe API and monitoring boundary
+
+`GET /api/timeline` returns the public aggregate status and a stable empty structure before Orchestrator initialization. `OperationalMetricsCollector` copies only an explicit field whitelist and sanitizes restore failures to bounded error codes. Prometheus exports pending/capacity/utilization/oldest-age/archive gauges, monotonic backpressure and restore-failure counters, and last-snapshot size/timing gauges.
+
+### Publication rollback and replay idempotency
+
+Temporal/Random polling plus `enqueue_many()` is treated as one publication transaction. Capacity failure restores both producer snapshots, leaves the deferred queue unchanged, increments backpressure once, and reports `timeline_backpressure` in the tick result.
+
+Crash-point tests now cover two durable-side-effect windows: a World Command committed before Causal queue acknowledgement, and a Lifecycle Receipt committed before lifecycle cursor acknowledgement. Restarting from the pre-ack runtime snapshot must replay the durable ledger result without applying inventory changes or dynamic Actor creation twice. Command normalization therefore preserves an explicitly present empty `reason` field; removing it would change the canonical payload and incorrectly produce `idempotency_conflict`.
+
+Agent wakeup delivery now uses the persisted `WakeupOutboxRuntime` at-least-once contract. Timer/Event/Chain deliveries have stable IDs, persisted `inflight` entries replay as `pending`, and Timer SQLite rows survive until terminal wakeup completion. Exactly-once is still not claimed because a crash after a downstream side effect but before Outbox ACK may replay; receipt-backed World Command, Issue, Lifecycle, and Action boundaries remain responsible for idempotency.

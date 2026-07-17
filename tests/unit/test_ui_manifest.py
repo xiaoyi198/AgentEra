@@ -28,7 +28,8 @@ def test_default_manifest_is_complete_and_theme_neutral():
         "dashboard", "world", "relations", "debug",
     }
     assert {item["kind"] for item in manifest["dashboard"]["widgets"]} == {
-        "objectives", "issue_list", "issue_detail", "player_message", "in_transit",
+        "objectives", "derived_metrics", "issue_list", "issue_detail", "player_message", "in_transit",
+        "outcome_feedback",
     }
     lowered = str(manifest).lower()
     assert "emperor" not in lowered

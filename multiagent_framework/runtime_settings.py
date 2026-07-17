@@ -38,6 +38,10 @@ class AgentDefaultSettings:
     structured_memory_max_records: int = 500
     structured_memory_retrieval_limit: int = 8
     structured_memory_char_budget: int = 2400
+    knowledge_context_max_records: int = 24
+    knowledge_context_char_budget: int = 6000
+    derived_metric_context_max_records: int = 16
+    derived_metric_context_char_budget: int = 4000
 
 
 @dataclass
@@ -123,6 +127,10 @@ class RuntimeSettings:
                 structured_memory_max_records=_integer(agents.get("structured_memory_max_records", 500), "agent_defaults.structured_memory_max_records", 10, 100000),
                 structured_memory_retrieval_limit=_integer(agents.get("structured_memory_retrieval_limit", 8), "agent_defaults.structured_memory_retrieval_limit", 1, 256),
                 structured_memory_char_budget=_integer(agents.get("structured_memory_char_budget", 2400), "agent_defaults.structured_memory_char_budget", 128, 200000),
+                knowledge_context_max_records=_integer(agents.get("knowledge_context_max_records", 24), "agent_defaults.knowledge_context_max_records", 1, 256),
+                knowledge_context_char_budget=_integer(agents.get("knowledge_context_char_budget", 6000), "agent_defaults.knowledge_context_char_budget", 128, 200000),
+                derived_metric_context_max_records=_integer(agents.get("derived_metric_context_max_records", 16), "agent_defaults.derived_metric_context_max_records", 0, 64),
+                derived_metric_context_char_budget=_integer(agents.get("derived_metric_context_char_budget", 4000), "agent_defaults.derived_metric_context_char_budget", 0, 16000),
             ),
             action_agent=ActionAgentSettings(
                 max_rounds=_integer(action.get("max_rounds", 10), "action_agent.max_rounds", 1, 64),
@@ -300,6 +308,10 @@ def settings_schema() -> dict[str, Any]:
             field_meta("agent_defaults.structured_memory_max_records", "结构化记忆最大条数", "每个 Agent 可保存的事实、关系、承诺和经历记录上限。", minimum=10, maximum=100000, hot_reload=True),
             field_meta("agent_defaults.structured_memory_retrieval_limit", "每轮召回条数", "每次模型调用最多注入多少条相关结构化记忆。", minimum=1, maximum=256, hot_reload=True),
             field_meta("agent_defaults.structured_memory_char_budget", "召回字符预算", "注入提示词的结构化记忆最大字符数。", minimum=128, maximum=200000, hot_reload=True),
+            field_meta("agent_defaults.knowledge_context_max_records", "知识上下文最大条数", "每轮 Agent 调用最多注入多少条该 Agent 可知的事实与信念；只读取对应持有者的知识视图。", minimum=1, maximum=256, hot_reload=True),
+            field_meta("agent_defaults.knowledge_context_char_budget", "知识上下文字符预算", "限制知识与信念摘要占用的 Prompt 长度，避免隐藏知识外泄并控制 Token 消耗。", minimum=128, maximum=200000, hot_reload=True),
+            field_meta("agent_defaults.derived_metric_context_max_records", "派生指标上下文最大条数", "每轮 Agent 调用最多注入多少条当前世界的只读派生指标；设为 0 可关闭注入，过大会增加 Token 消耗。", minimum=0, maximum=64, hot_reload=True),
+            field_meta("agent_defaults.derived_metric_context_char_budget", "派生指标上下文字符预算", "限制派生指标摘要占用的 Prompt 长度；超出后按稳定顺序停止追加，不会注入公式或元数据。", minimum=0, maximum=16000, hot_reload=True),
             field_meta("memory.compression_temperature", "记忆压缩温度", "摘要模型的随机性；较低值更稳定，较高值更灵活。", minimum=0, maximum=2, hot_reload=True),
         ],
         "task_types": [

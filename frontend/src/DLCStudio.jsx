@@ -6,6 +6,15 @@ import { EndingEditor, ObjectiveEditor } from './ObjectiveEditors.jsx'
 import UIManifestEditor from './UIManifestEditor.jsx'
 import ActorEditor from './ActorEditor.jsx'
 import RelationshipTypeEditor from './RelationshipTypeEditor.jsx'
+import DerivedMetricEditor from './DerivedMetricEditor.jsx'
+import TemporalSystemEditor from './TemporalSystemEditor.jsx'
+import LifecycleEditor from './LifecycleEditor.jsx'
+import RhythmEditor from './RhythmEditor.jsx'
+import OutcomeFeedbackEditor from './OutcomeFeedbackEditor.jsx'
+import PlayabilityAuditPanel from './PlayabilityAuditPanel.jsx'
+import QuickCreatePanel from './QuickCreatePanel.jsx'
+import GameplayEditor from './GameplayEditor.jsx'
+import { playabilityBadge } from './PlayabilityAuditTools.js'
 import {
   commitContentHistory,
   createContentExport,
@@ -364,7 +373,7 @@ export default function DLCStudio() {
   const [packages, setPackages] = useState([])
   const [selectedId, setSelectedId] = useState('')
   const [detail, setDetail] = useState(null)
-  const [tab, setTab] = useState('entities')
+  const [tab, setTab] = useState('playability')
   const [selectedItem, setSelectedItem] = useState('')
   const [createForm, setCreateForm] = useState({ id: '', name: '', version: '0.1.0' })
   const [showCreate, setShowCreate] = useState(false)
@@ -432,11 +441,16 @@ export default function DLCStudio() {
     actions: content.actions?.length || 0,
     capabilities: content.capabilities?.length || 0,
     issue_types: content.issue_types?.length || 0,
+    derived_metrics: content.derived_metrics?.length || 0,
     objectives: content.objectives?.length || 0,
     endings: content.endings?.length || 0,
     personas: Object.keys(content.personas || {}).length,
     prompts: Object.keys(content.prompts || {}).length,
     ui_manifest: Object.keys(content.ui_manifest || {}).length,
+    time_system: (content.time_system?.cycles?.length || 0) + (content.time_system?.boundary_events?.length || 0) + (content.time_system?.auto_pause_conditions?.length || 0),
+    lifecycle: (content.lifecycle?.actor_templates?.length || 0) + (content.lifecycle?.positions?.length || 0) + (content.lifecycle?.transitions?.length || 0),
+    rhythm: content.rhythm?.rules?.length || 0,
+    outcome_feedback: content.outcome_feedback?.rules?.length || 0,
   }), [content])
   const modelProfiles = useMemo(() => Object.keys(modelConfig?.models || {}).sort(), [modelConfig])
 
@@ -461,6 +475,7 @@ export default function DLCStudio() {
   }, 'DLC draft created', { reloadDetail: false })
   const saveManifest = () => run(() => request(`${API}/${selectedId}/manifest`, { method: 'PUT', body: JSON.stringify(manifest) }), UI.manifestSaved)
   const validate = () => run(() => request(`${API}/${selectedId}/validate`, { method: 'POST' }), UI.validated)
+  const refreshPlayability = () => run(() => loadDetail(selectedId, false), '可玩性审计已刷新', { reloadDetail: false })
   const publish = () => run(() => request(`${API}/${selectedId}/publish`, { method: 'POST' }), UI.published)
   const toggleEnabled = () => run(() => request(`${API}/${selectedId}/enabled`, { method: 'POST', body: JSON.stringify({ enabled: !manifest.enabled }) }), manifest.enabled ? 'DLC disabled' : 'DLC enabled')
   const stageContentChange = (nextValue, success, options = {}) => {
@@ -602,6 +617,9 @@ export default function DLCStudio() {
   })
 
   const tabs = [
+    { key: 'playability', label: `可玩性验收 ${detail?.playability?.passed_count ?? 0}/${detail?.playability?.total_count ?? 7}` },
+    { key: 'quick_create', label: '快速创建' },
+    { key: 'gameplay', label: '玩家身份' },
     { key: 'entities', label: `${UI.entities} ${counts.entities}` },
     { key: 'actors', label: `Actor / 角色组件 ${counts.actors}` },
     { key: 'agents', label: `${UI.agents} ${counts.agents}` },
@@ -616,10 +634,15 @@ export default function DLCStudio() {
     { key: 'causal_condition_groups', label: `\u6761\u4ef6\u7ec4 ${counts.causal_condition_groups}` },
     { key: 'causal_rule_templates', label: `\u56e0\u679c\u6a21\u677f ${counts.causal_rule_templates}` },
     { key: 'causal_event_rules', label: `\u56e0\u679c\u4e8b\u4ef6\u94fe ${counts.causal_event_rules}` },
+    { key: 'time_system', label: `\u5386\u6cd5\u4e0e\u5468\u671f ${counts.time_system}` },
+    { key: 'lifecycle', label: `动态生命周期 ${counts.lifecycle}` },
+    { key: 'rhythm', label: `节奏导演 ${counts.rhythm}` },
+    { key: 'outcome_feedback', label: `\u7ed3\u679c\u53cd\u9988 ${counts.outcome_feedback}` },
     { key: 'time_rules', label: `\u8017\u65f6\u89c4\u5219 ${counts.time_rules}` },
     { key: 'actions', label: `\u884c\u52a8 ${counts.actions}` },
     { key: 'capabilities', label: `\u80fd\u529b ${counts.capabilities}` },
     { key: 'issue_types', label: `Issue \u7c7b\u578b ${counts.issue_types}` },
+    { key: 'derived_metrics', label: `\u6d3e\u751f\u6307\u6807 ${counts.derived_metrics}` },
     { key: 'objectives', label: `\u76ee\u6807 ${counts.objectives}` },
     { key: 'endings', label: `\u7ed3\u5c40 ${counts.endings}` },
     { key: 'personas', label: `Persona ${counts.personas}` },
@@ -637,7 +660,7 @@ export default function DLCStudio() {
       <aside className="dlc-sidebar">
         <div className="dlc-sidebar-title">{UI.contentPackages} <span>{packages.length}</span></div>
         {packages.map(item => <button key={item.manifest.id} className={selectedId === item.manifest.id ? 'active' : ''} onClick={() => setSelectedId(item.manifest.id)}>
-          <strong>{item.manifest.name}</strong><small>{item.manifest.id} &middot; v{item.manifest.version}</small><div><Badge tone={item.valid ? 'ok' : 'bad'}>{item.valid ? UI.statusValid : `${item.issues.length} issues`}</Badge><Badge>{item.manifest.status}</Badge>{item.manifest.enabled && <Badge tone="on">{UI.enabled}</Badge>}</div>
+          <strong>{item.manifest.name}</strong><small>{item.manifest.id} &middot; v{item.manifest.version}</small><div><Badge tone={item.valid ? 'ok' : 'bad'}>{item.valid ? UI.statusValid : `${item.issues.length} issues`}</Badge><Badge tone={playabilityBadge(item.playability).tone}>{playabilityBadge(item.playability).label}</Badge><Badge>{item.manifest.status}</Badge>{item.manifest.enabled && <Badge tone="on">{UI.enabled}</Badge>}</div>
         </button>)}
       </aside>
       <section className="dlc-main">
@@ -655,11 +678,19 @@ export default function DLCStudio() {
             <button disabled={busy || !detail.editable || !contentHistory.future.length} onClick={stageRedo}>{UI.redo}</button>
           </div>
           <nav className="dlc-tabs">{tabs.map(item => <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => { setTab(item.key); setSelectedItem('') }}>{item.label}</button>)}</nav>
-          {tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
+          {tab === 'playability' ? <PlayabilityAuditPanel report={detail.playability} busy={busy} onRefresh={refreshPlayability} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
+            : tab === 'models' ? <ModelPolicyEditor manifest={manifest} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} readOnly={!detail.editable} onTaskBinding={(task, profile) => updateModelBinding('tasks', task, profile)} onAgentBinding={(agent, profile) => updateModelBinding('agents', agent, profile)} />
             : tab === 'promotion' ? <ModelPromotionWorkbench key={selectedId} dlcId={selectedId} agents={content.agents || []} modelConfig={modelConfig} modelConfigError={modelConfigError} onModelConfigReload={loadModelConfig} />
               : !detail.editable ? <div className="dlc-readonly">{UI.legacyReadonly}</div>
-              : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
-                : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+              : tab === 'quick_create' ? <QuickCreatePanel key={`quick_create:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
+                : tab === 'gameplay' ? <GameplayEditor key={`gameplay:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} onNavigate={nextTab => { setTab(nextTab); setSelectedItem('') }} />
+                : tab === 'raw' ? <div className="dlc-raw"><textarea value={raw} onChange={event => setRaw(event.target.value)} spellCheck="false" /><button className="primary" onClick={saveRaw} disabled={busy}>{UI.save}{UI.fullData}</button></div>
+                : tab === 'time_system' ? <TemporalSystemEditor key={`time_system:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'lifecycle' ? <LifecycleEditor key={`lifecycle:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'rhythm' ? <RhythmEditor key={`rhythm:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
+                    : tab === 'outcome_feedback' ? <OutcomeFeedbackEditor key={`outcome_feedback:${selectedId}`} content={content} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'relationship_types' ? <RelationshipTypeEditor key={`relationship_types:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
+                  : tab === 'derived_metrics' ? <DerivedMetricEditor key={`derived_metrics:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : tab === 'actors' ? <ActorEditor key={`actors:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />
                   : ['entities', 'agents', 'resources'].includes(tab) ? <ItemEditor key={`${tab}:${selectedItem}`} kind={tab} items={content[tab] || []} selected={selectedItem} onSelect={setSelectedItem} onSave={saveItem} onDelete={deleteItem} entities={content.entities || []} actors={content.actors || []} agents={content.agents || []} modelProfiles={modelProfiles} />
                   : tab === 'objectives' ? <ObjectiveEditor key={`objectives:${selectedItem}`} content={content} selected={selectedItem} onSelect={setSelectedItem} onSaveContent={saveStructuredContent} busy={busy} />

@@ -19,12 +19,13 @@ import threading
 from typing import Any
 
 from .gameplay_contract import GameplayContract
+from .derived_metrics import DerivedMetricEvaluationContext
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _NUMERIC_OPERATORS = {"lt", "lte", "eq", "ne", "gte", "gt"}
 _TEXT_OPERATORS = {"eq", "ne"}
 _FACT_KINDS = {
-    "anchored_inventory", "metric", "parameter", "entity_status", "sim_day",
+    "anchored_inventory", "metric", "parameter", "derived_metric", "entity_status", "sim_day",
     "issue_count", "case_count", "decision_count", "action_count",
 }
 _GROUP_OPERATORS = {"all", "any", "not"}
@@ -155,6 +156,12 @@ def _parse_condition(value: Any, path: str, *, depth: int = 0) -> dict[str, Any]
             "name": _text(raw.get("name"), "objective.condition.invalid_name", path + ".name", limit=128),
             "operator": str(raw.get("operator", "gte")),
             "value": _number(raw.get("base_value") if kind == "anchored_inventory" and "base_value" in raw else raw.get("value"), "objective.condition.invalid_value", path + ".value"),
+        })
+    elif kind == "derived_metric":
+        result.update({
+            "name": _identifier(raw.get("name", raw.get("metric_id")), "objective.condition.invalid_derived_metric", path + ".name"),
+            "operator": str(raw.get("operator", "gte")),
+            "value": _number(raw.get("value"), "objective.condition.invalid_value", path + ".value"),
         })
     elif kind == "sim_day":
         result.update({"operator": str(raw.get("operator", "gte")), "value": _number(raw.get("value"), "objective.condition.invalid_value", path + ".value")})
@@ -343,6 +350,7 @@ def validate_objective_definitions(
     resources: Mapping[str, Mapping[str, Any]] | None = None,
     action_ids: Iterable[str] = (),
     issue_type_ids: Iterable[str] = (),
+    derived_metric_ids: Iterable[str] = (),
     gameplay: GameplayContract | None = None,
 ) -> list[ObjectiveValidationIssue]:
     issues: list[ObjectiveValidationIssue] = []
@@ -366,6 +374,7 @@ def validate_objective_definitions(
     known_entities = set(entity_ids)
     known_actions = set(action_ids)
     known_issues = set(issue_type_ids)
+    known_derived_metrics = set(derived_metric_ids)
     known_resources = dict(resources or {})
 
     for objective_index, definition in enumerate(parsed_objectives):
@@ -392,6 +401,8 @@ def validate_objective_definitions(
                         issues.append(ObjectiveValidationIssue("objective.condition.unknown_resource", f"Unknown resource: {name}", condition_path + ".name"))
                     elif str(resource.get("kind", "asset")) != expected_kind:
                         issues.append(ObjectiveValidationIssue("objective.condition.resource_kind", f"Resource {name} must be {expected_kind}", condition_path + ".name"))
+                if kind == "derived_metric" and condition.get("name") not in known_derived_metrics:
+                    issues.append(ObjectiveValidationIssue("objective.condition.unknown_derived_metric", f"Unknown derived metric: {condition.get('name')}", condition_path + ".name"))
                 if kind == "action_count" and condition.get("action_id") not in known_actions:
                     issues.append(ObjectiveValidationIssue("objective.condition.unknown_action", f"Unknown action: {condition.get('action_id')}", condition_path + ".action_id"))
                 if kind in {"issue_count", "case_count", "decision_count"} and condition.get("issue_type_id") and condition.get("issue_type_id") not in known_issues:
@@ -463,6 +474,8 @@ class ObjectiveManager:
         self._transition_order: deque[dict[str, Any]] = deque(maxlen=_MAX_TRANSITIONS)
         self._last_progress: dict[str, Any] = {}
         self._effect_overrides: dict[str, dict[str, Any]] = {}
+        self._derived_metric_provider: Any = None
+        self._derived_metric_actor_manager: Any = None
         self._fingerprint = _canonical_hash({"objectives": [], "endings": []})
 
     def configure(
@@ -498,6 +511,16 @@ class ObjectiveManager:
             self._generation = max(0, int(generation))
             self._gameplay = gameplay or GameplayContract()
             self._fingerprint = _canonical_hash(canonical)
+
+    def set_derived_metric_provider(self, provider: Any, *, actor_manager: Any = None) -> None:
+        """Bind the generation-scoped deterministic metric service used by objectives."""
+
+        evaluator = getattr(provider, "evaluate", None) if provider is not None else None
+        if provider is not None and not callable(evaluator):
+            raise TypeError("derived metric provider must expose evaluate()")
+        with self._lock:
+            self._derived_metric_provider = provider
+            self._derived_metric_actor_manager = actor_manager
 
     @staticmethod
     def _count_action_receipts(action_catalog: Any, condition: Mapping[str, Any]) -> int:
@@ -580,6 +603,29 @@ class ObjectiveManager:
                 actual = _get_field(item, "value", None) if item is not None else None
                 if item is None:
                     error = "value_not_found"
+        elif kind == "derived_metric":
+            evaluator = getattr(self._derived_metric_provider, "evaluate", None)
+            if not callable(evaluator):
+                error = "derived_metric_provider_unavailable"
+            else:
+                try:
+                    result = evaluator(
+                        str(condition.get("name", "")),
+                        DerivedMetricEvaluationContext(
+                            world_state=world_state,
+                            actor_manager=self._derived_metric_actor_manager,
+                            sim_time=sim_time,
+                        ),
+                        audience="objective",
+                    )
+                except Exception:
+                    error = "derived_metric_evaluation_failed"
+                else:
+                    if isinstance(result, Mapping) and result.get("status") == "ok":
+                        actual = result.get("value")
+                    else:
+                        code = result.get("error_code") if isinstance(result, Mapping) else ""
+                        error = str(code or "derived_metric_unavailable")
         elif kind in {"issue_count", "case_count", "decision_count"}:
             actual = self._count_issue_records(issue_manager, kind, condition, sim_time)
         elif kind == "action_count":

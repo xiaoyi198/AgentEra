@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from multiagent_framework.derived_metrics import DerivedMetricCatalog
 from multiagent_framework.objective_contract import (
     ObjectiveManager,
     normalize_ending_document,
@@ -243,3 +244,76 @@ def test_disabled_objective_and_ending_are_not_active_or_eligible():
     assert state["sandbox"] is True
     assert state["objectives"][0]["status"] == "disabled"
     assert state["endings"][0]["eligible"] is False
+
+
+
+def _derived_objective_definition():
+    return [{
+        "objective_id": "stabilize_alert",
+        "display_name": "Stabilize alert",
+        "completion": {
+            "kind": "derived_metric",
+            "name": "alert_score",
+            "operator": "gte",
+            "value": 8,
+        },
+    }]
+
+
+def _derived_metric_definition(*, audiences=None):
+    return [{
+        "metric_id": "alert_score",
+        "display_name": "Alert score",
+        "audiences": audiences or ["objective"],
+        "formula": {
+            "op": "source",
+            "source": "metric",
+            "entity_id": "station",
+            "name": "alert",
+        },
+    }]
+
+
+def test_objective_condition_reads_bound_generation_derived_metric():
+    world = World()
+    world.values[("station", "metric")][0].value = 8
+    manager = ObjectiveManager()
+    manager.configure(_derived_objective_definition(), [], generation=7)
+    manager.set_derived_metric_provider(DerivedMetricCatalog(_derived_metric_definition(), generation=7))
+
+    result = manager.evaluate(world_state=world, sim_time=5)
+
+    assert [item["type"] for item in result["transitions"]] == ["objective_completed"]
+    evaluation = result["state"]["objectives"][0]["completion_evaluation"]
+    assert evaluation["actual"] == 8
+    assert evaluation["ok"] is True
+    assert evaluation["error"] == ""
+
+
+def test_objective_derived_metric_fails_closed_without_provider():
+    manager = ObjectiveManager()
+    manager.configure(_derived_objective_definition(), [])
+
+    state = manager.public_state(world_state=World(), sim_time=1)
+    evaluation = state["objectives"][0]["completion_evaluation"]
+
+    assert evaluation["actual"] is None
+    assert evaluation["ok"] is False
+    assert evaluation["error"] == "derived_metric_provider_unavailable"
+
+
+def test_objective_derived_metric_respects_audience_and_hides_formula_details():
+    manager = ObjectiveManager()
+    manager.configure(_derived_objective_definition(), [])
+    manager.set_derived_metric_provider(
+        DerivedMetricCatalog(_derived_metric_definition(audiences=["player"]))
+    )
+
+    state = manager.public_state(world_state=World(), sim_time=1)
+    evaluation = state["objectives"][0]["completion_evaluation"]
+
+    assert evaluation["actual"] is None
+    assert evaluation["ok"] is False
+    assert evaluation["error"] == "derived_metric_unavailable"
+    assert "formula" not in evaluation
+    assert "metadata" not in evaluation

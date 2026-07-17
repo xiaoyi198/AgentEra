@@ -304,38 +304,42 @@ def _load_runtime_state(orch: Orchestrator) -> None:
     if STATE_FILE.exists():
         try:
             s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            orch._sim_time = s.get("sim_time", 0.0)
-            orch._seconds_per_day = s.get("seconds_per_day", 600.0)
-            legacy_memorials = s.get("memorials", [])
-            if hasattr(orch, "issue_manager"):
-                orch.issue_manager.restore(
-                    s.get("issue_runtime", {}), sim_time=orch._sim_time,
-                    legacy_memorials=legacy_memorials,
-                )
-                orch._sync_legacy_memorials()
+            restore_runtime = getattr(orch, "restore_runtime_snapshot", None)
+            if callable(restore_runtime):
+                restore_runtime(s)
             else:
-                orch.memorials = legacy_memorials
-            orch.router.update_time_scale(orch._seconds_per_day)
-            if hasattr(orch, "random_event_generator"):
-                orch.random_event_generator.restore(
-                    s.get("random_events", {}), sim_time=orch._sim_time
-                )
-            if hasattr(orch, "causal_event_engine"):
-                orch.causal_event_engine.restore(
-                    s.get("causal_events", {}), sim_time=orch._sim_time
-                )
-            if hasattr(orch, "action_catalog"):
-                orch.action_catalog.restore(
-                    s.get("action_runtime", {}), sim_time=orch._sim_time
-                )
-            if hasattr(orch, "objective_manager"):
-                orch.objective_manager.restore(
-                    s.get("objective_runtime", {}), sim_time=orch._sim_time
-                )
-            if hasattr(orch, "actor_manager"):
-                orch.actor_manager.restore(s.get("actor_runtime", {}))
-            if hasattr(orch, "_sync_gameplay_effect_runtime"):
-                orch._sync_gameplay_effect_runtime()
+                orch._sim_time = s.get("sim_time", 0.0)
+                orch._seconds_per_day = s.get("seconds_per_day", 600.0)
+                legacy_memorials = s.get("memorials", [])
+                if hasattr(orch, "issue_manager"):
+                    orch.issue_manager.restore(
+                        s.get("issue_runtime", {}), sim_time=orch._sim_time,
+                        legacy_memorials=legacy_memorials,
+                    )
+                    orch._sync_legacy_memorials()
+                else:
+                    orch.memorials = legacy_memorials
+                orch.router.update_time_scale(orch._seconds_per_day)
+                if hasattr(orch, "random_event_generator"):
+                    orch.random_event_generator.restore(
+                        s.get("random_events", {}), sim_time=orch._sim_time
+                    )
+                if hasattr(orch, "causal_event_engine"):
+                    orch.causal_event_engine.restore(
+                        s.get("causal_events", {}), sim_time=orch._sim_time
+                    )
+                if hasattr(orch, "action_catalog"):
+                    orch.action_catalog.restore(
+                        s.get("action_runtime", {}), sim_time=orch._sim_time
+                    )
+                if hasattr(orch, "objective_manager"):
+                    orch.objective_manager.restore(
+                        s.get("objective_runtime", {}), sim_time=orch._sim_time
+                    )
+                if hasattr(orch, "actor_manager"):
+                    orch.actor_manager.restore(s.get("actor_runtime", {}))
+                if hasattr(orch, "_sync_gameplay_effect_runtime"):
+                    orch._sync_gameplay_effect_runtime()
             logger.info("Restored state: sim_time=%.1f, %d memorials",
                         orch._sim_time, len(orch.memorials))
         except Exception as e:

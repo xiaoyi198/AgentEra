@@ -30,6 +30,10 @@ from .types import EventObject
 from .relationship_contract import RelationshipCatalog
 from .gameplay_contract import GameplayContract
 from .ui_manifest import UIManifest
+from .temporal_contract import TemporalContract
+from .lifecycle_contract import LifecycleContract
+from .rhythm_contract import RhythmContract
+from .outcome_feedback_contract import OutcomeFeedbackContract
 from .world_state import (
     Entity,
     EntityValue,
@@ -71,9 +75,23 @@ class DLCLoadReport:
     random_events: int = 0
     causal_event_rules: int = 0
     time_rules: int = 0
+    time_system_configured: bool = False
+    seasons: int = 0
+    cycles: int = 0
+    boundary_events: int = 0
+    auto_pause_conditions: int = 0
+    lifecycle_configured: bool = False
+    lifecycle_actor_templates: int = 0
+    lifecycle_positions: int = 0
+    lifecycle_transitions: int = 0
+    rhythm_configured: bool = False
+    rhythm_rules: int = 0
+    outcome_feedback_configured: bool = False
+    outcome_feedback_rules: int = 0
     actions: int = 0
     capabilities: int = 0
     issue_types: int = 0
+    derived_metrics: int = 0
     objectives: int = 0
     endings: int = 0
     seeded_world: bool = False
@@ -102,6 +120,11 @@ class DLCReloadPlan:
     ui_manifest_changed: bool = False
     capabilities_changed: bool = False
     relationship_types_changed: bool = False
+    derived_metrics_changed: bool = False
+    time_system_changed: bool = False
+    lifecycle_changed: bool = False
+    rhythm_changed: bool = False
+    outcome_feedback_changed: bool = False
     world_changes: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -140,9 +163,15 @@ class _DLCMaterializedSnapshot:
     random_event_templates: list[dict[str, Any]]
     causal_event_rules: list[dict[str, Any]]
     time_rules: list[dict[str, Any]]
+    time_system_contract: TemporalContract
+    lifecycle_contract: LifecycleContract
+    rhythm_contract: RhythmContract
+    outcome_feedback_contract: OutcomeFeedbackContract
     action_definitions: list[dict[str, Any]]
     capability_definitions: list[dict[str, Any]]
     issue_definitions: list[dict[str, Any]]
+    derived_metric_definitions: list[dict[str, Any]]
+    derived_metric_packages: dict[str, str]
     objective_definitions: list[dict[str, Any]]
     ending_definitions: list[dict[str, Any]]
     primary_package_id: str
@@ -603,9 +632,23 @@ class DLCBundleLoader:
             random_events=len(content["random_events"]),
             causal_event_rules=len(content["causal_event_rules"]),
             time_rules=len(content["time_rules"]),
+            time_system_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content["time_system"].get("enabled", False)),
+            seasons=len(content["time_system"].get("seasons", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            cycles=len(content["time_system"].get("cycles", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            boundary_events=len(content["time_system"].get("boundary_events", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            auto_pause_conditions=len(content["time_system"].get("auto_pause_conditions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            lifecycle_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content["lifecycle"].get("enabled", False)),
+            lifecycle_actor_templates=len(content["lifecycle"].get("actor_templates", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            lifecycle_positions=len(content["lifecycle"].get("positions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            lifecycle_transitions=len(content["lifecycle"].get("transitions", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            rhythm_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content.get("rhythm", {}).get("enabled", False)),
+            rhythm_rules=len(content.get("rhythm", {}).get("rules", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
+            outcome_feedback_configured=bool(primary is not None and primary.manifest.id == package.manifest.id and content.get("outcome_feedback", {}).get("enabled", False)),
+            outcome_feedback_rules=len(content.get("outcome_feedback", {}).get("rules", [])) if primary is not None and primary.manifest.id == package.manifest.id else 0,
             actions=len(content["actions"]),
             capabilities=len(content["capabilities"]),
             issue_types=len(content["issue_types"]),
+            derived_metrics=len(content["derived_metrics"]),
             objectives=len(content["objectives"]),
             endings=len(content["endings"]),
             seeded_world=seed_world,
@@ -645,12 +688,19 @@ class DLCBundleLoader:
         causal_event_rules: list[dict[str, Any]] = []
         causal_rule_ids: set[str] = set()
         time_rules: list[dict[str, Any]] = []
+        time_system_contract = TemporalContract.from_mapping({})
+        lifecycle_contract = LifecycleContract.from_mapping({})
+        rhythm_contract = RhythmContract.from_mapping({})
+        outcome_feedback_contract = OutcomeFeedbackContract.from_mapping({})
         action_definitions: list[dict[str, Any]] = []
         action_ids: set[str] = set()
         capability_definitions: list[dict[str, Any]] = []
         capability_ids: set[str] = set()
         issue_definitions: list[dict[str, Any]] = []
         issue_type_ids: set[str] = set()
+        derived_metric_definitions: list[dict[str, Any]] = []
+        derived_metric_packages: dict[str, str] = {}
+        derived_metric_ids: set[str] = set()
         objective_definitions: list[dict[str, Any]] = []
         ending_definitions: list[dict[str, Any]] = []
         global_prompts: dict[str, str] = {}
@@ -688,6 +738,10 @@ class DLCBundleLoader:
                     package_name=package.manifest.name,
                 )
                 gameplay_contract = package_gameplay
+                time_system_contract = TemporalContract.from_mapping(content.get("time_system", {}))
+                lifecycle_contract = LifecycleContract.from_mapping(content.get("lifecycle", {}))
+                rhythm_contract = RhythmContract.from_mapping(content.get("rhythm", {}))
+                outcome_feedback_contract = OutcomeFeedbackContract.from_mapping(content.get("outcome_feedback", {}))
                 ui_manifest = UIManifest.from_content(
                     content.get("ui_manifest", {}),
                     package_id=package.manifest.id,
@@ -840,6 +894,13 @@ class DLCBundleLoader:
                     raise DLCRegistryError(f"Duplicate active issue type id: {issue_type_id}")
                 issue_type_ids.add(issue_type_id)
                 issue_definitions.append(copy.deepcopy(issue_definition))
+            for metric_definition in content["derived_metrics"]:
+                metric_id = str(metric_definition.get("metric_id", ""))
+                if metric_id in derived_metric_ids:
+                    raise DLCRegistryError(f"Duplicate active derived metric id: {metric_id}")
+                derived_metric_ids.add(metric_id)
+                derived_metric_definitions.append(copy.deepcopy(metric_definition))
+                derived_metric_packages[metric_id] = package.manifest.id
             # The primary DLC owns the campaign loop. Dependency DLCs may
             # contribute entities/actions/issues without competing for final endings.
             if package.manifest.id == primary_package_id:
@@ -883,9 +944,15 @@ class DLCBundleLoader:
             random_event_templates=random_event_templates,
             causal_event_rules=causal_event_rules,
             time_rules=time_rules,
+            time_system_contract=time_system_contract,
+            lifecycle_contract=lifecycle_contract,
+            rhythm_contract=rhythm_contract,
+            outcome_feedback_contract=outcome_feedback_contract,
             action_definitions=action_definitions,
             capability_definitions=capability_definitions,
             issue_definitions=issue_definitions,
+            derived_metric_definitions=derived_metric_definitions,
+            derived_metric_packages=derived_metric_packages,
             objective_definitions=objective_definitions,
             ending_definitions=ending_definitions,
             primary_package_id=primary_package_id,
@@ -970,6 +1037,26 @@ class DLCBundleLoader:
                 current is None
                 or current.relationship_definitions != candidate.relationship_definitions
             ),
+            derived_metrics_changed=(
+                current is None
+                or current.derived_metric_definitions != candidate.derived_metric_definitions
+            ),
+            time_system_changed=(
+                current is None
+                or current.time_system_contract.fingerprint() != candidate.time_system_contract.fingerprint()
+            ),
+            lifecycle_changed=(
+                current is None
+                or current.lifecycle_contract.fingerprint() != candidate.lifecycle_contract.fingerprint()
+            ),
+            rhythm_changed=(
+                current is None
+                or current.rhythm_contract.fingerprint() != candidate.rhythm_contract.fingerprint()
+            ),
+            outcome_feedback_changed=(
+                current is None
+                or current.outcome_feedback_contract.fingerprint() != candidate.outcome_feedback_contract.fingerprint()
+            ),
             world_changes={
                 "resources_added": sum(1 for item in candidate.resources if item.name not in existing_resources),
                 "entities_added": sum(1 for item in candidate.entities if item.id not in existing_entities),
@@ -981,9 +1068,19 @@ class DLCBundleLoader:
                 "random_event_templates": len(candidate.random_event_templates),
                 "causal_event_rules": len(candidate.causal_event_rules),
                 "time_rules": len(candidate.time_rules),
+                "seasons": len(candidate.time_system_contract.seasons),
+                "cycles": len(candidate.time_system_contract.cycles),
+                "boundary_events": len(candidate.time_system_contract.boundary_events),
+                "auto_pause_conditions": len(candidate.time_system_contract.auto_pause_conditions),
+                "lifecycle_actor_templates": len(candidate.lifecycle_contract.actor_templates),
+                "lifecycle_positions": len(candidate.lifecycle_contract.positions),
+                "lifecycle_transitions": len(candidate.lifecycle_contract.transitions),
+                "rhythm_rules": len(candidate.rhythm_contract.rules),
+                "outcome_feedback_rules": len(candidate.outcome_feedback_contract.rules),
                 "actions": len(candidate.action_definitions),
                 "capabilities": len(candidate.capability_definitions),
                 "issue_types": len(candidate.issue_definitions),
+                "derived_metrics": len(candidate.derived_metric_definitions),
                 "objectives": len(candidate.objective_definitions),
                 "endings": len(candidate.ending_definitions),
             },
@@ -1051,9 +1148,15 @@ class DLCBundleLoader:
             "random_event_templates": copy.deepcopy(snapshot.random_event_templates),
             "causal_event_rules": copy.deepcopy(snapshot.causal_event_rules),
             "time_rules": copy.deepcopy(snapshot.time_rules),
+            "time_system_contract": snapshot.time_system_contract.to_dict(),
+            "lifecycle_contract": snapshot.lifecycle_contract.to_dict(),
+            "rhythm_contract": snapshot.rhythm_contract.to_dict(),
+            "outcome_feedback_contract": snapshot.outcome_feedback_contract.to_dict(),
             "action_definitions": copy.deepcopy(snapshot.action_definitions),
             "capability_definitions": copy.deepcopy(snapshot.capability_definitions),
             "issue_definitions": copy.deepcopy(snapshot.issue_definitions),
+            "derived_metric_definitions": copy.deepcopy(snapshot.derived_metric_definitions),
+            "derived_metric_packages": dict(snapshot.derived_metric_packages),
             "objective_definitions": copy.deepcopy(snapshot.objective_definitions),
             "ending_definitions": copy.deepcopy(snapshot.ending_definitions),
             "primary_package_id": snapshot.primary_package_id,
@@ -1282,9 +1385,18 @@ class DLCBundleLoader:
                 dict(item) for item in blueprint.get("causal_event_rules", [])
             ],
             time_rules=[dict(item) for item in blueprint.get("time_rules", [])],
+            time_system_contract=TemporalContract.from_mapping(blueprint.get("time_system_contract", {})),
+            lifecycle_contract=LifecycleContract.from_mapping(blueprint.get("lifecycle_contract", {})),
+            rhythm_contract=RhythmContract.from_mapping(blueprint.get("rhythm_contract", {})),
+            outcome_feedback_contract=OutcomeFeedbackContract.from_mapping(blueprint.get("outcome_feedback_contract", {})),
             action_definitions=[dict(item) for item in blueprint.get("action_definitions", [])],
             capability_definitions=[dict(item) for item in blueprint.get("capability_definitions", [])],
             issue_definitions=[dict(item) for item in blueprint.get("issue_definitions", [])],
+            derived_metric_definitions=[dict(item) for item in blueprint.get("derived_metric_definitions", [])],
+            derived_metric_packages={
+                str(key): str(value)
+                for key, value in dict(blueprint.get("derived_metric_packages", {})).items()
+            },
             objective_definitions=[dict(item) for item in blueprint.get("objective_definitions", [])],
             ending_definitions=[dict(item) for item in blueprint.get("ending_definitions", [])],
             primary_package_id=str(blueprint.get("primary_package_id", "")),
@@ -1370,9 +1482,15 @@ class DLCBundleLoader:
             random_event_templates=copy.deepcopy(snapshot.random_event_templates),
             causal_event_rules=copy.deepcopy(snapshot.causal_event_rules),
             time_rules=copy.deepcopy(snapshot.time_rules),
+            time_system_contract=copy.deepcopy(snapshot.time_system_contract),
+            lifecycle_contract=copy.deepcopy(snapshot.lifecycle_contract),
+            rhythm_contract=copy.deepcopy(snapshot.rhythm_contract),
+            outcome_feedback_contract=copy.deepcopy(snapshot.outcome_feedback_contract),
             action_definitions=copy.deepcopy(snapshot.action_definitions),
             capability_definitions=copy.deepcopy(snapshot.capability_definitions),
             issue_definitions=copy.deepcopy(snapshot.issue_definitions),
+            derived_metric_definitions=copy.deepcopy(snapshot.derived_metric_definitions),
+            derived_metric_packages=dict(snapshot.derived_metric_packages),
             objective_definitions=copy.deepcopy(snapshot.objective_definitions),
             ending_definitions=copy.deepcopy(snapshot.ending_definitions),
             primary_package_id=snapshot.primary_package_id,
@@ -1689,6 +1807,11 @@ class DLCBundleLoader:
                     self.orchestrator.configure_causal_events(candidate.causal_event_rules)
                 if hasattr(self.orchestrator, "configure_time_rules"):
                     self.orchestrator.configure_time_rules(candidate.time_rules)
+                if hasattr(self.orchestrator, "configure_time_system"):
+                    self.orchestrator.configure_time_system(
+                        candidate.time_system_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
                 if hasattr(self.orchestrator, "configure_gameplay_contract"):
                     self.orchestrator.configure_gameplay_contract(
                         candidate.gameplay_contract, generation=target_generation
@@ -1707,6 +1830,25 @@ class DLCBundleLoader:
                         candidate.actor_definitions,
                         generation=target_generation,
                         preserve_state=True,
+                    )
+                if hasattr(self.orchestrator, "configure_lifecycle_system"):
+                    self.orchestrator.configure_lifecycle_system(
+                        candidate.lifecycle_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
+                if hasattr(self.orchestrator, "configure_rhythm_system"):
+                    self.orchestrator.configure_rhythm_system(
+                        candidate.rhythm_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
+                if hasattr(self.orchestrator, "configure_outcome_feedback"):
+                    self.orchestrator.configure_outcome_feedback(
+                        candidate.outcome_feedback_contract, generation=target_generation,
+                        preserve_state=True,
+                    )
+                if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+                    self.orchestrator.configure_derived_metric_catalog(
+                        candidate.derived_metric_definitions, generation=target_generation,
                     )
                 if hasattr(self.orchestrator, "configure_capability_catalog"):
                     self.orchestrator.configure_capability_catalog(
@@ -1909,6 +2051,16 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "issues_public_state")
                 else {"configured": bool(snapshot and snapshot.issue_definitions), "generation": self.generation, "issue_types": copy.deepcopy(snapshot.issue_definitions) if snapshot else []}
             ),
+            "derived_metrics": (
+                self.orchestrator.derived_metrics_public_state()
+                if hasattr(self.orchestrator, "derived_metrics_public_state")
+                else {
+                    "configured": bool(snapshot and snapshot.derived_metric_definitions),
+                    "generation": self.generation,
+                    "metric_count": len(snapshot.derived_metric_definitions) if snapshot else 0,
+                    "metrics": [],
+                }
+            ),
             "objectives": (
                 self.orchestrator.objectives_public_state()
                 if hasattr(self.orchestrator, "objectives_public_state")
@@ -1931,6 +2083,26 @@ class DLCBundleLoader:
                 if hasattr(self.orchestrator, "time_rule_status")
                 else {"rule_count": len(snapshot.time_rules) if snapshot else 0}
             ),
+            "time_system": (
+                self.orchestrator.time_system_public_state()
+                if hasattr(self.orchestrator, "time_system_public_state")
+                else snapshot.time_system_contract.public_state(0.0, generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
+            ),
+            "lifecycle": (
+                self.orchestrator.lifecycle_public_state()
+                if hasattr(self.orchestrator, "lifecycle_public_state")
+                else snapshot.lifecycle_contract.public_state(generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
+            ),
+            "rhythm": (
+                self.orchestrator.rhythm_public_state()
+                if hasattr(self.orchestrator, "rhythm_public_state")
+                else snapshot.rhythm_contract.public_state(generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation}
+            ),
+            "outcome_feedback": (
+                self.orchestrator.outcome_feedback_public_state()
+                if hasattr(self.orchestrator, "outcome_feedback_public_state")
+                else snapshot.outcome_feedback_contract.public_state(generation=self.generation) if snapshot else {"configured": False, "enabled": False, "generation": self.generation, "recent": [], "pending": []}
+            ),
             "runtime_bindings": (
                 self.orchestrator.runtime_bindings_public_state()
                 if hasattr(self.orchestrator, "runtime_bindings_public_state")
@@ -1945,10 +2117,27 @@ class DLCBundleLoader:
         self.world_state.configure_relationship_catalog(
             candidate.relationship_definitions, generation=max(1, self.generation + 1)
         )
+        # Publish the deterministic catalog before initial-event injection. World facts
+        # are seeded package-by-package, but every rule observes this generation's definitions.
+        initial_generation = max(1, self.generation + 1)
+        if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+            self.orchestrator.configure_derived_metric_catalog(
+                candidate.derived_metric_definitions, generation=initial_generation,
+            )
         # Configure causality before initial-event injection so authored opening
         # events participate in the same deterministic chain semantics.
         if hasattr(self.orchestrator, "configure_causal_events"):
             self.orchestrator.configure_causal_events(candidate.causal_event_rules)
+        if hasattr(self.orchestrator, "configure_rhythm_system"):
+            self.orchestrator.configure_rhythm_system(
+                candidate.rhythm_contract, generation=initial_generation,
+                preserve_state=False,
+            )
+        if hasattr(self.orchestrator, "configure_outcome_feedback"):
+            self.orchestrator.configure_outcome_feedback(
+                candidate.outcome_feedback_contract, generation=initial_generation,
+                preserve_state=False,
+            )
         reports = [
             self.load_package(package, seed_world=seed_world)
             for package in self.registry.ordered_active_packages()
@@ -1974,6 +2163,11 @@ class DLCBundleLoader:
             )
         if hasattr(self.orchestrator, "configure_time_rules"):
             self.orchestrator.configure_time_rules(candidate.time_rules)
+        if hasattr(self.orchestrator, "configure_time_system"):
+            self.orchestrator.configure_time_system(
+                candidate.time_system_contract, generation=self.generation,
+                preserve_state=False,
+            )
         if hasattr(self.orchestrator, "configure_gameplay_contract"):
             self.orchestrator.configure_gameplay_contract(
                 candidate.gameplay_contract, generation=self.generation
@@ -1992,6 +2186,15 @@ class DLCBundleLoader:
                 candidate.actor_definitions,
                 generation=self.generation,
                 preserve_state=False,
+            )
+        if hasattr(self.orchestrator, "configure_lifecycle_system"):
+            self.orchestrator.configure_lifecycle_system(
+                candidate.lifecycle_contract, generation=self.generation,
+                preserve_state=False,
+            )
+        if hasattr(self.orchestrator, "configure_derived_metric_catalog"):
+            self.orchestrator.configure_derived_metric_catalog(
+                candidate.derived_metric_definitions, generation=self.generation,
             )
         if hasattr(self.orchestrator, "configure_capability_catalog"):
             self.orchestrator.configure_capability_catalog(

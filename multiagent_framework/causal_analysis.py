@@ -33,6 +33,7 @@ from .gameplay_effect_runtime import (
 )
 from .issue_contract import IssueManager
 from .objective_contract import ObjectiveManager
+from .derived_metrics import DerivedMetricCatalog
 from .relationship_contract import RelationshipCatalog
 from .types import EventObject
 from .world_state import Entity, EntityValue, InventoryItem, OngoingEvent, ResourceDefinition
@@ -931,7 +932,13 @@ def dry_run_causal_rules(
         _list_field(content, "issue_types"), generation=0,
         action_ids=[item.get("action_id", "") for item in _list_field(content, "actions") if isinstance(item, Mapping)],
     )
+    derived_metric_catalog = DerivedMetricCatalog(
+        _list_field(content, "derived_metrics"), generation=0,
+    )
     objective_manager = ObjectiveManager()
+    objective_manager.set_derived_metric_provider(
+        derived_metric_catalog, actor_manager=actor_manager,
+    )
     objective_manager.configure(
         _list_field(content, "objectives"), _list_field(content, "endings"), generation=0,
     )
@@ -956,6 +963,7 @@ def dry_run_causal_rules(
             world_state=facts,
             actor_manager=actor_manager,
             objective_manager=objective_manager,
+            derived_metric_provider=derived_metric_catalog,
             event_history=seed_history,
             sim_time=at,
             knowledge_provider=gameplay_runtime,

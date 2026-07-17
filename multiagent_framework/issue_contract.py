@@ -19,10 +19,12 @@ DAY = 86400.0
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 URGENCIES = {"low", "normal", "high", "critical"}
 SOURCE_KINDS = {"agent", "entity", "event", "system", "player"}
-ISSUE_STATUSES = {"open", "monitoring", "overdue", "resolved", "closed", "cancelled"}
-CASE_STATUSES = {"open", "in_review", "monitoring", "overdue", "resolved", "closed", "cancelled"}
+ISSUE_STATUSES = {"queued", "open", "monitoring", "overdue", "resolved", "closed", "cancelled"}
+CASE_STATUSES = {"queued", "open", "in_review", "monitoring", "overdue", "resolved", "closed", "cancelled"}
 FINAL_ISSUE = {"resolved", "closed", "cancelled"}
 FINAL_CASE = {"resolved", "closed", "cancelled"}
+ACTIVE_ISSUE_STATUSES = {"open", "monitoring", "overdue"}
+ACTIVE_CASE_STATUSES = {"open", "in_review", "monitoring", "overdue"}
 MAX_RECORDS = 5000
 
 
@@ -316,6 +318,12 @@ class IssueManager:
         self._external_receipts: dict[str, dict[str, str]] = {}
         self._decision_receipts: dict[str, dict[str, Any]] = {}
         self._decision_order: deque[str] = deque()
+        self._rhythm_controller: Any = None
+
+    def set_rhythm_controller(self, controller: Any) -> None:
+        """Attach the optional pacing controller used for issue admission."""
+        with self._lock:
+            self._rhythm_controller = controller
 
     @property
     def generation(self) -> int:
@@ -344,9 +352,11 @@ class IssueManager:
                 "issue_types": copy.deepcopy(list(self._definitions.values())),
                 "counts": {
                     "issues": len(self._issues),
-                    "open_issues": sum(item["status"] not in FINAL_ISSUE for item in self._issues.values()),
+                    "open_issues": sum(item["status"] in ACTIVE_ISSUE_STATUSES for item in self._issues.values()),
+                    "queued_issues": sum(item["status"] == "queued" for item in self._issues.values()),
                     "cases": len(self._cases),
-                    "open_cases": sum(item["status"] not in FINAL_CASE for item in self._cases.values()),
+                    "open_cases": sum(item["status"] in ACTIVE_CASE_STATUSES for item in self._cases.values()),
+                    "queued_cases": sum(item["status"] == "queued" for item in self._cases.values()),
                     "pending_decision_requests": sum(item["status"] == "pending" for item in self._requests.values()),
                 },
             }
@@ -448,6 +458,35 @@ class IssueManager:
         issue_id = _text(data.get("issue_id", ""), "issue.invalid_id", required=False, limit=128) or f"issue_{uuid.uuid4().hex[:16]}"
         if issue_id in self._issues:
             raise IssueContractError("issue.id_conflict")
+        rhythm_projection: dict[str, Any] = {}
+        initial_status = "open"
+        controller = self._rhythm_controller
+        if controller is not None:
+            prepare = getattr(controller, "prepare_issue", None)
+            if callable(prepare):
+                admission = prepare(
+                    issue_type_id=definition["issue_type_id"],
+                    urgency=urgency,
+                    event_type=str(data.get("event_type", data.get("type", ""))).strip(),
+                    payload=data,
+                    sim_time=sim_time,
+                    issue_manager=self,
+                )
+                if isinstance(admission, Mapping) and admission.get("managed"):
+                    if admission.get("reject"):
+                        raise IssueContractError(
+                            "issue.rhythm_queue_full",
+                            details={"reason": admission.get("reason", "queue_limit")},
+                        )
+                    initial_status = "queued" if admission.get("queued") else "open"
+                    rhythm_projection = {
+                        "managed": True,
+                        "rule_id": str(admission.get("rule_id", "")),
+                        "attention_cost": float(admission.get("attention_cost", 0.0) or 0.0),
+                        "priority": int(admission.get("priority", 0) or 0),
+                        "level": int(admission.get("level", 0) or 0),
+                        "queue_reason": str(admission.get("reason", "")) if initial_status == "queued" else "",
+                    }
         case_id = _text(data.get("case_id", ""), "case.invalid_id", required=False, limit=128) or f"case_{uuid.uuid4().hex[:16]}"
         case = self._cases.get(case_id)
         if case and case["status"] in FINAL_CASE:
@@ -472,7 +511,8 @@ class IssueManager:
             },
             "evidence": evidence,
             "urgency": urgency,
-            "status": "open",
+            "status": initial_status,
+            "rhythm": rhythm_projection,
             "created_at": sim_time,
             "updated_at": sim_time,
             "deadline_at": deadline_at,
@@ -502,7 +542,7 @@ class IssueManager:
                 "prompt": template["prompt"],
                 "required": template["required"],
                 "urgency": urgency,
-                "status": "pending",
+                "status": "queued" if initial_status == "queued" else "pending",
                 "created_at": sim_time,
                 "updated_at": sim_time,
                 "deadline_at": request_deadline,
@@ -524,7 +564,7 @@ class IssueManager:
                 "case_id": case_id,
                 "title": _text(data.get("case_title", issue["title"]), "case.invalid_title", limit=512),
                 "summary": _text(data.get("case_summary", summary), "case.invalid_summary", required=False),
-                "status": "open",
+                "status": "queued" if initial_status == "queued" else "open",
                 "urgency": urgency,
                 "created_at": sim_time,
                 "updated_at": sim_time,
@@ -541,6 +581,8 @@ class IssueManager:
             case["issue_ids"].append(issue_id)
             case["decision_request_ids"].extend(issue["decision_request_ids"])
             case["updated_at"] = sim_time
+            if case["status"] == "queued" and initial_status != "queued":
+                case["status"] = "open"
             if deadline_at is not None and (case["deadline_at"] is None or deadline_at < case["deadline_at"]):
                 case["deadline_at"] = deadline_at
         self._issues[issue_id] = issue
@@ -548,6 +590,10 @@ class IssueManager:
         if external_id:
             self._external_receipts[external_id] = {"hash": request_hash, "issue_id": issue_id}
         self._trim_locked()
+        if controller is not None:
+            recorder = getattr(controller, "record_issue", None)
+            if callable(recorder):
+                recorder(issue, sim_time=sim_time)
         return {"ok": True, "replayed": False, "issue": copy.deepcopy(issue), "case": copy.deepcopy(case), "decision_requests": copy.deepcopy(requests)}
 
     def project_effect_issues(
@@ -734,6 +780,78 @@ class IssueManager:
                     request.update({"status": "cancelled", "updated_at": sim_time})
             return {"ok": True, "case": copy.deepcopy(case), "issues": [copy.deepcopy(self._issues[item]) for item in case["issue_ids"]]}
 
+    def rhythm_records(self) -> list[dict[str, Any]]:
+        """Return the durable issue projection consumed by RhythmRuntime."""
+        with self._lock:
+            return [copy.deepcopy(self._issues[item]) for item in self._issue_order if item in self._issues]
+
+    def rhythm_update_issue(
+        self, issue_id: str, *, sim_time: float, status: str | None = None,
+        urgency: str | None = None, level: int | None = None,
+        queue_reason: str | None = None, case_status: str | None = None,
+        outcome: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Apply a pacing transition atomically across Issue, Case and requests."""
+        with self._lock:
+            issue = self._issues.get(issue_id)
+            if issue is None:
+                raise IssueContractError("issue.not_found")
+            if status is not None and status not in ISSUE_STATUSES:
+                raise IssueContractError("issue.invalid_status")
+            if urgency is not None and urgency not in URGENCIES:
+                raise IssueContractError("issue.invalid_urgency")
+            if case_status is not None and case_status not in CASE_STATUSES:
+                raise IssueContractError("case.invalid_status")
+            rhythm = issue.get("rhythm")
+            if not isinstance(rhythm, dict):
+                rhythm = {}
+                issue["rhythm"] = rhythm
+            if level is not None:
+                rhythm["level"] = max(0, int(level))
+            if queue_reason is not None:
+                rhythm["queue_reason"] = str(queue_reason)
+            old_status = str(issue.get("status", ""))
+            if status is not None:
+                issue["status"] = status
+            if urgency is not None:
+                issue["urgency"] = urgency
+            issue["updated_at"] = float(sim_time)
+            if outcome is not None:
+                issue["outcome"] = copy.deepcopy(dict(outcome))
+
+            case = self._cases.get(str(issue.get("case_id", "")))
+            requests = [self._requests[item] for item in issue.get("decision_request_ids", []) if item in self._requests]
+            if urgency is not None:
+                for request in requests:
+                    request["urgency"] = urgency
+                    request["updated_at"] = float(sim_time)
+                if case is not None:
+                    case["urgency"] = urgency
+            if old_status == "queued" and issue.get("status") in ACTIVE_ISSUE_STATUSES:
+                for request in requests:
+                    if request.get("status") == "queued":
+                        request.update({"status": "pending", "updated_at": float(sim_time)})
+                if case is not None and case.get("status") == "queued":
+                    case["status"] = "open"
+            if issue.get("status") in FINAL_ISSUE:
+                for request in requests:
+                    if request.get("status") in {"queued", "pending"}:
+                        request.update({"status": "cancelled", "updated_at": float(sim_time)})
+                if case is not None:
+                    target_case_status = case_status or ("closed" if issue["status"] == "closed" else issue["status"])
+                    case["status"] = target_case_status
+                    if outcome is not None:
+                        case["outcome"] = copy.deepcopy(dict(outcome))
+                    for request_id in case.get("decision_request_ids", []):
+                        request = self._requests.get(request_id)
+                        if request is not None and request.get("status") in {"queued", "pending"}:
+                            request.update({"status": "cancelled", "updated_at": float(sim_time)})
+            elif case is not None and case_status is not None:
+                case["status"] = case_status
+            if case is not None:
+                case["updated_at"] = float(sim_time)
+            return copy.deepcopy(issue)
+
     def _refresh_locked(self, sim_time: float) -> None:
         for request in self._requests.values():
             if request["status"] == "pending" and request["deadline_at"] is not None and sim_time > request["deadline_at"]:
@@ -772,7 +890,7 @@ class IssueManager:
             "case_id": issue["case_id"],
             "urgency": issue["urgency"],
             "deadline_at": issue["deadline_at"],
-        } for issue in self.list_issues(sim_time=sim_time) if issue["status"] not in FINAL_ISSUE]
+        } for issue in self.list_issues(sim_time=sim_time) if issue["status"] in ACTIVE_ISSUE_STATUSES]
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

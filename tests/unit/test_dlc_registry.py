@@ -34,6 +34,125 @@ def valid_content(entity_id: str = "place", agent_id: str = "agent") -> dict:
     }
 
 
+def lifecycle_content() -> dict:
+    return {
+        "enabled": True,
+        "actor_templates": [
+            {
+                "template_id": "guard",
+                "display_name": "Guard",
+                "actor": {
+                    "actor_type": "person",
+                    "memberships": [{"organization_id": "guild", "role": "member"}],
+                },
+                "entity": {"entity_type": "person", "location_id": "place"},
+                "agent": {"source_agent_id": "agent"},
+            }
+        ],
+        "positions": [
+            {
+                "position_id": "captain",
+                "display_name": "Captain",
+                "organization_id": "guild",
+                "role": "captain",
+                "incumbent_actor_ids": ["agent"],
+                "candidate_actor_ids": ["agent"],
+            }
+        ],
+        "transitions": [
+            {
+                "transition_id": "recruit",
+                "display_name": "Recruit",
+                "kind": "birth",
+                "trigger": "manual",
+                "operations": [
+                    {
+                        "operation": "spawn_actor",
+                        "template_id": "guard",
+                        "actor_id_pattern": "guard_{sequence}",
+                    },
+                    {
+                        "operation": "appoint_position",
+                        "position_id": "captain",
+                        "actor_id": "{actor_id}",
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def derived_metric(metric_id: str = "readiness", **overrides) -> dict:
+    value = {
+        "metric_id": metric_id,
+        "display_name": metric_id,
+        "audiences": ["player", "ui", "agent", "rule", "objective"],
+        "formula": {
+            "op": "source",
+            "source": "anchored_inventory",
+            "entity_id": "place",
+            "name": "coin",
+        },
+    }
+    value.update(overrides)
+    return value
+
+def outcome_feedback_content() -> dict:
+    return {
+        "enabled": True,
+        "recent_limit": 64,
+        "pending_limit": 128,
+        "receipt_limit": 512,
+        "metric_delta_epsilon": 0.1,
+        "immediate": {
+            "enabled": True,
+            "include_command_changes": True,
+            "include_metric_changes": True,
+            "max_changes": 6,
+            "max_metric_changes": 4,
+        },
+        "case_summaries": {
+            "enabled": True,
+            "include_decisions": True,
+            "include_changes": True,
+            "include_metric_changes": True,
+        },
+        "rules": [{
+            "rule_id": "inspection_result",
+            "display_name": "Inspection result",
+            "priority": 10,
+            "source_kinds": ["action", "case_closed"],
+            "delivery": "causal_reveal",
+            "action_ids": ["inspect"],
+            "issue_type_ids": ["followup"],
+            "event_types": ["inspection_complete"],
+            "metric_ids": ["readiness"],
+            "delay_days": 0.5,
+            "conditions": [
+                {
+                    "kind": "anchored_inventory",
+                    "entity_id": "place",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                },
+                {
+                    "kind": "derived_metric",
+                    "name": "readiness",
+                    "operator": "gte",
+                    "value": 1,
+                },
+            ],
+            "title": "Inspection complete",
+            "summary": "The command result is now visible.",
+            "reason": "Readiness and supplies met the configured threshold.",
+            "reveal_text": "The earlier inspection enabled this outcome.",
+            "create_issue_type_id": "followup",
+            "attach_evidence": True,
+        }],
+    }
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> DLCRegistry:
     return DLCRegistry(tmp_path, manifest_roots=[tmp_path / "dlcs"])
@@ -83,6 +202,81 @@ def test_duplicate_ids_and_missing_references_are_reported(registry: DLCRegistry
     assert "entities.duplicate" in codes
     assert "inventory.missing_entity" in codes
     assert "agent.missing_superior" in codes
+
+
+def test_lifecycle_document_is_normalized_and_validated_with_static_references(registry: DLCRegistry):
+    registry.create(manifest("lifecycle"))
+    content = valid_content()
+    content["entities"].append({"id": "guild", "type": "organization", "name": "Guild"})
+    content["lifecycle"] = lifecycle_content()
+
+    registry.save_content("lifecycle", content)
+
+    loaded = registry.load_content("lifecycle")
+    assert loaded["lifecycle"]["actor_templates"][0]["template_id"] == "guard"
+    assert registry.validate("lifecycle") == []
+
+
+def test_lifecycle_validation_reports_contract_and_world_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("broken_lifecycle"))
+    content = valid_content()
+    lifecycle = lifecycle_content()
+    lifecycle["actor_templates"][0]["agent"]["source_agent_id"] = "missing-agent"
+    lifecycle["actor_templates"][0]["actor"]["memberships"][0]["organization_id"] = "missing-org"
+    lifecycle["positions"][0]["organization_id"] = "missing-org"
+    lifecycle["positions"][0]["candidate_actor_ids"] = ["missing-actor"]
+    lifecycle["transitions"][0].update({
+        "trigger": "cycle_start",
+        "cycle_id": "missing-cycle",
+        "conditions": [
+            {
+                "kind": "anchored_inventory",
+                "entity_id": "place",
+                "name": "missing-resource",
+                "operator": "gte",
+                "value": 1,
+            },
+            {
+                "kind": "objective_progress",
+                "entity_id": "missing-objective",
+                "operator": "gte",
+                "value": 1,
+            },
+        ],
+    })
+    lifecycle["transitions"][0]["operations"].append({
+        "operation": "transform_entity",
+        "entity_id": "missing-entity",
+    })
+    content["lifecycle"] = lifecycle
+    registry.save_content("broken_lifecycle", content)
+
+    codes = {issue.code for issue in registry.validate("broken_lifecycle")}
+
+    assert {
+        "lifecycle.missing_source_agent",
+        "lifecycle.missing_organization",
+        "lifecycle.missing_actor",
+        "lifecycle.missing_cycle",
+        "lifecycle.missing_resource",
+        "lifecycle.missing_objective",
+        "lifecycle.missing_entity",
+    } <= codes
+
+
+def test_lifecycle_dynamic_actor_patterns_are_not_treated_as_static_actor_ids(registry: DLCRegistry):
+    registry.create(manifest("dynamic_lifecycle"))
+    content = valid_content()
+    content["entities"].append({"id": "guild", "type": "organization", "name": "Guild"})
+    lifecycle = lifecycle_content()
+    lifecycle["positions"][0]["incumbent_actor_ids"] = []
+    lifecycle["positions"][0]["candidate_actor_ids"] = ["guard_{sequence}"]
+    content["lifecycle"] = lifecycle
+    registry.save_content("dynamic_lifecycle", content)
+
+    codes = {issue.code for issue in registry.validate("dynamic_lifecycle")}
+
+    assert "lifecycle.missing_actor" not in codes
 
 
 def test_asset_anchor_rate_must_be_positive_and_finite(registry: DLCRegistry):
@@ -144,17 +338,20 @@ def test_cross_published_package_conflicts_are_reported(registry: DLCRegistry):
     registry.create(manifest("first"))
     first = valid_content()
     first["capabilities"] = [_noop_capability_definition("first_wait", aliases=["shared_wait"])]
+    first["derived_metrics"] = [derived_metric("shared_readiness")]
     registry.save_content("first", first)
     registry.publish("first")
     registry.create(manifest("second"))
     second = valid_content()
     second["capabilities"] = [_noop_capability_definition("second_wait", aliases=["shared_wait"])]
+    second["derived_metrics"] = [derived_metric("shared_readiness")]
     registry.save_content("second", second)
     codes = {issue.code for issue in registry.validate("second")}
     assert "cross_package.entity_conflict" in codes
     assert "cross_package.agent_conflict" in codes
     assert "cross_package.resource_conflict" in codes
     assert "cross_package.capability_conflict" in codes
+    assert "cross_package.derived_metric_conflict" in codes
 
 
 def test_active_packages_are_dependency_ordered(registry: DLCRegistry):
@@ -954,3 +1151,224 @@ def test_knowledge_registry_reports_unknown_actor_holders_without_treating_belie
     assert "causal_event.missing_knowledge_holder" in codes
     assert "causal_event.effect_missing_knowledge_holder" in codes
     assert "causal_event.missing_actor_component" not in codes
+
+
+
+def test_derived_metrics_validate_objective_and_causal_references(registry: DLCRegistry):
+    registry.create(manifest("derived-valid"))
+    content = valid_content()
+    content["derived_metrics"] = [derived_metric()]
+    content["objectives"] = [{
+        "objective_id": "ready",
+        "display_name": "Ready",
+        "completion": {"kind": "derived_metric", "name": "readiness", "operator": "gte", "value": 1},
+    }]
+    content["causal_event_rules"] = [causal_rule(conditions=[
+        {"kind": "derived_metric", "name": "readiness", "operator": "gte", "value": 1},
+    ])]
+
+    registry.save_content("derived-valid", content)
+
+    assert registry.validate("derived-valid") == []
+
+
+def test_derived_metric_registry_reports_contract_and_cross_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("derived-broken"))
+    content = valid_content()
+    content["derived_metrics"] = [
+        derived_metric("first", formula={"op": "derived_metric", "metric_id": "second"}),
+        derived_metric("second", formula={"op": "derived_metric", "metric_id": "first"}),
+    ]
+    content["objectives"] = [{
+        "objective_id": "ready",
+        "display_name": "Ready",
+        "completion": {"kind": "derived_metric", "name": "missing_metric", "operator": "gte", "value": 1},
+    }]
+    content["causal_event_rules"] = [causal_rule(conditions=[
+        {"kind": "derived_metric", "name": "missing_metric", "operator": "gte", "value": 1},
+    ])]
+
+    registry.save_content("derived-broken", content)
+    codes = {issue.code for issue in registry.validate("derived-broken")}
+
+    assert "derived_metric.cycle" in codes
+    assert "objective.condition.unknown_derived_metric" in codes
+    assert "causal_event.missing_derived_metric" in codes
+
+
+def test_derived_metric_registry_reports_missing_world_references(registry: DLCRegistry):
+    registry.create(manifest("derived-refs"))
+    content = valid_content()
+    content["derived_metrics"] = [
+        derived_metric("missing_entity", formula={
+            "op": "source", "source": "metric", "entity_id": "nowhere", "name": "morale",
+        }),
+        derived_metric("missing_resource", formula={
+            "op": "source", "source": "metric", "entity_id": "place", "name": "unknown",
+        }),
+        derived_metric("wrong_kind", formula={
+            "op": "source", "source": "parameter", "entity_id": "place", "name": "morale",
+        }),
+    ]
+
+    registry.save_content("derived-refs", content)
+    codes = {issue.code for issue in registry.validate("derived-refs")}
+
+    assert "derived_metric.missing_entity" in codes
+    assert "derived_metric.missing_resource" in codes
+    assert "derived_metric.invalid_resource_kind" in codes
+
+
+def test_rhythm_document_is_normalized_and_validated(registry: DLCRegistry):
+    registry.create(manifest("rhythm"))
+    content = valid_content()
+    content["issue_types"] = [{
+        "issue_type_id": "market_report",
+        "display_name": "Market report",
+        "default_urgency": "normal",
+        "source": {"allowed_kinds": ["system"]},
+    }]
+    content["rhythm"] = {
+        "enabled": True,
+        "max_active_issues": 2,
+        "attention_budget": 6,
+        "rules": [{
+            "rule_id": "market_pressure",
+            "issue_type_ids": ["market_report"],
+            "event_types": ["market_shift"],
+            "priority": 5,
+            "max_active": 1,
+            "deescalation": {
+                "enabled": True,
+                "target_level": 0,
+                "conditions": [{
+                    "kind": "anchored_inventory",
+                    "entity_id": "place",
+                    "name": "coin",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+        }],
+    }
+    registry.save_content("rhythm", content)
+
+    loaded = registry.load_content("rhythm")
+    assert loaded["rhythm"]["rules"][0]["rule_id"] == "market_pressure"
+    assert registry.validate("rhythm") == []
+
+
+def test_rhythm_validation_reports_issue_and_condition_reference_errors(registry: DLCRegistry):
+    registry.create(manifest("broken-rhythm"))
+    content = valid_content()
+    content["rhythm"] = {
+        "enabled": True,
+        "rules": [{
+            "rule_id": "broken",
+            "issue_type_ids": ["missing_issue"],
+            "deescalation": {
+                "enabled": True,
+                "conditions": [{
+                    "kind": "anchored_inventory",
+                    "entity_id": "missing_entity",
+                    "name": "missing_resource",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+            "climax": {
+                "enabled": True,
+                "level": 2,
+                "conditions": [{
+                    "kind": "derived_metric",
+                    "name": "missing_metric",
+                    "operator": "gte",
+                    "value": 1,
+                }],
+            },
+        }],
+    }
+    registry.save_content("broken-rhythm", content)
+
+    codes = {issue.code for issue in registry.validate("broken-rhythm")}
+    assert {
+        "rhythm.missing_issue_type",
+        "rhythm.missing_entity",
+        "rhythm.missing_resource",
+        "rhythm.missing_derived_metric",
+    } <= codes
+
+def test_outcome_feedback_document_is_normalized_and_validated(registry: DLCRegistry):
+    registry.create(manifest("outcome-feedback"))
+    content = valid_content()
+    content["actions"] = [{"action_id": "inspect", "display_name": "Inspect"}]
+    content["issue_types"] = [{
+        "issue_type_id": "followup",
+        "display_name": "Follow-up",
+        "default_urgency": "normal",
+        "source": {"allowed_kinds": ["system"]},
+    }]
+    content["derived_metrics"] = [derived_metric()]
+    content["outcome_feedback"] = outcome_feedback_content()
+    registry.save_content("outcome-feedback", content)
+
+    loaded = registry.load_content("outcome-feedback")
+    rule = loaded["outcome_feedback"]["rules"][0]
+    assert rule["action_ids"] == ["inspect"]
+    assert rule["issue_type_ids"] == ["followup"]
+    assert rule["metric_ids"] == ["readiness"]
+    assert rule["conditions"][1]["kind"] == "derived_metric"
+    assert rule["reveal_text"] == "The earlier inspection enabled this outcome."
+    assert registry.validate("outcome-feedback") == []
+
+
+def test_outcome_feedback_validation_reports_missing_static_references(registry: DLCRegistry):
+    registry.create(manifest("broken-outcome-feedback"))
+    content = valid_content()
+    feedback = outcome_feedback_content()
+    rule = feedback["rules"][0]
+    rule["action_ids"] = ["missing_action"]
+    rule["issue_type_ids"] = ["missing_issue"]
+    rule["create_issue_type_id"] = "missing_followup"
+    rule["metric_ids"] = ["missing_metric"]
+    rule["conditions"] = [
+        {
+            "kind": "metric",
+            "entity_id": "missing_entity",
+            "name": "missing_resource",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "actor_attribute",
+            "entity_id": "missing_actor",
+            "name": "influence",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "objective_progress",
+            "entity_id": "missing_objective",
+            "operator": "gte",
+            "value": 1,
+        },
+        {
+            "kind": "derived_metric",
+            "name": "missing_condition_metric",
+            "operator": "gte",
+            "value": 1,
+        },
+    ]
+    content["outcome_feedback"] = feedback
+    registry.save_content("broken-outcome-feedback", content)
+
+    codes = {issue.code for issue in registry.validate("broken-outcome-feedback")}
+    assert {
+        "outcome_feedback.missing_action",
+        "outcome_feedback.missing_issue_type",
+        "outcome_feedback.missing_derived_metric",
+        "outcome_feedback.missing_entity",
+        "outcome_feedback.missing_resource",
+        "outcome_feedback.missing_actor",
+        "outcome_feedback.missing_objective",
+    } <= codes

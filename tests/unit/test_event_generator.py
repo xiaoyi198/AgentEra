@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from multiagent_framework.orchestrator import Orchestrator
+from multiagent_framework.temporal_contract import TemporalContract
+from multiagent_framework.timeline_runtime import DeferredTimelineRuntime
 from multiagent_framework.types import EventObject
 from multiagent_framework.event_generator import (
     GAME_SECONDS_PER_DAY,
@@ -206,13 +208,22 @@ def make_orchestrator_for_events():
         def get_in_transit(self):
             return []
 
+        def save_all(self):
+            return 0
+
+        def load_from_db(self):
+            return None
+
     class Router:
         def __init__(self):
             self.llm = SimpleNamespace(token_counter=SimpleNamespace(to_dict=lambda: {}))
 
+        def update_time_scale(self, _seconds_per_day):
+            return None
+
     return Orchestrator(
         court_graph=Court(), timer_system=Timers(),
-        chain_log=SimpleNamespace(), router=Router(),
+        chain_log=SimpleNamespace(load_from_file=lambda: None), router=Router(),
     )
 
 
@@ -248,6 +259,118 @@ def test_orchestrator_random_event_triggers_zero_delay_causal_event_without_payl
     assert len(result.new_issues) == 4
     assert len(result.new_cases) == 4
     assert len(result.new_decision_requests) == 4
+
+
+def test_orchestrator_catch_up_preserves_event_time_for_causal_delays_and_issue_deadlines():
+    orch = make_orchestrator_for_events()
+    orch.configure_issue_catalog([{
+        "issue_type_id": "locust_report",
+        "display_name": "Locust report",
+        "source": {"allowed_kinds": ["system"]},
+        "match": {"payload_types": ["locust_plague"]},
+        "default_deadline_days": 1,
+    }], generation=6)
+    orch.configure_random_events([
+        template(
+            min_interval_days=1,
+            max_interval_days=1,
+            max_occurrences=5,
+        )
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": "locust_to_famine",
+        "source_event_types": ["locust_plague"],
+        "child_event_type": "famine_risk",
+        "delay_days": 1,
+        "probability": 1,
+        "max_depth": 2,
+        "max_fires_per_chain": 1,
+    }])
+    orch._sim_time = 5 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    random_events = [item for item in result.generated_events if item["source"] == "random"]
+    causal_events = [item for item in result.generated_events if item["source"] == "causal"]
+    assert [item["generated_at"] for item in random_events] == [
+        day * GAME_SECONDS_PER_DAY for day in range(1, 6)
+    ]
+    assert [item["generated_at"] for item in causal_events] == [
+        day * GAME_SECONDS_PER_DAY for day in range(2, 6)
+    ]
+    assert orch.causal_event_status()["pending_count"] == 1
+
+    issues = [
+        item for item in orch.list_issues()
+        if item["issue_type_id"] == "locust_report"
+    ]
+    assert len(issues) == 10
+    statuses_by_day = {
+        day: {item["status"] for item in issues if item["created_at"] == day * GAME_SECONDS_PER_DAY}
+        for day in range(1, 6)
+    }
+    assert statuses_by_day == {
+        1: {"overdue"},
+        2: {"overdue"},
+        3: {"overdue"},
+        4: {"open"},
+        5: {"open"},
+    }
+
+
+def test_orchestrator_catch_up_globally_orders_temporal_random_and_causal_events():
+    orch = make_orchestrator_for_events()
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "ordering_calendar",
+            "display_name": "Ordering Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=8)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=3)
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": "locust_to_famine",
+        "source_event_types": ["locust_plague"],
+        "child_event_type": "famine_risk",
+        "delay_days": 1,
+        "probability": 1,
+        "max_depth": 2,
+        "max_fires_per_chain": 1,
+    }])
+    orch._sim_time = 3 * GAME_SECONDS_PER_DAY
+
+    result = asyncio.run(orch._tick())
+
+    assert [
+        (item["source"], item["event_type"], item["generated_at"] / GAME_SECONDS_PER_DAY)
+        for item in result.generated_events
+    ] == [
+        ("time_system", "daily_signal", 1),
+        ("random", "locust_plague", 1),
+        ("time_system", "daily_signal", 2),
+        ("random", "locust_plague", 2),
+        ("causal", "famine_risk", 2),
+        ("time_system", "daily_signal", 3),
+        ("random", "locust_plague", 3),
+        ("causal", "famine_risk", 3),
+    ]
+    assert orch.causal_event_status()["pending_count"] == 1
 
 
 def test_orchestrator_causal_tick_budget_leaves_excess_due_events_pending():
@@ -298,3 +421,158 @@ def test_player_wakeup_issue_contract_failure_is_reported_without_crashing_tick(
     assert len(result.agent_errors) == 2
     assert {item["code"] for item in result.agent_errors} == {"issue.evidence.required"}
     assert all(item["error"] == "issue_contract_rejected" for item in result.agent_errors)
+
+
+
+def _configure_deferred_budget_scenario(orch):
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "deferred_calendar",
+            "display_name": "Deferred Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=40)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=1)
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": f"seed-{index:03d}",
+        "source_event_types": ["seed"],
+        "child_event_type": f"early-{index:03d}",
+        "target_agents": ["county-a"],
+        "delay_days": 0,
+        "probability": 1,
+        "max_depth": 1,
+        "max_fires_per_chain": 1,
+    } for index in range(129)])
+    orch.inject_event(EventObject(
+        event_id="deferred-seed", event_type="seed", severity=1,
+        target_agents=[], initial_payload={}, generated_at=0,
+    ))
+    orch._sim_time = GAME_SECONDS_PER_DAY
+
+
+def test_timeline_backpressure_rolls_producer_cursors_back_before_publication():
+    orch = make_orchestrator_for_events()
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "backpressure_calendar",
+            "display_name": "Backpressure Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=41)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=1)
+    ], preserve_state=False)
+    orch.deferred_timeline = DeferredTimelineRuntime(max_entries=1)
+    orch._sim_time = GAME_SECONDS_PER_DAY
+    temporal_before = copy.deepcopy(orch.temporal_runtime.snapshot())
+    random_before = copy.deepcopy(orch.random_event_generator.snapshot())
+
+    result = asyncio.run(orch._tick())
+
+    assert orch.deferred_timeline.pending_count == 0
+    assert orch.temporal_runtime.snapshot() == temporal_before
+    assert orch.random_event_generator.snapshot() == random_before
+    assert orch.deferred_timeline.public_status(sim_time=orch.sim_time)["backpressure_count"] == 1
+    error = next(item for item in result.agent_errors if item["error"] == "timeline_backpressure")
+    assert error["detail"] == "deferred_timeline.capacity_exceeded"
+
+
+def test_causal_budget_persists_later_sources_until_oldest_due_work_finishes():
+    orch = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(orch)
+
+    first = asyncio.run(orch._tick())
+
+    assert len(first.generated_events) == 128
+    assert all(item["source"] == "causal" for item in first.generated_events)
+    assert orch.causal_event_status()["pending_count"] == 1
+    assert orch.deferred_timeline.pending_count > 0
+
+    second = asyncio.run(orch._tick())
+
+    visible = [(item["source"], item["event_type"]) for item in second.generated_events]
+    assert visible[0][0] == "causal"
+    assert ("time_system", "daily_signal") in visible[1:]
+    assert ("random", "locust_plague") in visible[1:]
+    assert orch.causal_event_status()["pending_count"] == 0
+    assert orch.deferred_timeline.pending_count == 0
+
+
+def test_deferred_timeline_survives_orchestrator_save_and_restart():
+    original = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(original)
+    asyncio.run(original._tick())
+    original._paused = True
+    state = copy.deepcopy(original.save_state())
+    expected_timeline = state["deferred_timeline"]
+
+    restored = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(restored)
+    restored.load_state(state)
+
+    assert restored.deferred_timeline.snapshot() == expected_timeline
+    resumed = asyncio.run(restored._tick())
+    visible = [(item["source"], item["event_type"]) for item in resumed.generated_events]
+    assert visible[0][0] == "causal"
+    assert ("time_system", "daily_signal") in visible[1:]
+    assert ("random", "locust_plague") in visible[1:]
+    assert restored.deferred_timeline.pending_count == 0
+
+
+
+def test_event_wakeup_outbox_survives_restart_and_replay_is_idempotent():
+    event = EventObject(
+        event_id="stable-event",
+        event_type="inspection",
+        severity=3,
+        target_agents=["county-a"],
+        initial_payload={"message": "inspect granary"},
+        generated_at=12,
+    )
+    original = make_orchestrator_for_events()
+    original.inject_event(event)
+    original._paused = True
+    state = copy.deepcopy(original.save_state())
+
+    assert state["wakeup_outbox"]["entries"][0]["status"] == "pending"
+    expected_delivery_id = state["wakeup_outbox"]["entries"][0]["delivery_id"]
+    expected_chain_id = state["wakeup_outbox"]["entries"][0]["chain_id"]
+
+    restored = make_orchestrator_for_events()
+    restored.load_state(state)
+    restored.inject_event(copy.deepcopy(event))
+
+    snapshot = restored._pending_wakeups.snapshot()
+    assert len(snapshot["entries"]) == 1
+    assert snapshot["entries"][0]["delivery_id"] == expected_delivery_id
+    assert snapshot["entries"][0]["chain_id"] == expected_chain_id

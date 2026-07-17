@@ -14,6 +14,7 @@ export const CAUSAL_CONDITION_KINDS = [
   { key: 'event_history', label: '历史事件', help: '读取有界、脱敏的历史事件；可按目标 Agent、事件类型和时间窗口筛选。' },
   { key: 'time', label: '世界模拟时间', help: '读取模拟天数 sim_day，或读取模拟秒数 sim_time。' },
   { key: 'objective_progress', label: '目标进度', help: '读取 Objective 的 progress、status 等公开状态字段。' },
+  { key: 'derived_metric', label: '派生指标', help: '读取 DLC 定义的确定性派生指标；规则只能读取允许 rule 受众的指标。' },
   { key: 'aggregate_metric', label: '聚合统计', help: '对实体、库存、指标、Actor 属性、关系或持续事件执行 sum/avg/min/max/count。' },
   { key: 'world_truth', label: '世界真相（隐藏层）', help: '读取权威世界事实；仅供模拟规则求值，绝不能直接注入 Agent 提示词。' },
   { key: 'actor_belief', label: 'Actor 主观认知', help: '读取指定 Actor / Agent holder 的认知；可与真相不同，也可能失真或过期。' },
@@ -149,6 +150,7 @@ export function defaultCausalCondition(kind = 'anchored_inventory', catalogs = {
   const actorId = firstActorId(catalogs)
   const relationshipType = catalogs.relationshipTypes?.[0]?.relationship_type_id || ''
   const objectiveId = catalogs.objectives?.[0]?.objective_id || ''
+  const derivedMetricId = catalogs.derivedMetrics?.[0]?.metric_id || catalogs.derived_metrics?.[0]?.metric_id || ''
   const eventType = catalogs.eventTypes?.[0] || ''
   const ongoingType = catalogs.ongoingEvents?.[0]?.event_type || eventType
   let condition = { kind, operator: 'eq', value: '', entity_id: '', name: '', target_entity_id: '', field: '', aggregate: '', window_days: '', filters: {} }
@@ -165,6 +167,7 @@ export function defaultCausalCondition(kind = 'anchored_inventory', catalogs = {
   else if (kind === 'event_history') condition = { ...condition, name: eventType, field: 'count', operator: 'gte', value: 1, window_days: 30 }
   else if (kind === 'time') condition = { ...condition, name: 'sim_day', operator: 'gte', value: 0 }
   else if (kind === 'objective_progress') condition = { ...condition, entity_id: objectiveId, field: 'progress', operator: 'gte', value: 1 }
+  else if (kind === 'derived_metric') condition = { ...condition, name: derivedMetricId, operator: 'gte', value: 0 }
   else if (kind === 'aggregate_metric') condition = { ...condition, field: 'entity_count', aggregate: 'count', operator: 'gte', value: 1 }
   else if (kind === 'world_truth') condition = { ...condition, name: '', field: '', value: '' }
   else if (kind === 'actor_belief') condition = { ...condition, name: '', target_entity_id: actorId, field: '', value: '' }
@@ -273,6 +276,7 @@ export function serializeCausalCondition(source, index = null) {
       requireReference(result, 'name', '关系类型')
     }
     if (result.kind === 'objective_progress' && !result.entity_id && !result.name) throw new Error('目标 ID 不能为空。')
+    if (result.kind === 'derived_metric') requireReference(result, 'name', '派生指标')
     if (result.kind === 'phase') {
       requireReference(result, 'field', '阶段字段')
       if (result.field !== 'phase_id' && !/^metadata\.[^.]+(?:\.[^.]+)*$/.test(result.field)) {

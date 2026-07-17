@@ -123,6 +123,25 @@ def test_explicit_targets_override_source_and_poll_is_chronological():
     assert late.target_agents == ["cabinet"]
 
 
+def test_next_due_key_peeks_without_consuming_and_stably_breaks_ties_by_event_id():
+    engine = CausalEventEngine([
+        rule(rule_id="same_b", delay_days=1, child_event_type="child_b"),
+        rule(rule_id="same_a", delay_days=1, child_event_type="child_a"),
+    ])
+    assert engine.observe(source(), sim_time=0) == 2
+    pending = engine.snapshot()["pending"]
+    expected = min((item["due_at"], item["event"]["event_id"]) for item in pending)
+
+    assert engine.next_due_key(GAME_SECONDS_PER_DAY - 1) is None
+    assert engine.next_due_key(GAME_SECONDS_PER_DAY) == expected
+    assert engine.next_due_key(GAME_SECONDS_PER_DAY) == expected
+    assert engine.snapshot()["pending"] == pending
+
+    first_poll = engine.poll(GAME_SECONDS_PER_DAY, max_events=1)
+    assert first_poll.due_count == 1
+    assert first_poll.events[0].event_id == expected[1]
+
+
 def test_duplicate_source_is_idempotent_and_rule_fire_count_is_reserved_at_schedule_time():
     engine = CausalEventEngine([rule(delay_days=10)])
     event = source()

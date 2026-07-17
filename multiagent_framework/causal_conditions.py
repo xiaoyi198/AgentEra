@@ -1,4 +1,4 @@
-﻿"""Generic, deterministic causal-condition schema and value resolver."""
+"""Generic, deterministic causal-condition schema and value resolver."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ FACT_KINDS = {
     "entity_field", "entity_tag", "entity_state",
     "actor_attribute", "actor_state", "actor_trait", "actor_membership",
     "relationship", "ongoing_event", "event_history", "time",
-    "objective_progress", "aggregate_metric", "world_truth", "actor_belief",
+    "objective_progress", "aggregate_metric", "derived_metric", "world_truth", "actor_belief",
     "player_knowledge", "knowledge_confidence", "knowledge_freshness",
     "knowledge_secrecy", "investigation", "phase",
 }
@@ -124,7 +124,7 @@ class CausalCondition:
             raise CausalEventError("causal_condition_reference_invalid")
         if self.kind == "relationship" and (not self.entity_id or not self.target_entity_id or not self.name):
             raise CausalEventError("causal_condition_reference_invalid")
-        if self.kind == "objective_progress" and not (self.entity_id or self.name):
+        if self.kind in {"objective_progress", "derived_metric"} and not (self.entity_id or self.name):
             raise CausalEventError("causal_condition_reference_invalid")
         if self.kind in {"world_truth", "player_knowledge"} and not self.name:
             raise CausalEventError("causal_condition_reference_invalid")
@@ -158,6 +158,7 @@ class CausalConditionContext:
     knowledge_provider: Any = None
     issue_manager: Any = None
     action_catalog: Any = None
+    derived_metric_provider: Any = None
 
 
 def _field(value: Any, name: str, default: Any = _MISSING) -> Any:
@@ -418,6 +419,17 @@ def resolve_condition_value(condition: CausalCondition, context: CausalCondition
         return objective.get(condition.field or "progress", _MISSING) if objective is not None else _MISSING
     if condition.kind == "aggregate_metric":
         return _aggregate_value(condition, context)
+    if condition.kind == "derived_metric":
+        provider = context.derived_metric_provider
+        evaluator = getattr(provider, "evaluate", None)
+        if not callable(evaluator):
+            return _MISSING
+        metric_id = condition.name or condition.entity_id
+        try:
+            result = evaluator(metric_id, context, audience="rule")
+        except Exception:
+            return _MISSING
+        return result.get("value", _MISSING) if isinstance(result, Mapping) and result.get("status") == "ok" else _MISSING
     provider = context.knowledge_provider
     if provider is None:
         return _MISSING

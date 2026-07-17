@@ -23,6 +23,15 @@ def _atomic_write(path: Path, data: str) -> None:
     tmp.replace(path)
 
 
+def _snapshot_if_present(owner: Any, attribute: str) -> dict[str, Any]:
+    runtime = getattr(owner, attribute, None)
+    snapshot = getattr(runtime, "snapshot", None)
+    if not callable(snapshot):
+        return {}
+    value = snapshot()
+    return value if isinstance(value, dict) else {}
+
+
 class RuntimePersistor:
     """负责把 Orchestrator 的 in-memory 状态落盘到 runtime/ 目录.
 
@@ -51,43 +60,66 @@ class RuntimePersistor:
         # 1. state.json
         if self._state_dirty:
             try:
-                state_data: dict[str, Any] = {
-                    "sim_time": self._orch._sim_time,
-                    "seconds_per_day": self._orch._seconds_per_day,
-                    "memorials": (
-                        self._orch.issue_manager.legacy_memorials(sim_time=self._orch._sim_time)
-                        if hasattr(self._orch, "issue_manager") else self._orch.memorials
-                    ),
-                    "issue_runtime": (
-                        self._orch.issue_manager.snapshot()
-                        if hasattr(self._orch, "issue_manager") else {}
-                    ),
-                    "random_events": (
-                        self._orch.random_event_generator.snapshot()
-                        if hasattr(self._orch, "random_event_generator")
-                        else {}
-                    ),
-                    "causal_events": (
-                        self._orch.causal_event_engine.snapshot()
-                        if hasattr(self._orch, "causal_event_engine")
-                        else {}
-                    ),
-                    "time_rules": (
-                        self._orch.time_rule_status()
-                        if hasattr(self._orch, "time_rule_status")
-                        else {}
-                    ),
-                    "action_runtime": (
-                        self._orch.action_catalog.snapshot()
-                        if hasattr(self._orch, "action_catalog")
-                        else {}
-                    ),
-                    "objective_runtime": (
-                        self._orch.objective_manager.snapshot()
-                        if hasattr(self._orch, "objective_manager")
-                        else {}
-                    ),
-                }
+                snapshot_builder = getattr(self._orch, "runtime_snapshot", None)
+                if callable(snapshot_builder):
+                    state_data = snapshot_builder()
+                    if not isinstance(state_data, dict):
+                        raise TypeError("runtime_snapshot() must return a dict")
+                else:
+                    # Compatibility for focused tests and embedders that expose
+                    # only a partial orchestrator-like object.
+                    state_data: dict[str, Any] = {
+                        "sim_time": self._orch._sim_time,
+                        "seconds_per_day": self._orch._seconds_per_day,
+                        "memorials": (
+                            self._orch.issue_manager.legacy_memorials(sim_time=self._orch._sim_time)
+                            if hasattr(self._orch, "issue_manager") else self._orch.memorials
+                        ),
+                        "issue_runtime": (
+                            self._orch.issue_manager.snapshot()
+                            if hasattr(self._orch, "issue_manager") else {}
+                        ),
+                        "random_events": (
+                            self._orch.random_event_generator.snapshot()
+                            if hasattr(self._orch, "random_event_generator") else {}
+                        ),
+                        "causal_events": (
+                            self._orch.causal_event_engine.snapshot()
+                            if hasattr(self._orch, "causal_event_engine") else {}
+                        ),
+                        "time_rules": (
+                            self._orch.time_rule_status()
+                            if hasattr(self._orch, "time_rule_status") else {}
+                        ),
+                        "time_system_runtime": _snapshot_if_present(
+                            self._orch, "temporal_runtime"
+                        ),
+                        "lifecycle_runtime": _snapshot_if_present(
+                            self._orch, "lifecycle_runtime"
+                        ),
+                        "deferred_timeline": _snapshot_if_present(
+                            self._orch, "deferred_timeline"
+                        ),
+                        "wakeup_outbox": _snapshot_if_present(
+                            self._orch, "_pending_wakeups"
+                        ),
+                        "rhythm_runtime": _snapshot_if_present(
+                            self._orch, "rhythm_runtime"
+                        ),
+                        "outcome_feedback_runtime": _snapshot_if_present(
+                            self._orch, "outcome_feedback_runtime"
+                        ),
+                        "auto_pause_reason": getattr(self._orch, "_auto_pause_reason", None),
+                        "action_runtime": _snapshot_if_present(
+                            self._orch, "action_catalog"
+                        ),
+                        "objective_runtime": _snapshot_if_present(
+                            self._orch, "objective_manager"
+                        ),
+                        "actor_runtime": _snapshot_if_present(
+                            self._orch, "actor_manager"
+                        ),
+                    }
                 _atomic_write(
                     STATE_FILE,
                     json.dumps(state_data, ensure_ascii=False, indent=2),

@@ -226,7 +226,7 @@ FC 处理函数的中央注册表：
 - `fired_timers` — `deque(maxlen=2000)`，已触发的定时器记录
 - `__init__(court_graph, timer_system, chain_log, router, seconds_per_day, on_tick, action_agent, memory_compressor)` — 构造参数
 - `run(tick_interval=0.25)` — tick 循环，用 `time.monotonic()` 推进游戏时间；启动 persistor 后台任务
-- `_tick()` — 检查定时器 → 弹出到期的 OngoingEvent → 派发唤醒（皇帝奏折 vs Agent 调用）→ 处理玩家操作
+- `_tick()` — claim 到期 Timer → 发布持久 Wakeup Outbox → 弹出到期 OngoingEvent → claim/派发唤醒（玩家 Issue vs Agent 调用）→ 处理玩家操作
   - 同一 Agent 的多个唤醒消息会自动合并（拼接为一条 payload）
 - `_apply_matured_event(ev)` — 应用到期 OngoingEvent 的 expected_result（更新实体状态 + 库存变化）
 - `_process_agents_background()` — **后台 asyncio.Task**，不阻塞时间流动
@@ -236,7 +236,7 @@ FC 处理函数的中央注册表：
 - `_call_agent_safe()` — 调用单个 Agent，记录 chain log，异常安全
   - 检测 `request_action` → 绕过 Router，直接分发给 ActionAgent
   - 检测 hop 超限 → 标记 loop_detected
-- `_run_action()` — 运行 ActionAgent 模拟行动，完成后创建 Timer 把结果送回发起者
+- `_run_action()` — 运行 ActionAgent 模拟行动，完成后创建 Timer 把结果送回发起者；`request_action` 在后台 wakeup 任务内等待该分发完成后才 ACK
 - `_build_fc_context()` — 组装 `FCContext`，注入 sim_time、pending_wakeups、_run_action 绑定等
 - `_execute_commands(commands)` — 遍历 RouterCommand 列表，调用 `dispatch_fc` 统一执行；不再有 if/elif 分支
 - `_handle_player_action(action, result)` — 确定性逻辑，皇帝→太监→逐级传达（第二个参数 `result: TickResult`）
@@ -2940,3 +2940,752 @@ npm run build
 ```
 
 外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；不得把值、响应或连接错误原文写入源码、文档、日志或 Git。
+
+## UI 中文编码约束（2026-07-15）
+
+- 前端源码统一使用 UTF-8。新增 JSX 中文文案应优先直接写可读中文，例如 `<div>当前状态</div>`，不要把 JSXText 写成 `<div>\u5f53\u524d...</div>`。
+- JSX 属性中的中文也应优先直接使用 UTF-8；如确需 Unicode 转义，必须放在 JavaScript 表达式中，例如 `placeholder={'\u8bf7\u8f93\u5165'}`，不要写成会按字面显示反斜杠的属性文本。
+- JavaScript 字符串可以使用 `\uXXXX`，但可读的产品文案仍优先使用 UTF-8 中文；JSXText 不会自动把字面量转义序列转换成汉字。
+- 修改 UI 文案后必须运行 `npm test`、`npm run lint` 和 `npm run build`，并扫描新增行中的替换字符、常见乱码片段及误显示的 `\uXXXX`。
+
+## Phase checkpoint: DLC derived metrics and aggregate formulas (v0.31.0, 2026-07-15)
+
+### 在 DLC 中声明派生指标
+
+在任意 DLC 的 `content.json` 顶层添加 `derived_metrics` 数组。`metric_id` 是目标、规则、UI、Agent Prompt 和存档/Generation 引用使用的稳定 ID；发布后不要仅因显示文案变化而修改它。下面是合法的最小组合示例：
+
+```json
+{
+  "derived_metrics": [
+    {
+      "metric_id": "frontier_readiness",
+      "display_name": "边境综合战备度",
+      "description": "组合警戒度、Actor 属性和统一锚定库存价值。",
+      "unit": "%",
+      "precision": 1,
+      "minimum": 0,
+      "maximum": 100,
+      "enabled": true,
+      "audiences": ["player", "ui", "agent", "rule", "objective"],
+      "missing_policy": "fail",
+      "formula": {
+        "op": "round",
+        "precision": 1,
+        "value": {
+          "op": "clamp",
+          "min": 0,
+          "max": 100,
+          "value": {
+            "op": "weighted_sum",
+            "terms": [
+              {
+                "weight": 0.55,
+                "value": {"source": "metric", "entity_id": "边境哨站", "name": "警戒度"}
+              },
+              {
+                "weight": 0.25,
+                "value": {"source": "actor_attribute", "entity_id": "frontier_guard", "name": "vigilance"}
+              },
+              {
+                "weight": 0.20,
+                "value": {
+                  "op": "clamp", "min": 0, "max": 100,
+                  "value": {"source": "anchored_inventory", "entity_id": "边境哨站", "name": "边境银券"}
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {"category": "readiness"}
+    }
+  ]
+}
+```
+
+`formula` 可使用显式 `op`，也接受三种简写：`{"constant": 1}`、`{"derived_metric": "metric_id"}`、`{"source": "sim_day"}`。Studio 保存时会规范化为统一结构。
+
+### 17 类公式节点
+
+| `op` | 字段 | 语义 |
+|---|---|---|
+| `constant` | `value` | 有限数值常量 |
+| `source` | `source` 与来源字段 | 直接读取单个世界值 |
+| `derived_metric` | `metric_id` | 引用同一已解析 Catalog 中的另一指标 |
+| `aggregate` | `source`, `aggregate`, 可选引用/过滤字段 | 聚合一组世界值 |
+| `add` / `sum` | `values[]` | 子项求和 |
+| `subtract` | `left`, `right` | 左值减右值 |
+| `multiply` | `values[]` | 子项连乘 |
+| `divide` | `left`, `right` | 左值除右值；除零返回稳定错误 |
+| `min` / `max` / `avg` | `values[]` | 子项最小值、最大值或平均值 |
+| `weighted_sum` | `terms[].weight`, `terms[].value` | 各项乘权重后求和；框架不会自动归一化权重 |
+| `clamp` | `min`, `max`, `value` | 把结果限制在闭区间内 |
+| `round` | `precision`, `value` | 四舍五入到 0-8 位小数 |
+| `coalesce` | `values[]` | 返回首个不是“缺失”的子项；不吞掉除零等公式错误 |
+
+每个 Catalog 最多 128 项；每棵公式最多 12 层、256 个节点，每个多子项节点最多 64 项。数值必须有限。跨指标依赖必须存在且不得形成自引用或循环。
+
+### 数据来源与聚合
+
+直接 `source` 支持：
+
+- `anchored_inventory`：必须提供 `entity_id` 与资源 `name`，读取该实体对应库存的 `base_value` 总和，而不是原始数量；
+- `metric` / `parameter`：必须提供 `entity_id` 与值 `name`，读取 `entity_values` 的数值；
+- `actor_attribute`：必须提供 Actor `entity_id` 与属性 `name`；
+- `sim_day`：读取当前模拟天数，不需要引用字段。
+
+`aggregate` 支持 `entity_count`、`anchored_inventory`、`metric`、`parameter`、`actor_attribute`、`relation`、`ongoing_event`，并选择 `sum`、`avg`、`min`、`max` 或 `count`：
+
+- 实体类来源可用 `filters.entity_type`、`filters.status`、`filters.tag`；可选 `entity_id` 进一步限定单一实体。
+- Actor 属性可用 `filters.actor_type`；可选 `entity_id` 限定 Actor。
+- 关系聚合中 `entity_id` 对应 `parent_id`，`target_entity_id` 对应 `child_id`，`name` 对应关系类型；`filters.active` 限制有效边，`filters.value_field` 指定数值路径，默认 `strength`。
+- 持续事件用可选 `entity_id` 限定所属实体，用 `name` 限定事件类型。
+- `count` 对空集合返回 `0`；其他聚合对空集合视为缺失。高级 `filters` 最多 16 项且值只能是安全 JSON 标量。
+
+### 受众、缺失策略与消费端
+
+- `player`：允许安全玩家 API 返回；
+- `ui`：允许框架 UI 消费；
+- `agent`：允许进入 Agent 每轮只读指标摘要；
+- `rule`：允许因果条件 `kind: "derived_metric"` 求值；
+- `objective`：允许 Objective 条件 `kind: "derived_metric"` 求值。
+
+受众是运行时权限边界。不要只给 `player` 后再期待 Rule 或 Objective 能读取。`missing_policy: "fail"` 会保留 missing 状态；`"zero"` 只在来源缺失时回退为零，不会掩盖除零、非有限结果或非法公式。定义级 `minimum`、`maximum` 与 `precision` 在公式完成后统一应用。
+
+Objective 示例：
+
+```json
+{
+  "kind": "derived_metric",
+  "name": "frontier_readiness",
+  "operator": "gte",
+  "value": 85
+}
+```
+
+因果条件使用同样的 `kind/name/operator/value` 语义，但指标必须含 `rule` 受众。Agent 只收到含显示名、稳定 ID、值和单位的确定性摘要，不会收到公式或 Metadata。
+
+### UI Manifest 与安全 API
+
+Dashboard 可加入框架拥有的派生指标组件：
+
+```json
+{
+  "widget_id": "readiness_metrics",
+  "kind": "derived_metrics",
+  "region": "top",
+  "order": 5,
+  "visible": true
+}
+```
+
+`GET /api/derived-metrics` 返回当前 Generation 中授权给 `player` 的指标集合；`GET /api/derived-metrics/{metric_id}` 只返回单项安全结果。不要建立绕过 Catalog 的调试接口来公开公式、Metadata、隐藏受众指标或底层异常。
+
+### 设置中心的 Prompt 预算
+
+“多轮记忆”页包含四项热更新配置：
+
+- `agent_defaults.knowledge_context_max_records`：每轮最多注入的当前 Agent 可见知识条数，范围 1-256；
+- `agent_defaults.knowledge_context_char_budget`：知识/信念摘要字符预算，范围 128-200000；
+- `agent_defaults.derived_metric_context_max_records`：每轮最多注入的 `agent` 受众指标条数，范围 0-64，设为 0 关闭；
+- `agent_defaults.derived_metric_context_char_budget`：派生指标摘要字符预算，范围 0-16000，设为 0 关闭。
+
+条数和字符预算同时生效，超出后按 Catalog 稳定顺序停止追加。增大预算会增加 Token 成本；不要通过预算扩大来绕过知识/指标受众隔离。
+
+### DLC Studio 工作流
+
+1. 在“派生指标”页新增稳定 ID，填写显示字段、单位、范围、精度、受众和缺失策略。
+2. 使用可视化公式树选择 17 类节点；通过当前草稿 Catalog 选择实体、Actor、资源、Entity Value、关系类型、事件和已有派生指标。
+3. 保存前处理自引用、缺失依赖、全图循环、重复 ID、非法来源字段、非有限值、Clamp 范围、Round 精度以及深度/节点上限错误。
+4. 使用 Registry Validate 与未保存草稿 Dry Run 验证真实世界引用和运行值，再发布 Generation。
+5. 热重载、归档恢复或回滚后，检查 API、Objective、Rule、Agent 和 UI 都报告同一 Generation。
+
+### 必跑验证
+
+```powershell
+python -m pytest -q tests/unit/test_derived_metrics.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py tests/unit/test_causal_analysis.py tests/unit/test_objective_contract.py tests/unit/test_agent_runtime.py tests/unit/test_derived_metric_api.py
+python -m pytest -q
+python -m compileall multiagent_framework routers main.py
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; assert not DLCRegistry(Path('.').resolve()).validate('example_frontier')"
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；未注入 URL/Key 时必须 skip。不得把实际值、响应正文、Provider 原始异常或连接地址写入源码、配置、文档、命令记录、日志或 Git。
+
+## DLC 时间系统开发指南 (v0.32.0)
+
+### 最小配置
+
+`content.json` 可增加：
+
+```json
+{
+  "time_system": {
+    "enabled": true,
+    "calendar": {
+      "calendar_id": "campaign_calendar",
+      "display_name": "远征历",
+      "epoch_label": "远征纪元",
+      "start_year": 1,
+      "start_month_id": "month_1",
+      "start_day": 1,
+      "weekdays": ["一", "二", "三", "四", "五", "六", "日"],
+      "start_weekday": "一",
+      "months": [{"month_id": "month_1", "display_name": "启程月", "days": 30}]
+    },
+    "seasons": [],
+    "cycles": [{
+      "cycle_id": "command_turn",
+      "display_name": "指挥回合",
+      "kind": "turn",
+      "period_days": 7,
+      "duration_days": 7,
+      "offset_days": 0,
+      "enabled": true
+    }],
+    "boundary_events": [],
+    "auto_pause_conditions": []
+  }
+}
+```
+
+### Authoring rules
+
+1. Month, season, cycle, boundary-event and pause IDs must be stable ASCII identifiers. Month lengths are positive integers; the sum defines `year_days`. The start month/day/weekday must exist in the same calendar.
+2. Seasons use inclusive day-of-year bounds. A season with `start_day > end_day` crosses the year boundary. Do not overlap seasons; use Studio validation before Registry validation.
+3. Cycle `duration_days` must be between 1 and `period_days`. `offset_days` is the first start day index. Keep gameplay cadence in DLC data instead of adding topic branches to Orchestrator.
+4. Boundary events may filter by cycle, season, month or day and may wake known Agents or project a known Issue Type. Payload must remain safe JSON and should carry narrative data, not instructions for executing code.
+5. Condition pauses use the common causal condition shape. A derived metric pause requires the metric to grant the `rule` audience. Boundary pauses may leave `conditions` empty. Use `edge_triggered` for thresholds that should fire only when transitioning from false to true, and `cooldown_days` to suppress rapid retriggers.
+
+### Runtime and UI checklist
+
+- Reload the active Generation after editing and inspect `GET /api/time-system`; never read raw DLC time definitions directly from feature components.
+- Preserve `time_system_runtime` in saves. Do not reset receipts during ordinary hot reload; only same-ID receipts are eligible for preservation.
+- Public UI code must use the safe projection and must not copy authored condition trees. Closing an auto-pause banner is not equivalent to calling `POST /api/resume`.
+- Add or update `TemporalSystemTools.test.js` for authoring behavior and `TemporalStateTools.test.js` for public formatting. Backend contract/runtime changes require `test_temporal_contract.py`, `test_temporal_runtime.py` and Generation integration coverage.
+- `frontend/dist/`, `runtime/` and `.pytest_cache/` are generated/runtime artifacts and must not be committed.
+
+## Developing DLC dynamic lifecycles (v0.33.0)
+
+### Minimal authoring shape
+
+`lifecycle` is a top-level sibling of `actors`, `agents`, and `time_system` in a bundle-v1 `content.json`:
+
+```json
+{
+  "lifecycle": {
+    "enabled": true,
+    "recent_feedback_limit": 50,
+    "actor_templates": [],
+    "positions": [],
+    "transitions": []
+  }
+}
+```
+
+Use ASCII-safe IDs for template, position, transition, cycle, season, and month identifiers. Entity, Actor, organization, and Agent references may use existing Unicode IDs. Keep template source Agents static and present in the same resolved DLC graph so model routing and memory inheritance are deterministic.
+
+### Template and position rules
+
+- A template's `actor` object omits `actor_id`; `spawn_actor` assigns it from `actor_id_pattern`. Optional `entity` and `agent` objects create projections in the same transaction.
+- Dynamic Agents require `agent.source_agent_id`. Use `agent.system_prompt` only for role-specific additions; model Profile, task routing, multi-round budget, tools, memory settings, and Provider routing are inherited from the source Agent and may be narrowed by a safe patch.
+- A position must reference an existing organization and declares capacity, incumbents, candidates, role, rank, and score fields. Valid score sources are `attribute`, `state`, `membership_rank`, and `actor_id`. Add an Actor-ID ascending score with zero weight when an explicit stable tie-breaker helps authors understand the order.
+
+### Transition and operation rules
+
+Valid transition triggers are `condition`, `manual`, `day_start`, `week_start`, `month_start`, `year_start`, `season_start`, `season_end`, `cycle_start`, and `cycle_end`. Time-bound triggers must reference IDs declared in `time_system`. Conditions reuse the causal-condition DSL and obey the same hidden-state and audience rules.
+
+The seven operation payloads are edited in DLC Studio and validated again by the backend. Keep multi-operation transitions small and cohesive because all commands are committed as one atomic batch. Use `{sequence}`, `{transition_id}`, `{template_id}`, and `{actor_id}` only in supported pattern fields. Do not depend on array order or random selection for succession; use position scores and stable Actor IDs.
+
+### Hot reload, rollback, and saves
+
+Lifecycle definitions are Generation-bound. Never mutate an existing contract object after publication. Build and validate the next Generation first, then atomically switch the orchestrator. Runtime snapshots must preserve receipt IDs, sequence counters, cooldowns, condition latches, tombstones, dynamic Actor/Agent projections, positions, and recent feedback. Reload/rollback code must not resurrect retired Actors or reuse sequence IDs from a newer Generation.
+
+### DLC Studio workflow
+
+1. Open DLC Studio and select “动态生命周期”.
+2. Create Actor templates first, including optional entity and dynamic Agent sections.
+3. Create positions and verify organization/Actor references.
+4. Create transitions, choose a trigger, add conditions, then add one or more of the seven operations.
+5. Enable player feedback for important automatic transitions.
+6. Save only after the local editor reports no structural/reference errors; then run backend Registry validation because it has the complete resolved DLC graph.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_lifecycle_contract.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py tests/unit/test_lifecycle_state.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Also run `python -m pytest tests/unit/test_version_consistency.py -q` after a release bump. Before committing, validate `dlcs/example_frontier`, run `git diff --check`, and confirm that `frontend/dist/`, runtime state, API keys, and Provider URLs are not staged.
+
+## Developing DLC rhythm rules (v0.34.0)
+
+### Minimal authoring shape
+
+`rhythm` is a top-level sibling of `issue_types`, `random_events`, `time_system`, and `lifecycle` in a bundle-v1 `content.json`:
+
+```json
+{
+  "rhythm": {
+    "enabled": true,
+    "max_active_issues": 8,
+    "attention_budget": 12,
+    "attention_recovery_per_day": 4,
+    "queue_limit": 128,
+    "recent_feedback_limit": 32,
+    "quiet_period_days": 0,
+    "critical_bypasses_quiet": true,
+    "urgency_costs": {
+      "low": 1,
+      "normal": 2,
+      "high": 3,
+      "critical": 5
+    },
+    "rules": []
+  }
+}
+```
+
+Use ASCII-safe unique `rule_id` values. Each enabled rule must match at least one declared `issue_type_ids` entry or authored `event_types` entry. Rules are evaluated by descending `priority` and then stable rule ID; do not rely on source-array order as a tie-breaker. `attention_cost` may be omitted to use the matched urgency cost.
+
+### Admission, cooldown, mutex, and quiet periods
+
+- `max_active_issues` is global; `max_active` is per rule. Both count non-terminal Issues.
+- Attention is restored from authoritative elapsed `sim_time`, not wall-clock time. Keep costs and daily recovery proportional to the number of meaningful decisions expected per game day.
+- `cooldown_days` starts from a successful activation. `mutual_exclusion_group` prevents overlapping active arcs in the same group.
+- Global and rule `quiet_period_days` suppress new matching content after activation/settlement. `allow_during_quiet` is rule-specific; `critical_bypasses_quiet` only affects critical Issue traffic.
+- `queue_limit` bounds deferred Issue candidates. Random events are never queued: they are either admitted or suppressed before injection.
+
+### Escalation, de-escalation, and climax
+
+`escalation` defines `after_days`, `interval_days`, `max_level`, `urgency_by_level`, and optional player-safe `feedback_by_level`. The runtime derives due levels from game time, so reloads and replays remain deterministic.
+
+`deescalation` may periodically evaluate shared causal `conditions`, move the Issue to `target_level`, set it to `open` or `monitoring`, and emit bounded feedback. `climax` waits for its configured level and delay, evaluates the same causal DSL, moves the Issue to a terminal status, optionally closes same-group Case and DecisionRequest records, and starts a post-climax quiet period. De-escalation and climax levels must not exceed the escalation maximum.
+
+Conditions must obey normal knowledge visibility and resource-reference validation. Do not encode hidden operands in feedback strings, Event payloads, or UI labels. Keep feedback explanatory but authored; P2.4 will add generalized outcome-causality presentation.
+
+### Hot reload, rollback, saves, and API
+
+Rhythm definitions are Generation-bound. Build and validate the next Generation before publication. Compatible attention/queue/cooldown/progression state is retained on hot reload; rollback and save/load restore the runtime snapshot against current `sim_time`. Never mutate a published `RhythmContract` in place.
+
+Use `GET /api/rhythm` for diagnostics and UI consumption. It intentionally returns public rule summaries, budget/queue counters, recent feedback, and recent suppressed-event summaries, but not evaluated condition operands. If a new runtime field affects deterministic progression, add it to both `snapshot()` and `restore()` and cover reload plus save/load behavior.
+
+### DLC Studio workflow
+
+1. Open DLC Studio and select “节奏导演”.
+2. Configure the global active limit, attention capacity/recovery, queue, feedback, quiet-period, and urgency costs.
+3. Add rules, choose Issue Types and/or Event Types, then order them with explicit priorities.
+4. Configure admission overrides, cooldown, mutex group, and quiet behavior.
+5. Enable escalation first; then configure de-escalation and climax levels/conditions within that maximum.
+6. Save only after the editor reports no ID, reference, numeric, urgency, or causal-condition errors; backend Registry validation remains authoritative for the complete resolved DLC graph.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_rhythm_contract.py tests/unit/test_rhythm_runtime.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_rhythm_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Before committing, validate `dlcs/example_frontier`, run `git diff --check`, scan the new editor and sample package for replacement characters, and confirm that runtime state, local API keys, Provider URLs, and generated `frontend/dist/` files are not staged.
+
+## Developing DLC outcome feedback rules (v0.35.0)
+
+### Minimal contract
+
+Add an optional `outcome_feedback` block to `content.json`:
+
+```json
+{
+  "outcome_feedback": {
+    "enabled": true,
+    "recent_limit": 128,
+    "pending_limit": 256,
+    "receipt_limit": 2048,
+    "metric_delta_epsilon": 0.000001,
+    "immediate": {
+      "enabled": true,
+      "include_command_changes": true,
+      "include_metric_changes": true,
+      "max_changes": 12,
+      "max_metric_changes": 8
+    },
+    "case_summaries": {
+      "enabled": true,
+      "include_decisions": true,
+      "include_changes": true,
+      "include_metric_changes": true
+    },
+    "rules": [
+      {
+        "rule_id": "supply_followup",
+        "display_name": "补给行动后续报告",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": ["action"],
+        "delivery": "delayed",
+        "action_ids": ["deliver_supplies"],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": ["regional_readiness"],
+        "delay_days": 2,
+        "conditions": [],
+        "title": "补给报告送达",
+        "summary": "前线已完成补给清点。",
+        "reason": "此前执行了补给行动。",
+        "reveal_text": "",
+        "create_issue_type_id": "supply_review",
+        "attach_evidence": true
+      }
+    ]
+  }
+}
+```
+
+Omit the whole block to disable this capability for a legacy DLC. Keep every `rule_id` stable after release because receipts, delayed work, snapshots, and reload compatibility use stable rule/source identity.
+
+### Field semantics and references
+
+- Top-level `recent_limit`, `pending_limit`, and `receipt_limit` bound delivered messages, future deliveries, and idempotency history. `metric_delta_epsilon` suppresses insignificant floating-point metric movement.
+- `immediate` controls automatic feedback derived from authoritative world commands and Derived Metric deltas. Keep the per-record limits small enough that a single action remains readable.
+- `case_summaries` controls automatic summaries when a Case closes and may include the selected Decision, command changes, and metric changes.
+- `source_kinds` accepts `action`, `decision`, `case_closed`, `causal_event`, `lifecycle`, and `rhythm`. `delivery` accepts `immediate`, `delayed`, or `causal_reveal`; `delay_days` uses game days and may be zero.
+- `action_ids`, `issue_type_ids`, `event_types`, and `metric_ids` are optional filters. Action, Issue Type, and Derived Metric references must resolve in the expanded DLC Registry. Event types must resolve through the DLC event catalogs used by initial, ongoing, random, causal, lifecycle, or rhythm content.
+- `conditions` uses the same generic causal-condition objects as gameplay rules. Do not encode hidden thresholds or secret facts into `title`, `summary`, or `reason`. For a `causal_reveal`, put the disclosure in `reveal_text`; it is emitted only after the rule actually matches.
+- `create_issue_type_id` optionally creates a follow-up Issue when feedback is delivered. Set `attach_evidence` only when the resulting public feedback is safe to attach to that Issue.
+
+### Reload, persistence and safe authoring
+
+- The runtime is Generation-bound. Snapshot/restore, Generation archive, rollback, and process restart preserve bounded recent messages, delayed work, and receipts. Replayed source events remain idempotent.
+- Hot reload preserves pending deliveries only when their contract/rule identity remains compatible. Treat changes to rule IDs, delivery semantics, filters, or text as behavior changes and test an existing save before publishing the DLC.
+- The player API deliberately excludes condition trees, thresholds, private source payloads, hidden facts, and unrevealed causes. Never add those fields to the public projection for editor convenience.
+- In DLC Studio, open “结果反馈”, edit the Chinese-described fields, use catalog selectors for references, then review the generated Diff before applying. Moving or editing a card must retain its editor state; internal `__editor_key` values must never be serialized.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_outcome_feedback_contract.py tests/unit/test_outcome_feedback_runtime.py tests/unit/test_outcome_feedback_orchestrator.py tests/unit/test_outcome_feedback_api.py tests/unit/test_dlc_registry.py tests/unit/test_dlc_runtime.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Also validate the expanded example DLC through `DLCRegistry`, exercise snapshot/restore and same-fingerprint hot reload, and inspect `GET /api/outcome-feedback` plus Tick payloads to ensure hidden causal data never reaches the player projection.
+
+## Developing cross-genre playability audits (v0.36.0)
+
+### Validation and audit responsibilities
+
+Do not add playability heuristics to `DLCRegistry.validate()`. Registry validation is authoritative for document shape, IDs, references, bounds, dependency safety, and runtime-load legality. `DLCRegistry.audit_playability()` is advisory authoring analysis: it checks whether legal content declares a credible seven-stage loop and returns Chinese, actionable gaps. A package may therefore be valid but not playable.
+
+The stable audit check IDs are:
+
+1. `player_surface` — player identity, controlled objects, and a visible UI surface.
+2. `action_roles` — player action plus Agent participation such as `wake_agent`.
+3. `issue_intake` — an enabled event/report can reach the player and create an Issue with evidence.
+4. `costly_decision` — a DecisionRequest points to an Action with an anchored cost or authoritative duration.
+5. `world_simulation` — Action output enters time/ongoing/causal processing and can change world state.
+6. `outcome_feedback` — enabled immediate/authored feedback can reach the player.
+7. `progression` — objectives/endings form a campaign, or an enabled time cycle sustains a sandbox.
+
+Keep `audit_version` stable when adding only labels or evidence. Increment it when check meaning or report shape changes. Report evidence must contain only authored IDs and player-safe labels; do not expose Prompt text, hidden knowledge, Provider configuration, or runtime secrets.
+
+### Authoring an auditable action chain
+
+For an Action-driven causal loop, the Action's `emit_event.event.event_type` must be consumed by an enabled `causal_event_rules[].source_event_types`. If the world change is delayed, declare an authoritative duration/ongoing event or causal delay, then apply a deterministic `world_effects` command. A disconnected emitted event may pass Schema validation but must fail `world_simulation`.
+
+The minimal evidence path should remain explicit in DLC JSON:
+
+```text
+initial/random/time/Agent report
+  → issue_type + evidence + decision option
+  → action cost/duration + wake_agent + emit_event
+  → causal rule + world effect
+  → outcome_feedback
+  → objective/ending or sandbox cycle
+```
+
+Use namespaced package-local IDs for relationship types and other globally merged catalogs. The `example_orbital` package uses `orbital_command`, `orbital_trust`, and `orbital_rivalry`; do not copy generic IDs from another enabled package. The deep-sea reference follows the same rule with `abyssal_command`, `abyssal_trust`, and `abyssal_rivalry`.
+
+### Studio and API
+
+Both `GET /api/dlcs` and `GET /api/dlcs/{id}` include a `playability` object. The Studio must render this server-owned result rather than duplicate Python heuristics in JavaScript. `PlayabilityAuditTools.js` may normalize missing/old payloads only; it must not infer new gameplay rules. The refresh action reloads package detail and never writes content.
+
+When extending the panel, keep all gaps and explanations in Chinese, preserve accessible region/score labels, and keep the warning that static 7/7 does not replace a real playthrough. Do not hide Registry validation errors behind the playability score.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_dlc_playability.py tests/unit/test_dlc_playability_api.py tests/integration/test_cross_genre_dlc_playthrough.py tests/integration/test_abyssal_dlc_playthrough.py -q
+node --test frontend/src/PlayabilityAuditTools.test.js
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+Before publishing, validate `example_frontier`, `example_orbital`, and `example_abyssal`, require 7/7 from `audit_playability()`, run `git diff --check`, scan edited UTF-8 files for the replacement character, and stage only the milestone files. Never stage local API keys, `config/models.json`, runtime databases, `.codex-local` helper scripts, or concurrent Settings/API work.
+
+## 开发 DLC Studio 快速创作流程（v0.37.0）
+
+### 批量输入格式
+
+快速创建页面接受竖线（`|`）或 Tab 分隔的纯文本。空行和以 `#` 开头的中文注释行会被忽略。实体列顺序为：
+
+```text
+实体 ID | 名称 | 类型 | 当前状态 | 中文说明
+```
+
+Agent/Actor 套件列顺序为：
+
+```text
+Agent ID | 显示名 | Actor ID | 所在实体 ID | 角色 | 中文说明 | Actor 类型
+```
+
+实体类型必须来自 `QuickCreateTools.js` 的题材无关白名单；Actor 类型也必须来自显式白名单。不要在 React 组件中另建一套解析规则。新增类型时应先扩展后端 Schema/Registry，再同步工具白名单、中文说明和测试。
+
+### 冲突与原子性规则
+
+- `skip`：实体 ID 冲突时跳过该实体；Agent ID 或 Actor ID 任一冲突时，Agent/Actor 整套跳过，禁止只创建一半。
+- `overwrite`：用当前快速创建基础模板替换冲突项。该模式会重置旧条目的高级字段，界面必须持续显示中文警告。
+- 同一批输入中的重复 ID、非法稳定 ID、未知类型和缺失所在实体都是阻断错误；只有警告而无错误时才可保存。
+- Agent 所在实体可以引用既有实体，也可以引用同批新实体。引用检查必须基于合并后的实体 ID 集合。
+- 工具函数必须返回新对象，不可原地修改传入的 `content`；保持 Agent 与 Actor 的创建、跳过和覆盖行为可预测且可测试。
+
+### 玩家 direct / command 语义
+
+`gameplay.player.controls[]` 的 `target_type` 只能是 `entity` 或 `agent`。`control_mode=direct` 表示玩家直接操作该目标；`control_mode=command` 表示玩家通过命令、授权或委派影响目标。相同 `target_type + target_id` 不得重复。保存前必须验证绑定 Actor 和所有控制目标存在。
+
+自动建议只用于生成可编辑草稿：优先玩家角色 Agent，其次第一个启用 Agent；不得在保存时偷偷重写用户选择。规范化时保留 `gameplay` 下未知扩展字段，确保未来 DLC Schema 扩展不会被旧版编辑器清除。
+
+### Studio 保存与导航约束
+
+快速创建和玩家身份编辑器必须调用 `DLCStudio.jsx` 提供的统一 Content 保存回调，不得直接请求文件写入 API。这样才能完整保留 Diff、确认、History、Undo/Redo、Registry 校验和错误反馈。七步审计按钮只做页签导航；审计规则继续由后端 `DLCRegistry.audit_playability()` 拥有，前端不得推断或篡改审计结论。
+
+所有新增字段、错误、警告、空状态和覆盖风险都必须有明确中文说明。新增交互时还需检查键盘操作、按钮禁用状态、`aria-label` 和窄屏布局。
+
+### 回归命令
+
+```powershell
+node --test frontend/src/QuickCreateTools.test.js frontend/src/GameplayEditorTools.test.js
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+git diff --check
+```
+
+提交前还要确认 `VERSION`、`multiagent_framework/version.py`、`frontend/package.json` 与 `frontend/package-lock.json` 四处版本一致。共享文档和并行 Settings/API 文件只能按本任务 hunk 暂存；不要提交本地 Key、`config/models.json`、运行数据库或 `.codex-local` 进度文件。
+
+## 开发长对局 catch-up 时间语义（v0.38.0）
+
+### 事件时间规则
+
+新增事件生产者必须填写 `EventObject.generated_at`，并使用实际发生时间而不是当前轮询时间：随机模板使用 `scheduled_at`，时间边界使用 marker 时间，因果子事件使用 `due_at`。进入 Orchestrator 后统一调用 `_effective_event_time()`；不要在各分支自行复制 clamp 逻辑。
+
+以下消费者必须使用同一个有效事件时间：
+
+1. `CausalEventEngine.observe(..., sim_time=...)` 与对应 `CausalConditionContext.sim_time`；
+2. 时间边界、随机事件、因果事件的 `RhythmRuntime.allow_event()`；
+3. `execute_causal_world_commands()` 的命令时间；
+4. 历史事件投影出的 Issue/Case/DecisionRequest 创建时间和截止期；
+5. 因果结果反馈的记录时间与延迟到期时间；
+6. 发往 Agent 或玩家的事件唤醒负载中的 `generated_at`。
+
+普通 API 或玩家当下操作继续使用当前 `_sim_time`。只有来源事件明确携带权威时间时才调用内部 `_open_issue_at()`，避免允许客户端任意伪造历史 Issue。
+
+### 回归要求
+
+~~~powershell
+python -m pytest tests/unit/test_event_generator.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_outcome_feedback_orchestrator.py -q
+python -m pytest tests/unit/test_version_consistency.py -q
+~~~
+
+长跳时测试至少要覆盖：历史来源事件的因果延迟、当前 tick 后仍应 pending 的未来子事件、Rhythm 冷却序列、世界命令/库存账本时间、Issue 截止期与逾期状态、已经逾期的延迟反馈补发。测试断言应同时检查 `generated_at` 和持久化时间字段，不能只检查事件数量。
+
+不要把“保留每条事件的发生时间”误写成“跨来源全局严格排序”。当前 tick 仍按既有阶段处理时间边界、生命周期、随机与因果来源；若未来引入统一时间队列，需要单独设计跨来源稳定排序、预算、公平性和零延迟链上限。
+
+## 开发跨来源统一时间排序（v0.39.0）
+
+### 新事件生产者接入规则
+
+1. 生产者必须提供权威发生时间；事件写入 `EventObject.generated_at`，边界 marker 写入 `sim_time`。
+2. 在 `Orchestrator._tick()` 的统一时间线中分配明确 `source_rank`。只有兼容性需要时才增加新 rank，不得依赖字典顺序或批次阶段碰巧排序。
+3. 同源稳定顺序必须可重放：普通入队使用单调 `insertion_sequence`；因果 pending 使用 `(due_at, event_id)`。
+4. 事件只有在从时间线取出后才能执行节奏判断、世界效果、Issue 投影、Agent 唤醒和下游因果观察，所有消费者使用同一个 `event_time`。
+5. 历史 lifecycle marker 必须传 `evaluate_conditions=False`；condition transition 只在当前模拟时刻统一评估一次，避免长跳时重复触发或提前锁存。
+
+### 预算与失败语义
+
+- 因果硬预算为每 tick 128 条。达到预算后不得丢弃 pending；剩余事件由下一 tick 继续。已物化 temporal/random 条目会完成，因此文档和测试只能声明“预算内全局排序”。
+- 生命周期总尝试预算为 256，`LifecyclePollResult.truncated` 必须向 Tick 结果传播。若新增 deferred timeline，必须同时覆盖存档、恢复、Generation 切换、热重载和幂等 Receipt，不能只做进程内队列。
+- 被 Rhythm 抑制、世界效果 rejected/error 的因果事件都已经从 pending 消费，必须标记持久状态 dirty；只有世界效果成功时才注入 Agent 唤醒和下游因果链。
+- 同刻优先级固定为 temporal → lifecycle marker → random → causal → current condition lifecycle。修改优先级属于兼容性变更，必须新增世界状态可观测回归，而不只断言结果数组顺序。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/unit/test_event_generator.py tests/unit/test_causal_events.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py tests/unit/test_rhythm_orchestrator.py tests/unit/test_outcome_feedback_orchestrator.py -q
+python -m pytest tests/integration/test_dlc_temporal_generation.py tests/integration/test_cross_genre_dlc_playthrough.py -q
+python -m compileall -q multiagent_framework routers
+python -m pytest tests/unit/test_version_consistency.py -q
+```
+
+至少覆盖：不同来源跨日归并、同刻稳定 tie、零延迟因果、未来 pending 不提前消费、历史因果效果早于未来生命周期实体生成、`next_due_key()` 不改变 snapshot、历史 marker 不更新 condition latch、因果 128 条预算后 pending 保留，以及 lifecycle `truncated` 传播。
+
+## Developing the persistent deferred timeline (v0.40.0)
+
+### Required invariants
+
+1. Materialized producer output enters `DeferredTimelineRuntime` before Agent wakeups, Issues, or world side effects. Do not poll Temporal or Random while the queue is non-empty.
+2. Keep `(occurrence_time, source_rank, sequence)` stable. Same-time precedence remains temporal, lifecycle marker, random, causal, then condition lifecycle.
+3. Once the causal budget is exhausted, only already queued same-time ranks below causal may continue. Never execute a future head past an older due causal item.
+4. Orchestrator lifecycle entries pass one marker per poll. `next_transition_index` is a transition cursor, not a marker-within-batch cursor. Batched marker polling requires a second cursor before it is safe.
+5. Deferred lifecycle entries must reference the committed `archive_id`. A hot reload must not reinterpret an old fingerprint with the current contract.
+6. Producer polling and `enqueue_many()` form one publication transaction. If enqueue fails, restore both Temporal and Random snapshots.
+7. Snapshot restore is atomic and fail-closed. Skipping one malformed item would invalidate the global ordering proof.
+8. Mark RuntimePersistor dirty after consuming or updating the head; otherwise restart can replay an already consumed queue.
+
+### Lifecycle cursor rules
+
+`LifecycleRuntime.poll(..., start_transition_index=N)` skips only contract transitions with an index below `N`. `LifecyclePollResult.next_transition_index` is set only when matching candidate work remains unattempted because of budget. Disabled, manual, or non-matching transitions must not create false truncation. When a continuation uses an archived generation, save its isolated runtime state back into head metadata.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_timeline_runtime.py tests/unit/test_event_generator.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q multiagent_framework routers
+python -m pytest tests/unit/test_version_consistency.py -q
+git diff --check
+```
+
+Required cases include: 129 earlier causal events blocking later temporal/random work, second-tick continuation at causal item 129, paused save/new-Orchestrator recovery with stable sequence and payload, 300 lifecycle attempts split exactly 256 + 44, DLC hot reload during continuation, in-place head updates preserving the key, and malformed/oversized snapshots failing closed.
+
+## Operating and testing the deferred timeline (v0.41.0)
+
+### Public status contract
+
+Use `Orchestrator.deferred_timeline_status()` or `GET /api/timeline` for diagnostics. New callers must consume only these aggregate fields: pending/capacity/utilization, oldest occurrence time and age, archive count/capacity, backpressure/restore-failure counters, bounded restore error code, and last snapshot entry count/bytes/timings. Never add event payloads, archive bodies, Agent IDs, entity IDs, prompts, memory, or world secrets to this projection.
+
+`OperationalMetricsCollector` must continue to copy a fixed whitelist rather than serializing `public_status()` wholesale. Non-mapping or malformed status values fail closed to zero/empty aggregates. Prometheus names introduced in v0.41.0 use gauges for current queue/snapshot state and counters for cumulative backpressure/restore failures.
+
+### Backpressure and restore rules
+
+1. Producer polling and timeline publication are one transaction. If `enqueue_many()` fails for capacity, restore every producer cursor/snapshot involved in that poll before returning.
+2. Increment backpressure exactly once per rejected publication or archive-capacity rejection; do not count ordinary validation errors as successful publication.
+3. Snapshot restore remains atomic and fail closed. Never skip malformed entries, repair sequence order, or partially accept archives.
+4. Preserve accumulated operational counters when a restore fails, then increment `restore_failure_count` and expose only the stable error code.
+5. `measure_snapshot()` is opt-in. Do not JSON-encode the full queue on every metrics scrape.
+
+### Crash replay gates
+
+- World Command committed, Causal queue not acknowledged: restart must return a replayed command result and must not apply inventory/resource changes twice.
+- Lifecycle Receipt committed, cursor not acknowledged: restart must resolve as `already_applied` and must not create a second dynamic Actor/Entity.
+- Canonical command normalization must preserve field presence when presence participates in idempotency. In particular, an explicit empty `reason` is not equivalent to an omitted `reason`.
+- Agent wakeups use a durable at-least-once Outbox. Persisted `inflight` work returns to `pending` after restart; duplicates remain possible across the downstream side-effect/ACK crash boundary, so do not claim exactly-once delivery.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_timeline_runtime.py tests/unit/test_timeline_api.py tests/unit/test_operational_metrics.py tests/unit/test_event_generator.py tests/unit/test_causal_world_effects.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q multiagent_framework routers tests/unit
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Required stress/recovery coverage includes 20,000 queued lifecycle markers, exact UTF-8 snapshot bytes, stable full drain ordering, producer cursor rollback at capacity, aggregate-only API/metrics output, World Command pre-ack restart replay, and Lifecycle Receipt pre-ack restart replay.
+
+## Durable Agent wakeup delivery (v0.42.0)
+
+### Delivery contract
+
+`WakeupOutboxRuntime` replaces the process-only wakeup list while retaining the small list-like surface required by legacy FC handlers. New orchestration code must use `enqueue()`, `claim_pending()`, `ack()`, and `retry()`.
+
+1. Delivery is **at-least-once**, never exactly-once. A crash after a downstream side effect but before persisted ACK may replay the wakeup.
+2. Entries transition `pending → inflight → ack/remove`. Agent errors, Router/command exceptions, background cancellation, and unexpected background failures return claimed delivery IDs to `pending`.
+3. Snapshot restore converts every valid `inflight` entry back to `pending`. Malformed snapshots fail closed as a whole; never salvage individual entries.
+4. Player-recipient wakeups are terminal after Issue contract rejection or successful Issue creation. Disabled and missing targets are terminal. Transient Issue creation failures retry.
+5. `request_action` runs inside the existing background wakeup task and awaits ActionAgent dispatch before ACK; do not reintroduce a detached child-task crash window.
+
+### Stable identities and idempotency
+
+- Timer: `timer:<timer_id>`.
+- Event: deterministic hash of `event_id + target`.
+- Routed chain: deterministic hash of `chain_id + target + canonical JSON payload`.
+- Legacy wakeup without source identity: persisted monotonic sequence; its chain ID derives from the delivery ID.
+- Merged wakeups must preserve every `delivery_id`, `timer_id`, and `chain_id` for ACK/retry and Chain Log diagnostics.
+- Downstream World Command IDs, Issue `external_id`, Lifecycle Receipts, action invocation IDs, and other receipt-backed boundaries remain responsible for replay idempotency.
+
+### Timer claim/ack ordering
+
+Use `TimerSystem.claim_due()` in the Orchestrator. Claim removes a due Timer from the heap but leaves its SQLite row intact. Enqueue the stable Timer wakeup next; if Outbox validation/capacity rejects it, call `release_claim()`. Delete the SQLite row only through `ack(timer_id)` after terminal wakeup completion.
+
+Timer ACK intentionally occurs before Outbox removal. A crash between those operations can replay the persisted Outbox entry, but cannot lose both durable sources. Reversing the order would also permit duplicates and can leave a Timer row to regenerate; neither ordering provides exactly-once, so preserve the documented no-loss ordering and downstream idempotency.
+
+### Snapshot and capacity rules
+
+- Hard entry capacity: 32,768.
+- Per-payload UTF-8 JSON size: 256 KiB.
+- Aggregate payload bytes: 64 MiB, enforced on enqueue and restore.
+- Maximum nesting depth: 16; maximum visited nodes: 20,000; maximum ID length: 256.
+- Reject NaN, Infinity, non-string mapping keys, arbitrary Python objects, and any non-JSON-safe payload.
+- `RuntimePersistor.flush()`, manual `save_state()`, and startup loading share `runtime_snapshot()` / `restore_runtime_snapshot()`. When adding runtime state, update this single contract and its parity tests instead of maintaining separate field lists.
+
+### Aggregate-only operations metrics
+
+The simulator projection and Prometheus output may expose only:
+
+- `pending_wakeups`
+- `inflight_wakeups`
+- `wakeup_outbox_total`
+- `wakeup_outbox_payload_bytes`
+
+Never expose payloads, target Agent IDs, delivery IDs, chain IDs, prompts, memories, provider credentials, or hidden world state through operational metrics.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_wakeup_runtime.py tests/unit/test_wakeup_orchestrator.py tests/unit/test_timer_system.py tests/unit/test_runtime_persistor.py tests/unit/test_event_generator.py tests/unit/test_operational_metrics.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q main.py multiagent_framework routers tests
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+Required recovery coverage includes: inflight snapshot restart to pending, Router failure retry, request_action completion before ACK, Timer claimed before crash, Timer + persisted Outbox replay deduplication, malformed and aggregate-oversized snapshot rejection, automatic state.json parity, startup Outbox restore, and secret-free aggregate metrics.
+
+## 第三题材 JSON-only 参考包（v0.43.0）
+
+- `dlcs/example_abyssal/dlc.json`：默认禁用的已发布 manifest，题材标记为 `deepsea-survival`。
+- `dlcs/example_abyssal/content.json`：完整声明深海栖站玩家身份、Actor/Agent、维护配额价值锚、压力壳指标、有限证据 Issue、深潜修复巡检、Agent 唤醒、延迟因果链、反馈、目标与结局。
+- `tests/integration/test_abyssal_dlc_playthrough.py`：不得 mock 掉 Registry/WorldState/Orchestrator 的玩法执行；只允许使用确定性 LLM stub 隔离外部网络。验收必须真实扣除维护配额、进入 Wakeup Outbox、推进一游戏日、应用 causal world effect、生成反馈并锁定胜利结局。
+
+新增题材参考包时，优先复用 bundle-v1 声明能力，不得因为题材术语新增核心分支。每个包必须使用独立命名空间，默认 `enabled=false`，通过 Registry 0 error、七步静态审计 7/7 和独立真实 playthrough。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/integration/test_cross_genre_dlc_playthrough.py tests/integration/test_abyssal_dlc_playthrough.py -q
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; r=DLCRegistry(Path('.')); assert all(not r.validate(i) and r.audit_playability(i).playable for i in ('example_frontier','example_orbital','example_abyssal'))"
+python -m pytest tests/unit/test_version_consistency.py -q
+```

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
+import math
 import threading
 import time
 import uuid
@@ -15,7 +17,7 @@ from .action_contract import ActionCatalog
 from .actor_contract import ActorDefinition, ActorManager
 from .capability_contract import CapabilityCatalog, CapabilityContractError
 from .action_causal_bridge import build_action_causal_event
-from .agent_runtime import BaseAgent, OfficialAgent
+from .agent_runtime import AgentConfig, BaseAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph
 from .causal_events import CausalConditionContext, CausalEventEngine
@@ -26,7 +28,18 @@ from .gameplay_contract import GameplayContract
 from .gameplay_effect_runtime import GameplayEffectRuntime
 from .ui_manifest import UIManifest
 from .issue_contract import IssueContractError, IssueManager
+from .lifecycle_contract import LifecycleContract
+from .lifecycle_runtime import (
+    MAX_LIFECYCLE_TRANSITIONS_PER_POLL,
+    LifecyclePollResult,
+    LifecycleRuntime,
+)
 from .objective_contract import ObjectiveManager
+from .rhythm_contract import RhythmContract
+from .rhythm_runtime import RhythmRuntime
+from .outcome_feedback_contract import OutcomeFeedbackContract
+from .outcome_feedback_runtime import OutcomeFeedbackRuntime
+from .derived_metrics import DerivedMetricCatalog, DerivedMetricEvaluationContext
 from .fc_handlers import (
     FCContext,
     command_to_fc_args,
@@ -35,6 +48,8 @@ from .fc_handlers import (
 )
 from .router import RouterAgent, MAX_HOPS
 from .time_simulator import TimeSimulator
+from .temporal_contract import TemporalContract, TemporalRuntime
+from .timeline_runtime import DeferredTimelineError, DeferredTimelineRuntime
 from .runtime_persistor import RuntimePersistor
 from .runtime_bindings import (
     ACTION_TASK,
@@ -46,6 +61,12 @@ from .runtime_bindings import (
     RuntimeTaskBinding,
 )
 from .timer_system import TimerSystem
+from .wakeup_runtime import (
+    WakeupOutboxError,
+    WakeupOutboxRuntime,
+    event_delivery_id,
+    stable_chain_id,
+)
 from .types import (
     ActionResult,
     AgentAction,
@@ -94,6 +115,9 @@ class Orchestrator:
 
         self.agents: dict[str, BaseAgent] = {}
         self.agent_generation: int = 0
+        self._dynamic_agent_ids: set[str] = set()
+        self._dynamic_agent_specs: dict[str, tuple[Any, ...]] = {}
+        self._last_dynamic_agent_sync_errors: list[dict[str, Any]] = []
         self._gameplay_contract = GameplayContract()
         self._ui_manifest = UIManifest.from_content({})
         self.actor_manager = ActorManager()
@@ -103,7 +127,14 @@ class Orchestrator:
             configure_router_capabilities(self.capability_catalog)
         self.action_catalog = ActionCatalog()
         self.issue_manager = IssueManager()
+        self.rhythm_runtime = RhythmRuntime()
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        self.outcome_feedback_runtime = OutcomeFeedbackRuntime()
         self.objective_manager = ObjectiveManager()
+        self.derived_metric_catalog = DerivedMetricCatalog()
+        self.objective_manager.set_derived_metric_provider(
+            self.derived_metric_catalog, actor_manager=self.actor_manager,
+        )
         # Objective transitions can be produced by API/action calls between ticks.
         # Buffer them so the next TickResult/WebSocket frame cannot lose them.
         self._pending_objective_transitions: deque[dict[str, Any]] = deque(maxlen=2000)
@@ -153,6 +184,11 @@ class Orchestrator:
         self.time_simulator = (
             action_agent.time_simulator if action_agent is not None else TimeSimulator()
         )
+        self.temporal_runtime = TemporalRuntime()
+        self.lifecycle_runtime = LifecycleRuntime()
+        self.deferred_timeline = DeferredTimelineRuntime()
+        self._last_timeline_restore_error = ""
+        self._auto_pause_reason: dict[str, Any] | None = None
         self._last_real_time: float = 0.0
         self._running = False
         self._pausing = False
@@ -165,7 +201,7 @@ class Orchestrator:
         self._player_actions: asyncio.Queue[PlayerAction] = asyncio.Queue()
 
         # 待处理的 Agent 唤醒（下次 tick 处理）
-        self._pending_wakeups: list[dict[str, Any]] = []
+        self._pending_wakeups = WakeupOutboxRuntime(on_change=self._mark_wakeup_state_dirty)
 
         # 奏折列表（持久化到 runtime/state.json）
         self.memorials: list[dict[str, Any]] = []
@@ -414,6 +450,42 @@ class Orchestrator:
     def issues_public_state(self) -> dict[str, Any]:
         return self.issue_manager.public_state(sim_time=self._sim_time)
 
+    def configure_derived_metric_catalog(
+        self, definitions: list[dict[str, Any]], *, generation: int = 0,
+    ) -> None:
+        """Publish one immutable derived-metric catalog for rules, objectives and UI."""
+
+        candidate = DerivedMetricCatalog(definitions, generation=generation)
+        self.derived_metric_catalog = candidate
+        self.objective_manager.set_derived_metric_provider(
+            candidate, actor_manager=self.actor_manager,
+        )
+        for agent in self.agents.values():
+            setter = getattr(agent, "set_derived_metric_provider", None)
+            if callable(setter):
+                setter(candidate, actor_manager=self.actor_manager)
+
+    def derived_metrics_public_state(self) -> dict[str, Any]:
+        return self.derived_metric_catalog.public_state(
+            DerivedMetricEvaluationContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                sim_time=self._sim_time,
+            )
+        )
+
+    def derived_metric_public_state(self, metric_id: str) -> dict[str, Any]:
+        """Evaluate one player-visible metric without exposing its formula or metadata."""
+        return self.derived_metric_catalog.evaluate(
+            metric_id,
+            DerivedMetricEvaluationContext(
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                sim_time=self._sim_time,
+            ),
+            audience="player",
+        )
+
     def configure_objective_catalog(
         self, objectives: list[dict[str, Any]], endings: list[dict[str, Any]], *,
         generation: int = 0, gameplay: GameplayContract | None = None,
@@ -453,13 +525,30 @@ class Orchestrator:
     def list_decision_requests(self, *, status: str = "") -> list[dict[str, Any]]:
         return self.issue_manager.list_decision_requests(sim_time=self._sim_time, status=status)
 
-    def open_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self.issue_manager.open_issue(payload, sim_time=self._sim_time)
+    def _effective_event_time(self, generated_at: Any) -> float:
+        """Clamp an authored event timestamp to the elapsed simulation window."""
+        current = float(self._sim_time)
+        if not math.isfinite(current) or current < 0:
+            current = 0.0
+        if isinstance(generated_at, bool) or not isinstance(generated_at, (int, float)):
+            return current
+        value = float(generated_at)
+        if not math.isfinite(value):
+            return current
+        return min(current, max(0.0, value))
+
+    def _open_issue_at(self, payload: dict[str, Any], *, sim_time: Any) -> dict[str, Any]:
+        result = self.issue_manager.open_issue(
+            payload, sim_time=self._effective_event_time(sim_time),
+        )
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
         self._evaluate_objectives()
         return result
+
+    def open_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._open_issue_at(payload, sim_time=self._sim_time)
 
     def append_issue_evidence(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.issue_manager.append_evidence(issue_id, payload, sim_time=self._sim_time)
@@ -476,11 +565,33 @@ class Orchestrator:
         )
 
     def resolve_decision(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
         result = self.issue_manager.resolve_decision(
             request_id, payload, sim_time=self._sim_time,
             action_preview=self.preview_dlc_action,
             action_execute=self.execute_dlc_action,
         )
+        metrics_after = self._player_metric_snapshot()
+        request = result.get("decision_request", {})
+        issue = result.get("issue", {})
+        option_id = str(request.get("selected_option_id", ""))
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="decision", source_id=request_id,
+            receipt_id=f"decision:{request_id}:{option_id}", sim_time=self._sim_time,
+            display_name=str(request.get("title", "Decision resolved")),
+            action_id=str((result.get("action_result") or {}).get("action_id", "")),
+            issue_type_id=str(issue.get("issue_type_id", "")),
+            summary=str((request.get("outcome") or {}).get("summary", "Decision resolved.")),
+            reason=str((request.get("outcome") or {}).get("summary", "")),
+            changes=self._action_change_rows(result.get("action_result") or {}),
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="decision",
+                source_id=request_id, reason=str(request.get("title", "Decision resolved")),
+            ),
+            details={"decision_id": request_id, "action_id": str((result.get("action_result") or {}).get("action_id", "")), "issue_id": str(issue.get("issue_id", ""))},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self._sync_legacy_memorials()
         if self.persistor and not result.get("replayed", False):
             self.persistor.mark_state_dirty()
@@ -488,7 +599,28 @@ class Orchestrator:
         return result
 
     def close_case(self, case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
         result = self.issue_manager.close_case(case_id, payload, sim_time=self._sim_time)
+        metrics_after = self._player_metric_snapshot()
+        case = result.get("case", {})
+        issues = result.get("issues", [])
+        outcome = case.get("outcome", {}) if isinstance(case, dict) else {}
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="case_closed", source_id=case_id,
+            receipt_id=f"case:{case_id}:{case.get('status', 'closed')}", sim_time=self._sim_time,
+            display_name=str(case.get("title", "Case closed")),
+            issue_type_id=str(issues[0].get("issue_type_id", "")) if issues else "",
+            summary=str(outcome.get("summary", "Case closed.")),
+            reason=str(outcome.get("summary", "")),
+            decisions=list(outcome.get("decisions", [])) if isinstance(outcome, dict) else [],
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="case_closed",
+                source_id=case_id, reason=str(case.get("title", "Case closed")),
+            ),
+            details={"case_id": case_id},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self._sync_legacy_memorials()
         if self.persistor:
             self.persistor.mark_state_dirty()
@@ -522,15 +654,34 @@ class Orchestrator:
         })
 
     def execute_dlc_action(self, action_id: str, invocation: dict[str, Any]) -> dict[str, Any]:
+        metrics_before = self._player_metric_snapshot()
+        preview = self.preview_dlc_action(action_id, invocation)
         result = self.action_catalog.execute(
             action_id, invocation, world_state=self.world_state,
             time_simulator=self.time_simulator, sim_time=self._sim_time,
             available_agent_ids=self._action_agent_ids(),
             wake_callback=self._wake_from_dlc_action, emit_callback=self.inject_event,
         )
+        metrics_after = self._player_metric_snapshot()
+        invocation_id = str(result.get("invocation_id", ""))
+        feedback = self.outcome_feedback_runtime.record(
+            source_kind="action", source_id=invocation_id,
+            receipt_id=f"action:{invocation_id}", sim_time=self._sim_time,
+            display_name=str(preview.get("display_name", action_id)), action_id=action_id,
+            summary=f"{preview.get('display_name', action_id)} completed.",
+            reason=str(preview.get("display_name", action_id)),
+            changes=self._action_change_rows(result),
+            metric_changes=self._metric_change_rows(
+                metrics_before, metrics_after, source_kind="action",
+                source_id=invocation_id, reason=str(preview.get("display_name", action_id)),
+            ),
+            details={"action_id": action_id},
+            condition_context=self._feedback_condition_context(),
+        )
+        result["outcome_feedback"] = feedback
         self.action_log.append({
             "kind": "dlc_action", "action_id": action_id,
-            "invocation_id": result.get("invocation_id", ""),
+            "invocation_id": invocation_id,
             "sim_time": self._sim_time, "generation": result.get("generation", 0),
             "replayed": bool(result.get("replayed", False)),
             "ok": bool(result.get("ok", False)),
@@ -665,7 +816,7 @@ class Orchestrator:
         return getattr(self.action_agent, "world_state", None)
 
     def _sync_gameplay_effect_runtime(self, *, project_issues: bool = True) -> dict[str, Any]:
-        """Refresh the SQLite-authoritative effect read model and manager projections."""
+        """Refresh SQLite-authoritative effects and all runtime projections."""
         state = self.gameplay_effect_runtime.refresh(self.world_state)
         self.gameplay_effect_runtime.sync_managers(
             actor_manager=self.actor_manager,
@@ -675,7 +826,103 @@ class Orchestrator:
             sim_time=self._sim_time,
             project_issues=project_issues,
         )
+        self._last_dynamic_agent_sync_errors = self._sync_dynamic_agents(state)
         return state
+
+    @staticmethod
+    def _dynamic_agent_spec(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(row.get("source_agent_id", "")),
+            str(row.get("actor_id", "")),
+            str(row.get("display_name", "")),
+            str(row.get("system_prompt", "")),
+        )
+
+    def _sync_dynamic_agents(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        """Project enabled lifecycle Agent descriptors into live Agent instances.
+
+        Static Agents always win ID conflicts. Existing dynamic Agent memory is migrated
+        when a descriptor or its source Agent changes. Retired descriptors are removed
+        from future dispatch while already-running turns keep their direct old reference.
+        """
+        lifecycle = state.get("lifecycle", {}) if isinstance(state, dict) else {}
+        raw_rows = lifecycle.get("dynamic_agents", {}) if isinstance(lifecycle, dict) else {}
+        rows = raw_rows if isinstance(raw_rows, dict) else {}
+        desired = {
+            str(agent_id): dict(row)
+            for agent_id, row in rows.items()
+            if agent_id and isinstance(row, dict)
+            and bool(row.get("enabled", True))
+            and not bool(row.get("retired", False))
+        }
+        errors: list[dict[str, Any]] = []
+
+        for agent_id in sorted(self._dynamic_agent_ids - set(desired)):
+            self.agents.pop(agent_id, None)
+            self._dynamic_agent_ids.discard(agent_id)
+            self._dynamic_agent_specs.pop(agent_id, None)
+
+        for agent_id in sorted(desired):
+            row = desired[agent_id]
+            source_id = str(row.get("source_agent_id", "")).strip()
+            current = self.agents.get(agent_id)
+            if current is not None and agent_id not in self._dynamic_agent_ids:
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_id_conflict",
+                    "source_agent_id": source_id,
+                })
+                continue
+            source = self.agents.get(source_id)
+            if source is None or source_id == agent_id:
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_source_not_found",
+                    "source_agent_id": source_id,
+                })
+                continue
+            spec = (*self._dynamic_agent_spec(row), id(source), source.__class__)
+            if current is not None and self._dynamic_agent_specs.get(agent_id) == spec:
+                continue
+            if current is not None and bool(getattr(current, "is_busy", False)):
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_refresh_deferred",
+                    "source_agent_id": source_id,
+                })
+                continue
+            source_config = getattr(source, "config", None)
+            source_llm = getattr(source, "llm", None)
+            if not isinstance(source_config, AgentConfig):
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_source_invalid",
+                    "source_agent_id": source_id,
+                })
+                continue
+            config = copy.deepcopy(source_config)
+            config.agent_id = agent_id
+            config.actor_id = str(row.get("actor_id", ""))
+            config.display_name = str(row.get("display_name") or config.display_name or agent_id)
+            if row.get("system_prompt") not in (None, ""):
+                config.system_prompt = str(row.get("system_prompt"))
+            try:
+                projected = source.__class__(config, source_llm)
+                if current is not None:
+                    projected.deserialize_memory(current.serialize_memory())
+                self.register_agent(projected)
+            except Exception as exc:
+                logger.exception("Failed to project dynamic Agent %s", agent_id)
+                errors.append({
+                    "agent_id": agent_id,
+                    "error": "dynamic_agent_projection_failed",
+                    "source_agent_id": source_id,
+                    "detail": str(exc),
+                })
+                continue
+            self._dynamic_agent_ids.add(agent_id)
+            self._dynamic_agent_specs[agent_id] = spec
+        return errors
 
     def is_agent_enabled(self, agent_id: str) -> bool:
         """Return whether an Agent may receive or execute new work."""
@@ -714,6 +961,8 @@ class Orchestrator:
             sim_time_provider=lambda: self._sim_time,
             seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
             knowledge_provider=self.gameplay_effect_runtime,
+            actor_manager=self.actor_manager,
+            derived_metric_provider=self.derived_metric_catalog,
         )
         self.agents[agent.agent_id] = agent
         logger.info("Registered agent: %s (%s)", agent.agent_id, agent.agent_type)
@@ -748,10 +997,16 @@ class Orchestrator:
                 sim_time_provider=lambda: self._sim_time,
                 seconds_per_day_provider=lambda: float(GAME_SECONDS_PER_DAY),
                 knowledge_provider=self.gameplay_effect_runtime,
+            actor_manager=self.actor_manager,
+            derived_metric_provider=self.derived_metric_catalog,
             )
             prepared[agent_id] = agent
 
-        replace_ids = set(replace_agent_ids or self.agents)
+        replace_ids = set(
+            replace_agent_ids if replace_agent_ids is not None
+            else (set(self.agents) - self._dynamic_agent_ids)
+        )
+        replace_ids -= self._dynamic_agent_ids
         previous = {
             agent_id: agent for agent_id, agent in self.agents.items()
             if agent_id in replace_ids
@@ -767,6 +1022,7 @@ class Orchestrator:
             "Activated Agent snapshot generation=%d active=%d replaced=%d",
             self.agent_generation, len(prepared), len(previous),
         )
+        self._sync_gameplay_effect_runtime(project_issues=False)
         return previous
 
     def _fuzzy_find_agent(self, keyword: str) -> tuple[BaseAgent | None, Any]:
@@ -822,6 +1078,10 @@ class Orchestrator:
         """Return aggregate causal scheduler metadata without event payloads."""
         return self.causal_event_engine.public_status()
 
+    def deferred_timeline_status(self) -> dict[str, Any]:
+        """Return aggregate deferred-work diagnostics without hidden payloads."""
+        return self.deferred_timeline.public_status(sim_time=self._sim_time)
+
     def configure_time_rules(self, rules: list[dict[str, Any]]) -> None:
         """Atomically publish DLC action-duration rules for future work."""
         if self.action_agent is not None:
@@ -840,15 +1100,168 @@ class Orchestrator:
             "enabled_count": sum(1 for rule in self.time_simulator.rules if rule.enabled),
         }
 
-    def inject_event(self, event: EventObject) -> None:
-        """注入一个事件，为每个 target_agent 创建即时唤醒."""
-        causal_scheduled = self.causal_event_engine.observe(
-            event,
+    def configure_time_system(
+        self, contract: TemporalContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish the primary DLC calendar without replaying pre-activation boundaries."""
+        self.temporal_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        self._auto_pause_reason = None
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def time_system_public_state(self) -> dict[str, Any]:
+        """Return capability-safe current calendar/cycle state."""
+        return self.temporal_runtime.public_state(
+            self._sim_time, auto_pause_reason=self._auto_pause_reason,
+        )
+
+    def configure_rhythm_system(
+        self, contract: RhythmContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish pacing rules and retain compatible queue/budget state."""
+        self.rhythm_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def rhythm_public_state(self) -> dict[str, Any]:
+        return self.rhythm_runtime.public_state(
+            issue_manager=self.issue_manager, sim_time=self._sim_time,
+        )
+
+    def configure_outcome_feedback(
+        self, contract: OutcomeFeedbackContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish player-safe feedback rules while retaining compatible pending reports."""
+        self.outcome_feedback_runtime.configure(
+            contract, generation=generation, sim_time=self._sim_time,
+            preserve_state=preserve_state,
+        )
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def outcome_feedback_public_state(self) -> dict[str, Any]:
+        return self.outcome_feedback_runtime.public_state()
+
+    def _feedback_condition_context(self, *, sim_time: Any = None) -> CausalConditionContext:
+        context_time = self._sim_time if sim_time is None else self._effective_event_time(sim_time)
+        return CausalConditionContext(
+            sim_time=context_time, world_state=self.world_state,
+            actor_manager=self.actor_manager, objective_manager=self.objective_manager,
+            event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+            derived_metric_provider=self.derived_metric_catalog,
+            knowledge_provider=self.player_knowledge_provider,
+            issue_manager=self.issue_manager, action_catalog=self.action_catalog,
+        )
+
+    def _player_metric_snapshot(self) -> dict[str, dict[str, Any]]:
+        context = DerivedMetricEvaluationContext(
+            world_state=self.world_state, actor_manager=self.actor_manager,
             sim_time=self._sim_time,
+        )
+        return {
+            str(item.get("metric_id", "")): item
+            for item in self.derived_metric_catalog.evaluate_all(context, audience="player")
+            if item.get("status") == "ok" and item.get("metric_id")
+        }
+
+    def _metric_change_rows(
+        self, before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]],
+        *, source_kind: str, source_id: str, reason: str,
+    ) -> list[dict[str, Any]]:
+        epsilon = self.outcome_feedback_runtime.contract.metric_delta_epsilon
+        rows: list[dict[str, Any]] = []
+        for metric_id in sorted(set(before).intersection(after)):
+            try:
+                old_value = float(before[metric_id]["value"])
+                new_value = float(after[metric_id]["value"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            delta = new_value - old_value
+            if abs(delta) + 1e-12 < epsilon:
+                continue
+            rows.append({
+                "kind": "derived_metric", "metric_id": metric_id,
+                "display_name": str(after[metric_id].get("display_name", metric_id)),
+                "unit": str(after[metric_id].get("unit", "")),
+                "before": old_value, "after": new_value, "delta": delta,
+                "direction": "up" if delta > 0 else "down",
+                "reason": reason, "source_kind": source_kind, "source_id": source_id,
+            })
+        return rows
+
+    @staticmethod
+    def _action_change_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        batch = result.get("batch", {})
+        for item in batch.get("results", []) if isinstance(batch, dict) else []:
+            payload = item.get("result", {}) if isinstance(item, dict) else {}
+            if isinstance(payload, dict):
+                rows.append(dict(payload))
+        return rows
+
+    def configure_lifecycle_system(
+        self, contract: LifecycleContract, *, generation: int,
+        preserve_state: bool = True,
+    ) -> None:
+        """Publish lifecycle transitions while preserving compatible condition latches."""
+        self.lifecycle_runtime.configure(
+            contract, generation=generation, preserve_state=preserve_state,
+        )
+        self._sync_gameplay_effect_runtime(project_issues=False)
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def lifecycle_public_state(self) -> dict[str, Any]:
+        return self.lifecycle_runtime.public_state(world_state=self.world_state)
+
+    def execute_lifecycle_transition(
+        self, transition_id: str, *, request_id: str,
+        variables: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute one manual lifecycle transition with receipt idempotency."""
+        outcome = self.lifecycle_runtime.execute_manual(
+            transition_id, world_state=self.world_state, sim_time=self._sim_time,
+            request_id=request_id, actor_manager=self.actor_manager,
             condition_context=CausalConditionContext(
                 world_state=self.world_state,
                 actor_manager=self.actor_manager,
                 objective_manager=self.objective_manager,
+                event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+                derived_metric_provider=self.derived_metric_catalog,
+                knowledge_provider=self.player_knowledge_provider,
+                issue_manager=self.issue_manager,
+                action_catalog=self.action_catalog,
+            ),
+            variables=variables,
+        )
+        if outcome.get("status") == "applied":
+            self._sync_gameplay_effect_runtime()
+            if self.persistor:
+                self.persistor.mark_state_dirty()
+        return outcome
+
+    def inject_event(self, event: EventObject) -> None:
+        """注入一个事件，为每个 target_agent 创建即时唤醒."""
+        event_time = self._effective_event_time(event.generated_at)
+        causal_scheduled = self.causal_event_engine.observe(
+            event,
+            sim_time=event_time,
+            condition_context=CausalConditionContext(
+                sim_time=event_time,
+                world_state=self.world_state,
+                actor_manager=self.actor_manager,
+                objective_manager=self.objective_manager,
+                derived_metric_provider=self.derived_metric_catalog,
                 knowledge_provider=self.player_knowledge_provider,
                 issue_manager=self.issue_manager,
                 action_catalog=self.action_catalog,
@@ -860,17 +1273,20 @@ class Orchestrator:
             if not self.is_agent_enabled(agent_id):
                 logger.info("Skipped event %s for disabled agent %s", event.event_id, agent_id)
                 continue
+            delivery_id = event_delivery_id(event.event_id, agent_id)
             self._pending_wakeups.append({
+                "delivery_id": delivery_id,
                 "target": agent_id,
                 "payload": {
+                    **event.initial_payload,
                     "description": f"【{event.event_type}】严重程度{event.severity}/10 — {event.initial_payload}",
                     "event_id": event.event_id,
                     "event_type": event.event_type,
                     "severity": event.severity,
-                    **event.initial_payload,
+                    "generated_at": event_time,
                 },
                 "event_id": event.event_id,
-                "chain_id": f"chain_{uuid.uuid4().hex[:8]}",
+                "chain_id": stable_chain_id(delivery_id),
             })
         logger.info("Injected event %s targeting %d agents", event.event_id, len(event.target_agents))
 
@@ -888,44 +1304,50 @@ class Orchestrator:
 
     async def pause(self) -> None:
         """请求暂停 — 等所有正在进行的 Agent 任务完成后生效."""
+        self._auto_pause_reason = None
         self._pausing = True
         logger.info("Pause requested, waiting for %d agent tasks...", len(self._agent_tasks))
 
     def resume(self) -> None:
         self._paused = False
         self._pausing = False
+        self._auto_pause_reason = None
         self._last_real_time = time.monotonic()
         logger.info("Simulation resumed at sim_time=%.1f", self._sim_time)
 
     # ── 存档/读档 ──
 
-    def save_state(self) -> dict[str, Any]:
-        if not self._paused:
-            raise RuntimeError("只能在暂停状态下存档")
-        timer_count = self.timers.save_all()
-        # 序列化所有 Agent 记忆（v2 格式：含 summary + messages）
-        agent_memories: dict[str, Any] = {}
-        for agent_id, agent in self.agents.items():
-            agent_memories[agent_id] = agent.serialize_memory()
+    def _mark_wakeup_state_dirty(self) -> None:
+        """Outbox mutation callback; persistor may be attached after construction."""
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        """Return the complete synchronous runtime state used by every save path."""
         return {
             "sim_time": self._sim_time,
             "seconds_per_day": self._seconds_per_day,
-            "timer_count": timer_count,
+            "memorials": self.issue_manager.legacy_memorials(sim_time=self._sim_time),
             "random_events": self.random_event_generator.snapshot(),
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
+            "time_system_runtime": self.temporal_runtime.snapshot(),
+            "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
+            "deferred_timeline": self.deferred_timeline.snapshot(),
+            "wakeup_outbox": self._pending_wakeups.snapshot(),
+            "rhythm_runtime": self.rhythm_runtime.snapshot(),
+            "outcome_feedback_runtime": self.outcome_feedback_runtime.snapshot(),
+            "auto_pause_reason": self._auto_pause_reason,
             "action_runtime": self.action_catalog.snapshot(),
             "issue_runtime": self.issue_manager.snapshot(),
             "objective_runtime": self.objective_manager.snapshot(),
             "actor_runtime": self.actor_manager.snapshot(),
-            "agent_memories": agent_memories,
         }
 
-    def load_state(self, state: dict[str, Any]) -> None:
+    def restore_runtime_snapshot(self, state: dict[str, Any]) -> None:
+        """Restore the synchronous runtime snapshot, including durable wakeups."""
         self._sim_time = state.get("sim_time", 0.0)
         self._seconds_per_day = state.get("seconds_per_day", 600.0)
-        self.timers.load_from_db()
-        self.chain_log.load_from_file()
         self.router.update_time_scale(self._seconds_per_day)
         self.random_event_generator.restore(
             state.get("random_events", {}), sim_time=self._sim_time
@@ -944,8 +1366,48 @@ class Orchestrator:
         self.objective_manager.restore(
             state.get("objective_runtime", {}), sim_time=self._sim_time
         )
+        actor_state = state.get("actor_runtime")
+        if isinstance(actor_state, dict):
+            self.actor_manager.restore(actor_state)
+        temporal_state = state.get("time_system_runtime")
+        if isinstance(temporal_state, dict):
+            self.temporal_runtime.restore(temporal_state, sim_time=self._sim_time)
+        else:
+            self.temporal_runtime.last_polled_time = self._sim_time
+        self.lifecycle_runtime.restore(state.get("lifecycle_runtime", {}))
+        timeline_ok = self.deferred_timeline.restore(state.get("deferred_timeline", {}))
+        self._last_timeline_restore_error = self.deferred_timeline.last_restore_error
+        if not timeline_ok:
+            logger.warning("Deferred timeline snapshot rejected: %s", self._last_timeline_restore_error)
+        wakeup_ok = self._pending_wakeups.restore(state.get("wakeup_outbox", {}))
+        if not wakeup_ok:
+            logger.warning(
+                "Wakeup outbox snapshot rejected: %s",
+                self._pending_wakeups.last_restore_error,
+            )
+        self.rhythm_runtime.restore(state.get("rhythm_runtime", {}), sim_time=self._sim_time)
+        self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
+        self.outcome_feedback_runtime.restore(
+            state.get("outcome_feedback_runtime", {}), sim_time=self._sim_time,
+        )
+        auto_pause_reason = state.get("auto_pause_reason")
+        self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
-        # 恢复 Agent 记忆
+
+    def save_state(self) -> dict[str, Any]:
+        if not self._paused:
+            raise RuntimeError("Cannot save unless simulation is paused")
+        state = self.runtime_snapshot()
+        state["timer_count"] = self.timers.save_all()
+        state["agent_memories"] = {
+            agent_id: agent.serialize_memory() for agent_id, agent in self.agents.items()
+        }
+        return state
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        self.restore_runtime_snapshot(state)
+        self.timers.load_from_db()
+        self.chain_log.load_from_file()
         agent_memories = state.get("agent_memories", {})
         restored = 0
         for agent_id, memory_data in agent_memories.items():
@@ -1055,45 +1517,259 @@ class Orchestrator:
     async def _tick(self) -> TickResult:
         """一次 tick — 检查定时器、派发唤醒、处理玩家操作、收集状态."""
         result = TickResult(sim_time=self._sim_time)
+        tick_feedback_deliveries: list[dict[str, Any]] = []
 
         # 清理已完成的后台任务
         done = {t for t in self._agent_tasks if t.done()}
         self._agent_tasks -= done
 
-        # 1. 检查到期定时器 → 加入待唤醒队列
-        random_poll = self.random_event_generator.poll(self._sim_time)
-        for event in random_poll.events:
-            self.inject_event(event)
-            result.generated_events.append({
-                "event_id": event.event_id,
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "target_count": len(event.target_agents),
-                "generated_at": event.generated_at,
-            })
-        if random_poll.attempts and self.persistor:
+        rhythm_context = CausalConditionContext(
+            sim_time=self._sim_time,
+            world_state=self.world_state,
+            actor_manager=self.actor_manager,
+            objective_manager=self.objective_manager,
+            event_history=tuple(getattr(self.causal_event_engine, "_event_history", ())),
+            derived_metric_provider=self.derived_metric_catalog,
+            knowledge_provider=self.player_knowledge_provider,
+            issue_manager=self.issue_manager,
+            action_catalog=self.action_catalog,
+        )
+        rhythm_poll = self.rhythm_runtime.poll(
+            self._sim_time, issue_manager=self.issue_manager,
+            condition_context=rhythm_context,
+        )
+        result.rhythm = rhythm_poll.to_dict()
+        for index, item in enumerate(rhythm_poll.feedback):
+            feedback = self.outcome_feedback_runtime.record(
+                source_kind="rhythm",
+                source_id=str(item.get("issue_id", item.get("rule_id", f"rhythm-{index}"))),
+                receipt_id=f"rhythm:{item.get('kind', '')}:{item.get('issue_id', '')}:{item.get('rule_id', '')}:{item.get('sim_time', self._sim_time)}",
+                sim_time=self._sim_time,
+                display_name="Rhythm update",
+                issue_type_id=str(item.get("issue_type_id", "")),
+                summary=str(item.get("message", "Pacing state changed.")),
+                reason=str(item.get("kind", "rhythm")),
+                details={"issue_id": str(item.get("issue_id", "")), "rule_id": str(item.get("rule_id", ""))},
+                condition_context=rhythm_context,
+            )
+            tick_feedback_deliveries.extend(feedback["delivered"])
+        if (rhythm_poll.activated or rhythm_poll.transitions) and self.persistor:
             self.persistor.mark_state_dirty()
 
-        # Materialized causal events are processed oldest-first. Delay-zero chains
-        # may continue in this tick, but the shared budget prevents event storms.
-        causal_remaining = 128
-        while causal_remaining > 0:
-            causal_poll = self.causal_event_engine.poll(
-                self._sim_time, max_events=causal_remaining,
+        # Materialized producer output lives in a persistent queue.  If a prior
+        # tick left deferred work, producer cursors stay untouched until that backlog
+        # drains, preventing newer work from overtaking an older budget boundary.
+        if not self.deferred_timeline.pending_count:
+            temporal_before = self.temporal_runtime.snapshot()
+            random_before = self.random_event_generator.snapshot()
+            temporal_poll = self.temporal_runtime.poll(
+                self._sim_time,
+                condition_context=self._feedback_condition_context(),
             )
-            if not causal_poll.events:
+            random_poll = self.random_event_generator.poll(self._sim_time)
+            timeline_rows: list[dict[str, Any]] = []
+            lifecycle_fingerprint = self.lifecycle_runtime.contract.fingerprint()
+            lifecycle_archive_id = (
+                f"lifecycle:{self.lifecycle_runtime.generation}:{lifecycle_fingerprint}"
+            )
+            lifecycle_metadata = {
+                "generation": self.lifecycle_runtime.generation,
+                "fingerprint": lifecycle_fingerprint,
+                "archive_id": lifecycle_archive_id,
+                "start_transition_index": 0,
+            }
+            for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+                timeline_rows.append({
+                    "kind": "temporal", "occurrence_time": self._effective_event_time(event.generated_at),
+                    "source_rank": 0, "payload": self.deferred_timeline.event_payload(event),
+                    "metadata": dict(event_metadata),
+                })
+            for marker in temporal_poll.markers:
+                timeline_rows.append({
+                    "kind": "lifecycle_marker",
+                    "occurrence_time": self._effective_event_time(marker.get("sim_time", self._sim_time)),
+                    "source_rank": 1, "payload": dict(marker),
+                    "metadata": dict(lifecycle_metadata),
+                })
+            for event in random_poll.events:
+                timeline_rows.append({
+                    "kind": "random", "occurrence_time": self._effective_event_time(event.generated_at),
+                    "source_rank": 2, "payload": self.deferred_timeline.event_payload(event),
+                    "metadata": {},
+                })
+            try:
+                if any(row["kind"] == "lifecycle_marker" for row in timeline_rows):
+                    self.deferred_timeline.register_archive(
+                        lifecycle_archive_id, self.lifecycle_runtime.contract.to_dict(),
+                    )
+                self.deferred_timeline.enqueue_many(timeline_rows)
+                self.deferred_timeline.prune_archives()
+            except DeferredTimelineError as exc:
+                # Producer polls are transactional with queue publication.  A bounded
+                # queue must apply backpressure rather than silently advancing cursors.
+                self.temporal_runtime.restore(temporal_before, sim_time=self._sim_time)
+                self.random_event_generator.restore(random_before, sim_time=self._sim_time)
+                result.agent_errors.append({
+                    "agent_id": "timeline_system", "error": "timeline_backpressure",
+                    "detail": str(exc),
+                })
+            else:
+                if temporal_poll.pause_requests:
+                    requests = [dict(item) for item in temporal_poll.pause_requests]
+                    self._auto_pause_reason = {**requests[0], "requests": requests}
+                    self._pausing = True
+                    result.auto_pause = dict(self._auto_pause_reason)
+                if (
+                    temporal_poll.markers or temporal_poll.events or temporal_poll.pause_requests
+                    or random_poll.attempts
+                ) and self.persistor:
+                    self.persistor.mark_state_dirty()
+        result.time_system = self.time_system_public_state()
+
+        lifecycle_applied: list[dict[str, Any]] = []
+        lifecycle_skipped: list[dict[str, Any]] = []
+        lifecycle_failed: list[dict[str, Any]] = []
+        lifecycle_truncated = False
+        lifecycle_runtime_error = ""
+        lifecycle_remaining = MAX_LIFECYCLE_TRANSITIONS_PER_POLL
+
+        def consume_lifecycle_poll(poll: LifecyclePollResult, *, poll_time: float) -> None:
+            nonlocal lifecycle_remaining, lifecycle_truncated
+
+            def stamp(rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+                return [{**dict(item), "sim_time": poll_time} for item in rows]
+
+            applied = stamp(poll.applied)
+            skipped = stamp(poll.skipped)
+            failed = stamp(poll.failed)
+            lifecycle_applied.extend(applied)
+            lifecycle_skipped.extend(skipped)
+            lifecycle_failed.extend(failed)
+            lifecycle_remaining = max(
+                0, lifecycle_remaining - len(applied) - len(skipped) - len(failed),
+            )
+            lifecycle_truncated = lifecycle_truncated or poll.truncated
+            if applied:
+                self._sync_gameplay_effect_runtime()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                result.agent_errors.extend(self._last_dynamic_agent_sync_errors)
+            for index, item in enumerate(applied):
+                transition_id = str(item.get("transition_id", f"lifecycle-{index}"))
+                feedback = self.outcome_feedback_runtime.record(
+                    source_kind="lifecycle", source_id=transition_id,
+                    receipt_id=f"lifecycle:{transition_id}:{item.get('receipt_id', item.get('marker_id', poll_time))}",
+                    sim_time=poll_time, display_name=str(item.get("display_name", transition_id)),
+                    summary=str(item.get("summary", "A lifecycle transition was applied.")),
+                    reason=str(item.get("reason", transition_id)),
+                    changes=list(item.get("changes", [])) if isinstance(item.get("changes", []), list) else [],
+                    details={"transition_id": transition_id},
+                    condition_context=self._feedback_condition_context(sim_time=poll_time),
+                )
+                tick_feedback_deliveries.extend(feedback["delivered"])
+
+        def archived_lifecycle_runtime(metadata: dict[str, Any]) -> LifecycleRuntime:
+            fingerprint = str(metadata.get("fingerprint", ""))
+            if fingerprint == self.lifecycle_runtime.contract.fingerprint():
+                return self.lifecycle_runtime
+            archive = self.deferred_timeline.archive(str(metadata.get("archive_id", "")))
+            if archive is None:
+                raise DeferredTimelineError("deferred_timeline.lifecycle_archive_missing")
+            contract = LifecycleContract.from_mapping(archive)
+            runtime = LifecycleRuntime(contract, generation=int(metadata.get("generation", 0)))
+            runtime.restore(metadata.get("runtime_state", {}))
+            return runtime
+
+        def run_lifecycle_poll(
+            runtime: LifecycleRuntime, poll_time: float, *,
+            markers: tuple[dict[str, Any], ...] = (), evaluate_conditions: bool,
+            start_transition_index: int = 0,
+        ) -> LifecyclePollResult | None:
+            nonlocal lifecycle_truncated, lifecycle_runtime_error
+            if lifecycle_remaining <= 0:
+                lifecycle_truncated = True
+                return None
+            try:
+                poll = runtime.poll(
+                    poll_time, markers=markers,
+                    world_state=self.world_state, actor_manager=self.actor_manager,
+                    condition_context=self._feedback_condition_context(sim_time=poll_time),
+                    max_transitions=lifecycle_remaining,
+                    evaluate_conditions=evaluate_conditions,
+                    start_transition_index=start_transition_index,
+                )
+            except Exception as exc:
+                logger.exception("Lifecycle poll crashed")
+                lifecycle_runtime_error = str(exc)
+                result.agent_errors.append({
+                    "agent_id": "lifecycle_system",
+                    "error": "lifecycle_poll_failed",
+                    "detail": str(exc),
+                })
+                return None
+            consume_lifecycle_poll(poll, poll_time=poll_time)
+            return poll
+
+        causal_processed = 0
+        causal_budget = 128
+
+        while True:
+            timeline_entry = self.deferred_timeline.peek()
+            causal_key = self.causal_event_engine.next_due_key(self._sim_time)
+            if timeline_entry is None and causal_key is None:
                 break
-            causal_remaining -= causal_poll.due_count
-            for event in causal_poll.events:
+            process_causal = False
+            if causal_key is not None:
+                if timeline_entry is None:
+                    process_causal = True
+                else:
+                    process_causal = causal_key[0] < timeline_entry.occurrence_time or (
+                        causal_key[0] == timeline_entry.occurrence_time
+                        and 3 < timeline_entry.source_rank
+                    )
+            if process_causal and causal_processed >= causal_budget:
+                # Do not let any later materialized work cross the oldest causal item.
+                break
+
+            if process_causal:
+                causal_poll = self.causal_event_engine.poll(self._sim_time, max_events=1)
+                if not causal_poll.events:
+                    break
+                causal_processed += causal_poll.due_count
+                event = causal_poll.events[0]
+                event_time = self._effective_event_time(event.generated_at)
                 effect_count = len(event.world_commands)
+                rhythm_event = self.rhythm_runtime.allow_event(
+                    event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
+                )
+                if not rhythm_event.get("allowed", True):
+                    result.generated_events.append({
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "severity": event.severity,
+                        "target_count": 0,
+                        "generated_at": event.generated_at,
+                        "source": "causal",
+                        "world_effect_count": effect_count,
+                        "world_effect_status": "suppressed",
+                        "rhythm_status": "suppressed",
+                        "rhythm_reason": str(rhythm_event.get("reason", "")),
+                        "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                    })
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
+                    continue
+
                 effect_status = "none"
+                effect_ok = True
                 if effect_count:
                     self._record_operational_metric("causal_effect_batches")
                     try:
                         effect_result = execute_causal_world_commands(
-                            self.world_state, event, sim_time=self._sim_time,
+                            self.world_state, event, sim_time=event_time,
                         ) if self.world_state is not None else None
                     except Exception:
+                        effect_ok = False
                         self._record_operational_metric("causal_effect_failures")
                         logger.exception("Causal world effect batch crashed for event %s", event.event_id)
                         result.generated_events.append({
@@ -1107,52 +1783,243 @@ class Orchestrator:
                             "world_effect_status": "error",
                             "error_code": "causal_effect_execution_error",
                         })
-                        continue
-                    if effect_result is None or not effect_result.ok:
-                        self._record_operational_metric("causal_effect_rejections")
-                        rejected = next(
-                            (item for item in (effect_result.results if effect_result else []) if not item.ok),
-                            None,
-                        )
-                        result.generated_events.append({
-                            "event_id": event.event_id,
-                            "event_type": event.event_type,
-                            "severity": event.severity,
-                            "target_count": 0,
-                            "generated_at": event.generated_at,
-                            "source": "causal",
-                            "world_effect_count": effect_count,
-                            "world_effect_status": "rejected",
-                            "error_code": rejected.error_code if rejected else "world_state_unavailable",
-                        })
-                        continue
-                    effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
-                    self._sync_gameplay_effect_runtime()
-                    self._record_operational_metric("causal_effect_commands", effect_count)
-                    if self.persistor and effect_result.applied_count:
+                    else:
+                        if effect_result is None or not effect_result.ok:
+                            effect_ok = False
+                            self._record_operational_metric("causal_effect_rejections")
+                            rejected = next(
+                                (item for item in (effect_result.results if effect_result else []) if not item.ok),
+                                None,
+                            )
+                            result.generated_events.append({
+                                "event_id": event.event_id,
+                                "event_type": event.event_type,
+                                "severity": event.severity,
+                                "target_count": 0,
+                                "generated_at": event.generated_at,
+                                "source": "causal",
+                                "world_effect_count": effect_count,
+                                "world_effect_status": "rejected",
+                                "error_code": rejected.error_code if rejected else "world_state_unavailable",
+                            })
+                        else:
+                            effect_status = "replayed" if effect_result.replayed_count == len(effect_result.results) else "applied"
+                            self._sync_gameplay_effect_runtime()
+                            self._record_operational_metric("causal_effect_commands", effect_count)
+                            if self.persistor and effect_result.applied_count:
+                                self.persistor.mark_state_dirty()
+                if effect_ok:
+                    self.inject_event(event)
+                    result.generated_events.append({
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "severity": event.severity,
+                        "target_count": len(event.target_agents),
+                        "generated_at": event.generated_at,
+                        "source": "causal",
+                        "world_effect_count": effect_count,
+                        "world_effect_status": effect_status,
+                        "rhythm_status": "allowed",
+                        "rhythm_reason": "",
+                        "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                    })
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                continue
+
+            timeline_entry = self.deferred_timeline.peek()
+            if timeline_entry is None:
+                break
+            event_time = timeline_entry.occurrence_time
+            kind = timeline_entry.kind
+            metadata = dict(timeline_entry.metadata)
+
+            if kind in {"lifecycle_marker", "lifecycle_condition"}:
+                try:
+                    runtime = archived_lifecycle_runtime(metadata)
+                    cursor = int(metadata.get("start_transition_index", 0))
+                    markers = (dict(timeline_entry.payload),) if kind == "lifecycle_marker" else ()
+                    poll = run_lifecycle_poll(
+                        runtime, event_time, markers=markers,
+                        evaluate_conditions=kind == "lifecycle_condition",
+                        start_transition_index=cursor,
+                    )
+                except Exception as exc:
+                    logger.exception("Deferred lifecycle entry is invalid")
+                    lifecycle_runtime_error = str(exc)
+                    result.agent_errors.append({
+                        "agent_id": "timeline_system",
+                        "error": "deferred_lifecycle_invalid",
+                        "detail": str(exc),
+                    })
+                    self.deferred_timeline.pop()
+                    if self.persistor:
                         self.persistor.mark_state_dirty()
-                self.inject_event(event)
+                    continue
+                if poll is None:
+                    break
+                if poll.truncated and poll.next_transition_index is not None:
+                    metadata["start_transition_index"] = poll.next_transition_index
+                    metadata["runtime_state"] = runtime.snapshot()
+                    self.deferred_timeline.replace_head(metadata=metadata)
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
+                    break
+                self.deferred_timeline.pop()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                continue
+
+            try:
+                event = self.deferred_timeline.decode_event(timeline_entry.payload)
+            except DeferredTimelineError as exc:
+                result.agent_errors.append({
+                    "agent_id": "timeline_system", "error": "deferred_event_invalid",
+                    "detail": str(exc),
+                })
+                self.deferred_timeline.pop()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                continue
+
+            rhythm_event = self.rhythm_runtime.allow_event(
+                event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
+            )
+            allowed = rhythm_event.get("allowed", True)
+            if kind == "temporal":
+                event_metadata = dict(metadata or {})
+                generated_metadata = {
+                    **event_metadata,
+                    "rhythm_status": "allowed" if allowed else "suppressed",
+                    "rhythm_reason": str(rhythm_event.get("reason", "")),
+                    "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                }
+                result.generated_events.append(generated_metadata)
+                if allowed:
+                    self.inject_event(event)
+                    issue_type_id = str(event_metadata.get("issue_type_id", ""))
+                    if issue_type_id:
+                        issue_payload = dict(event.initial_payload)
+                        try:
+                            opened = self._open_issue_at({
+                                "external_id": f"time_system:{event.event_id}",
+                                "issue_type_id": issue_type_id,
+                                "type": event.event_type,
+                                "source": {"kind": "system", "id": "time_system", "display_name": "时间系统"},
+                                "title": str(issue_payload.get("title", event.event_type)),
+                                "summary": str(issue_payload.get("summary", issue_payload.get("description", event.event_type))),
+                                "details": {"temporal_boundary": issue_payload.get("temporal_boundary", {}), "payload": issue_payload},
+                                "urgency": issue_payload.get("urgency", "normal"),
+                                "metadata": {"event_id": event.event_id, "boundary_event_id": issue_payload.get("boundary_event_id", "")},
+                            }, sim_time=event_time)
+                            result.new_issues.append(opened["issue"])
+                            result.new_cases.append(opened["case"])
+                            result.new_decision_requests.extend(opened["decision_requests"])
+                        except IssueContractError as exc:
+                            result.agent_errors.append({
+                                "agent_id": "time_system", "error": "issue_contract_rejected",
+                                "code": exc.code, "event_id": event.event_id,
+                            })
+            else:
+                if allowed:
+                    self.inject_event(event)
                 result.generated_events.append({
                     "event_id": event.event_id,
                     "event_type": event.event_type,
                     "severity": event.severity,
-                    "target_count": len(event.target_agents),
+                    "target_count": len(event.target_agents) if allowed else 0,
                     "generated_at": event.generated_at,
-                    "source": "causal",
-                    "world_effect_count": effect_count,
-                    "world_effect_status": effect_status,
+                    "source": "random",
+                    "rhythm_status": "allowed" if allowed else "suppressed",
+                    "rhythm_reason": str(rhythm_event.get("reason", "")),
+                    "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
                 })
+            self.deferred_timeline.pop()
             if self.persistor:
                 self.persistor.mark_state_dirty()
 
-        due_timers = self.timers.pop_due(self._sim_time)
+        # Current-time condition transitions are rank 4.  If their own budget is
+        # exhausted, persist an explicit continuation before any future producer poll.
+        due_causal = self.causal_event_engine.next_due_key(self._sim_time)
+        if not self.deferred_timeline.pending_count and due_causal is None:
+            condition_transitions = any(
+                item.enabled and item.trigger == "condition"
+                for item in self.lifecycle_runtime.contract.transitions
+            )
+            if condition_transitions:
+                condition_poll = run_lifecycle_poll(
+                    self.lifecycle_runtime, self._sim_time, markers=(),
+                    evaluate_conditions=True, start_transition_index=0,
+                )
+                next_cursor = (
+                    condition_poll.next_transition_index
+                    if condition_poll is not None and condition_poll.truncated
+                    else (0 if condition_poll is None and lifecycle_remaining <= 0 else None)
+                )
+                if next_cursor is not None:
+                    condition_fingerprint = self.lifecycle_runtime.contract.fingerprint()
+                    condition_archive_id = (
+                        f"lifecycle:{self.lifecycle_runtime.generation}:{condition_fingerprint}"
+                    )
+                    self.deferred_timeline.register_archive(
+                        condition_archive_id, self.lifecycle_runtime.contract.to_dict(),
+                    )
+                    self.deferred_timeline.enqueue_many(({
+                        "kind": "lifecycle_condition",
+                        "occurrence_time": self._sim_time, "source_rank": 4,
+                        "payload": {"sim_time": self._sim_time},
+                        "metadata": {
+                            "generation": self.lifecycle_runtime.generation,
+                            "fingerprint": condition_fingerprint,
+                            "archive_id": condition_archive_id,
+                            "runtime_state": self.lifecycle_runtime.snapshot(),
+                            "start_transition_index": next_cursor,
+                        },
+                    },))
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
+
+        self.deferred_timeline.prune_archives()
+        lifecycle_poll = LifecyclePollResult(
+            applied=tuple(lifecycle_applied),
+            skipped=tuple(lifecycle_skipped),
+            failed=tuple(lifecycle_failed),
+            truncated=lifecycle_truncated,
+        )
+        result.lifecycle = lifecycle_poll.to_dict()
+        result.lifecycle["deferred_count"] = self.deferred_timeline.pending_count
+        if lifecycle_runtime_error:
+            result.lifecycle["runtime_error"] = lifecycle_runtime_error
+
+        claim_due = getattr(self.timers, "claim_due", None)
+        due_timers = (
+            claim_due(self._sim_time) if callable(claim_due)
+            else self.timers.pop_due(self._sim_time)
+        )
         for timer in due_timers:
-            self._pending_wakeups.append({
-                "target": timer.target_agent,
-                "payload": timer.payload,
-                "chain_id": timer.chain_id,
-                "timer_id": timer.timer_id,
-            })
+            try:
+                self._pending_wakeups.enqueue({
+                    "delivery_id": f"timer:{timer.timer_id}",
+                    "target": timer.target_agent,
+                    "payload": timer.payload,
+                    "chain_id": timer.chain_id,
+                    "timer_id": timer.timer_id,
+                })
+            except WakeupOutboxError as exc:
+                release_claim = getattr(self.timers, "release_claim", None)
+                if callable(release_claim):
+                    release_claim(timer.timer_id)
+                logger.warning(
+                    "Timer wakeup enqueue rejected: timer=%s code=%s",
+                    timer.timer_id, exc.code,
+                )
+                result.agent_errors.append({
+                    "agent_id": timer.target_agent,
+                    "error": "wakeup_enqueue_rejected",
+                    "code": exc.code,
+                    "timer_id": timer.timer_id,
+                })
+                continue
             self.fired_timers.append({
                 "timer_id": timer.timer_id,
                 "target": timer.target_agent,
@@ -1183,8 +2050,9 @@ class Orchestrator:
 
         # 2. 处理待唤醒 — 拆分出皇帝奏折 vs Agent 调用
         if self._pending_wakeups:
+            claimed_wakeups = self._pending_wakeups.claim_pending()
             # 先做模糊匹配，统一 target_id
-            for wakeup in self._pending_wakeups:
+            for wakeup in claimed_wakeups:
                 target_id = wakeup["target"]
                 agent = self.agents.get(target_id)
                 official = self.court.get_official(target_id)
@@ -1198,8 +2066,9 @@ class Orchestrator:
             merged_agent_wakeups: dict[str, dict] = {}
             player_wakeups: list[dict] = []
             unresolved: list[str] = []
+            terminal_delivery_ids: list[str] = []
 
-            for wakeup in self._pending_wakeups:
+            for wakeup in claimed_wakeups:
                 target_id = wakeup["target"]
                 official = self.court.get_official(target_id)
                 if self._is_player_recipient(target_id, official):
@@ -1209,12 +2078,23 @@ class Orchestrator:
                         merged_agent_wakeups[target_id] = {
                             "target": target_id,
                             "payload": dict(wakeup.get("payload", {})),
-                            "chain_ids": [wakeup.get("chain_id", "")],
+                            "chain_id": wakeup.get("chain_id", ""),
+                            "chain_ids": list(
+                                wakeup.get("chain_ids") or [wakeup.get("chain_id", "")]
+                            ),
+                            "delivery_ids": [wakeup.get("delivery_id", "")],
+                            "timer_id": wakeup.get("timer_id", ""),
+                            "timer_ids": [wakeup.get("timer_id", "")],
+                            "event_id": wakeup.get("event_id", ""),
                         }
                     else:
                         # 合并消息内容，收集所有 chain_id
                         base = merged_agent_wakeups[target_id]
-                        base["chain_ids"].append(wakeup.get("chain_id", ""))
+                        for chain_id in wakeup.get("chain_ids") or [wakeup.get("chain_id", "")]:
+                            if chain_id and chain_id not in base["chain_ids"]:
+                                base["chain_ids"].append(chain_id)
+                        base["delivery_ids"].append(wakeup.get("delivery_id", ""))
+                        base["timer_ids"].append(wakeup.get("timer_id", ""))
                         base_payload = base["payload"]
                         new_msg = wakeup.get("payload", {}).get("message", "")
                         if new_msg:
@@ -1225,8 +2105,10 @@ class Orchestrator:
                 elif self.agents.get(target_id):
                     logger.info("Dropped wakeup for disabled agent %s", target_id)
                     result.agent_errors.append({"agent_id": target_id, "error": "disabled"})
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
                 else:
                     unresolved.append(target_id)
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
 
             agent_wakeups = []
             for wakeup in player_wakeups:
@@ -1259,8 +2141,11 @@ class Orchestrator:
                 }
                 if payload.get("deadline_days") is not None:
                     issue_payload["deadline_days"] = payload["deadline_days"]
+                issue_time = self._effective_event_time(
+                    payload.get("generated_at", self._sim_time),
+                )
                 try:
-                    opened = self.open_issue(issue_payload)
+                    opened = self._open_issue_at(issue_payload, sim_time=issue_time)
                 except IssueContractError as exc:
                     logger.warning(
                         "Player wakeup rejected by issue contract: target=%s code=%s",
@@ -1274,6 +2159,20 @@ class Orchestrator:
                         "chain_id": chain_id,
                         "event_id": event_id,
                     })
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
+                    continue
+                except Exception as exc:
+                    logger.exception(
+                        "Player wakeup delivery failed: target=%s",
+                        wakeup.get("target", ""),
+                    )
+                    result.agent_errors.append({
+                        "agent_id": str(wakeup.get("target", "")),
+                        "error": "wakeup_delivery_failed",
+                        "chain_id": chain_id,
+                        "event_id": event_id,
+                    })
+                    self._retry_wakeup_deliveries([wakeup.get("delivery_id", "")])
                     continue
                 issue = opened["issue"]
                 result.new_issues.append(issue)
@@ -1285,6 +2184,7 @@ class Orchestrator:
                 )
                 if memorial is not None:
                     result.new_memorials.append(memorial)
+                terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
             for target_id, wakeup in merged_agent_wakeups.items():
                 agent = self.agents[target_id]
                 agent_wakeups.append((agent, wakeup))
@@ -1292,7 +2192,7 @@ class Orchestrator:
                 logger.warning("Agent not found: %s", target_id)
                 result.agent_errors.append({"agent_id": target_id, "error": "not_found"})
 
-            self._pending_wakeups.clear()
+            self._ack_wakeup_deliveries(terminal_delivery_ids)
 
             # Agent 调用作为后台任务，不阻塞 tick
             if agent_wakeups:
@@ -1328,6 +2228,36 @@ class Orchestrator:
             result.objective_transitions.extend(self._pending_objective_transitions)
             self._pending_objective_transitions.clear()
 
+        for item in result.generated_events:
+            if item.get("source") != "causal" or not item.get("event_id"):
+                continue
+            event_time = self._effective_event_time(item.get("generated_at", self._sim_time))
+            feedback = self.outcome_feedback_runtime.record(
+                source_kind="causal_event", source_id=str(item.get("event_id", "")),
+                receipt_id=f"causal_event:{item.get('event_id', '')}", sim_time=event_time,
+                display_name=str(item.get("event_type", "Causal event")),
+                event_type=str(item.get("event_type", "")),
+                summary=f"{item.get('event_type', 'Causal event')} occurred.",
+                reason=str(item.get("world_effect_status", item.get("source", "causal"))),
+                details={"event_type": str(item.get("event_type", ""))},
+                condition_context=self._feedback_condition_context(sim_time=event_time),
+            )
+            tick_feedback_deliveries.extend(feedback["delivered"])
+        feedback_poll = self.outcome_feedback_runtime.poll(
+            sim_time=self._sim_time, condition_context=self._feedback_condition_context(),
+        )
+        tick_feedback_deliveries.extend(feedback_poll["delivered"])
+        feedback_state = self.outcome_feedback_runtime.public_state()
+        result.outcome_feedback = {
+            "configured": feedback_state.get("configured", False),
+            "enabled": feedback_state.get("enabled", False),
+            "generation": feedback_state.get("generation", 0),
+            "delivered": tick_feedback_deliveries,
+            "pending_count": feedback_state.get("pending_count", 0),
+        }
+        if tick_feedback_deliveries and self.persistor:
+            self.persistor.mark_state_dirty()
+
         result.token_usage = self.router.llm.token_counter.to_dict()
         result.token_usage["pending_tasks"] = len(self._agent_tasks)
 
@@ -1335,78 +2265,118 @@ class Orchestrator:
 
     # ── 后台 Agent 处理 ──
 
+    def _ack_wakeup_deliveries(self, delivery_ids: list[str]) -> None:
+        normalized = [str(item) for item in delivery_ids if str(item)]
+        if not normalized:
+            return
+        timer_ids = {
+            str(entry.get("timer_id", ""))
+            for delivery_id in normalized
+            if (entry := self._pending_wakeups.get(delivery_id)) is not None
+            if str(entry.get("timer_id", ""))
+        }
+        ack_timer = getattr(self.timers, "ack", None)
+        if callable(ack_timer):
+            for timer_id in timer_ids:
+                ack_timer(timer_id)
+        self._pending_wakeups.ack(normalized)
+
+    def _retry_wakeup_deliveries(self, delivery_ids: list[str]) -> None:
+        normalized = [str(item) for item in delivery_ids if str(item)]
+        if normalized:
+            self._pending_wakeups.retry(normalized)
+
     async def _process_agents_background(
         self,
         agent_wakeups: list[tuple[BaseAgent, dict[str, Any]]],
     ) -> None:
-        """后台任务：并行调用 Agent → Router 批量处理 → 执行指令.
-
-        这个方法在后台运行，不阻塞主循环的时间推进。
-        """
-        # 并行调用所有 Agent
-        tasks = [
-            self._call_agent_safe(agent, wakeup)
-            for agent, wakeup in agent_wakeups
-            if self.is_agent_enabled(agent.agent_id)
+        """Deliver claimed wakeups, acknowledging only after routing completes."""
+        all_delivery_ids = [
+            str(delivery_id)
+            for _, wakeup in agent_wakeups
+            for delivery_id in wakeup.get("delivery_ids", [])
+            if str(delivery_id)
         ]
-        results = await asyncio.gather(*tasks)
+        try:
+            tasks = [
+                self._call_agent_safe(agent, wakeup)
+                for agent, wakeup in agent_wakeups
+            ]
+            results = await asyncio.gather(*tasks)
 
-        # 每个 result 是 list[AgentAction]，展平后过滤
-        actions: list[AgentAction] = []
-        for action_list in results:
-            for a in action_list:
-                if a.action != "do_nothing":
-                    actions.append(a)
+            actions: list[AgentAction] = []
+            failed_delivery_ids: list[str] = []
+            successful_delivery_ids: list[str] = []
+            for (_, wakeup), action_list in zip(agent_wakeups, results):
+                delivery_ids = [
+                    str(item) for item in wakeup.get("delivery_ids", []) if str(item)
+                ]
+                if wakeup.pop("_delivery_failed", False):
+                    failed_delivery_ids.extend(delivery_ids)
+                    continue
+                successful_delivery_ids.extend(delivery_ids)
+                for action in action_list:
+                    if action.action != "do_nothing":
+                        actions.append(action)
 
-        # Router 批量处理
-        if actions:
-            self._record_operational_metric("router_batches")
-            self._record_operational_metric("router_actions", len(actions))
-            try:
-                commands = await self.router.process_batch(actions)
-                self._record_operational_metric("router_commands", len(commands))
+            if actions:
+                self._record_operational_metric("router_batches")
+                self._record_operational_metric("router_actions", len(actions))
+                try:
+                    commands = await self.router.process_batch(actions)
+                    self._record_operational_metric("router_commands", len(commands))
 
-                # 记录 Router 决策日志
-                self.router_log.append({
-                    "sim_time": self._sim_time,
-                    "input_actions": [
-                        {"agent": a.agent_id, "action": a.action,
-                         "content": a.content[:80], "urgency": a.urgency}
-                        for a in actions
-                    ],
-                    "output_commands": [
-                        {"type": cmd.command_type.value, "target": cmd.target or ",".join(cmd.targets),
-                         "delay": cmd.delay_seconds,
-                         "payload_preview": str(cmd.payload)[:80]}
-                        for cmd in commands
-                    ],
-                    "command_count": len(commands),
-                    "router_text": self.router.last_response_text[:200] if self.router.last_response_text else "",
-                    "router_stats": dict(getattr(self.router, "last_stats", {}) or {}),
-                })
-
-                execution_results = await self._execute_commands(commands)
-                for command, execution_result in execution_results:
-                    source_action = command.source_action
-                    source_id = source_action.agent_id if source_action else ""
-                    source_agent = self.agents.get(source_id)
-                    if source_agent is None:
-                        continue
-                    await source_agent.record_execution_feedback({
-                        "phase": "dispatch",
-                        "intent_id": (source_action.metadata or {}).get("intent_id", ""),
-                        "chain_id": command.chain_id,
-                        "command": command.command_type.value,
-                        "target": command.target,
-                        "targets": list(command.targets),
-                        "result": execution_result,
+                    self.router_log.append({
+                        "sim_time": self._sim_time,
+                        "input_actions": [
+                            {"agent": a.agent_id, "action": a.action,
+                             "content": a.content[:80], "urgency": a.urgency}
+                            for a in actions
+                        ],
+                        "output_commands": [
+                            {"type": cmd.command_type.value, "target": cmd.target or ",".join(cmd.targets),
+                             "delay": cmd.delay_seconds,
+                             "payload_preview": str(cmd.payload)[:80]}
+                            for cmd in commands
+                        ],
+                        "command_count": len(commands),
+                        "router_text": self.router.last_response_text[:200] if self.router.last_response_text else "",
+                        "router_stats": dict(getattr(self.router, "last_stats", {}) or {}),
                     })
-                    if self.persistor:
-                        self.persistor.mark_agent_dirty(source_id)
-                self._record_operational_metric("router_batches_completed")
-            except Exception as e:
-                self._record_operational_metric("router_failures")
-                logger.error("Router batch processing failed: %s", e)
+
+                    execution_results = await self._execute_commands(commands)
+                    for command, execution_result in execution_results:
+                        source_action = command.source_action
+                        source_id = source_action.agent_id if source_action else ""
+                        source_agent = self.agents.get(source_id)
+                        if source_agent is None:
+                            continue
+                        await source_agent.record_execution_feedback({
+                            "phase": "dispatch",
+                            "intent_id": (source_action.metadata or {}).get("intent_id", ""),
+                            "chain_id": command.chain_id,
+                            "command": command.command_type.value,
+                            "target": command.target,
+                            "targets": list(command.targets),
+                            "result": execution_result,
+                        })
+                        if self.persistor:
+                            self.persistor.mark_agent_dirty(source_id)
+                    self._record_operational_metric("router_batches_completed")
+                except Exception as exc:
+                    self._record_operational_metric("router_failures")
+                    logger.error("Router batch processing failed: %s", exc)
+                    self._retry_wakeup_deliveries(all_delivery_ids)
+                    return
+
+            self._ack_wakeup_deliveries(successful_delivery_ids)
+            self._retry_wakeup_deliveries(failed_delivery_ids)
+        except asyncio.CancelledError:
+            self._retry_wakeup_deliveries(all_delivery_ids)
+            raise
+        except Exception as exc:
+            logger.exception("Background wakeup delivery failed: %s", exc)
+            self._retry_wakeup_deliveries(all_delivery_ids)
 
     async def _call_agent_safe(
         self,
@@ -1424,10 +2394,14 @@ class Orchestrator:
         previous_outcome = getattr(agent, "last_turn_outcome", None)
         turn_error_recorded = False
         try:
-            chain_ids = wakeup.get("chain_ids") or [
-                wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")
+            delivery_keys = wakeup.get("delivery_ids") or [
+                wakeup.get("delivery_id") or wakeup.get("target", "legacy")
             ]
-            chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
+            fallback_chain_id = stable_chain_id(str(delivery_keys[0]))
+            chain_ids = wakeup.get("chain_ids") or [
+                wakeup.get("chain_id", fallback_chain_id)
+            ]
+            chain_ids = [c or fallback_chain_id for c in chain_ids]
             agent_payload = dict(wakeup.get("payload", {}))
             agent_payload.setdefault("chain_id", chain_ids[0])
             agent_payload.setdefault("chain_ids", list(chain_ids))
@@ -1494,22 +2468,21 @@ class Orchestrator:
                             status="delivered",
                         ))
                     if self.action_agent is not None:
-                        task = asyncio.create_task(
-                            self._run_action(
-                                payload=action.metadata,
-                                source_agent_id=agent.agent_id,
-                                chain_id=chain_ids[0],
-                                event_id=event_id,
-                            )
+                        # This already runs inside the background wakeup task. Await the
+                        # direct ActionAgent dispatch so the durable wakeup is not acked
+                        # in the crash window between task creation and task execution.
+                        await self._run_action(
+                            payload=action.metadata,
+                            source_agent_id=agent.agent_id,
+                            chain_id=chain_ids[0],
+                            event_id=event_id,
                         )
-                        self._agent_tasks.add(task)
-                        task.add_done_callback(self._agent_tasks.discard)
                         await agent.record_execution_feedback({
                             "phase": "dispatch",
                             "intent_id": (action.metadata or {}).get("intent_id", ""),
                             "chain_id": chain_ids[0],
                             "command": "request_action",
-                            "result": {"ok": True, "scheduled": True},
+                            "result": {"ok": True, "completed": True},
                         })
                     else:
                         logger.warning(
@@ -1572,6 +2545,7 @@ class Orchestrator:
         except Exception as e:
             if not turn_error_recorded:
                 self._record_operational_metric("agent_turn_errors")
+            wakeup["_delivery_failed"] = True
             logger.error("Agent %s failed: %s", agent.agent_id, e)
             return []
 

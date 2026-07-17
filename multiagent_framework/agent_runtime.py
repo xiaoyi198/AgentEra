@@ -18,6 +18,7 @@ from .fc_handlers import (
 )
 from .fc_tools import AGENT_READ_TOOLS, AGENT_TOOLS, FINISH_TURN_TOOL
 from .capability_contract import CapabilityCatalog, CapabilityContractError
+from .derived_metrics import DerivedMetricEvaluationContext
 from .llm_client import LLMClient
 from .memory_compressor import MemoryCompressor, find_safe_split_point
 from .memory_store import StructuredMemoryStore
@@ -62,6 +63,8 @@ class AgentConfig:
     structured_memory_char_budget: int = 2400
     knowledge_context_max_records: int = 24
     knowledge_context_char_budget: int = 6000
+    derived_metric_context_max_records: int = 16
+    derived_metric_context_char_budget: int = 4000
 
 
 class BaseAgent:
@@ -95,6 +98,8 @@ class BaseAgent:
         self._seconds_per_day_provider: Callable[[], float] = lambda: 86400.0
         self._capability_catalog: CapabilityCatalog | None = None
         self._knowledge_provider: Any = None
+        self._actor_manager: Any = None
+        self._derived_metric_provider: Any = None
 
         self.last_turn_outcome: TurnOutcome | None = None
         self.last_turn_trace: list[dict[str, Any]] = []
@@ -122,6 +127,11 @@ class BaseAgent:
         """Bind the generation-aware catalog without freezing tool schemas."""
         self._capability_catalog = catalog
 
+    def set_derived_metric_provider(self, provider: Any = None, *, actor_manager: Any = None) -> None:
+        """Hot-swap the generation-aware read-only metric projection."""
+        self._derived_metric_provider = provider
+        self._actor_manager = actor_manager
+
     def _tools_for_turn(self) -> list[dict[str, Any]]:
         catalog = self._capability_catalog
         if catalog is not None and catalog.configured:
@@ -145,6 +155,8 @@ class BaseAgent:
         sim_time_provider: Callable[[], float] | None = None,
         seconds_per_day_provider: Callable[[], float] | None = None,
         knowledge_provider: Any = None,
+        actor_manager: Any = None,
+        derived_metric_provider: Any = None,
     ) -> None:
         """注入普通 Agent 只读工具所需的运行时依赖。"""
         self._world_state = world_state
@@ -154,6 +166,8 @@ class BaseAgent:
         if seconds_per_day_provider is not None:
             self._seconds_per_day_provider = seconds_per_day_provider
         self._knowledge_provider = knowledge_provider
+        self._actor_manager = actor_manager
+        self._derived_metric_provider = derived_metric_provider
 
     async def process(self, payload: dict[str, Any]) -> list[AgentAction]:
         """按严格收件序号串行执行一个多轮 Agent turn。"""
@@ -255,6 +269,23 @@ class BaseAgent:
                 knowledge_context = ""
             if knowledge_context:
                 messages.append({"role": "system", "content": knowledge_context})
+        metric_projector = getattr(self._derived_metric_provider, "agent_context", None)
+        if callable(metric_projector):
+            try:
+                metric_context = metric_projector(
+                    DerivedMetricEvaluationContext(
+                        world_state=self._world_state,
+                        actor_manager=self._actor_manager,
+                        sim_time=float(self._sim_time_provider()),
+                    ),
+                    max_records=self.config.derived_metric_context_max_records,
+                    max_chars=self.config.derived_metric_context_char_budget,
+                )
+            except Exception:
+                logger.exception("Agent %s: derived metric projection failed closed", self.agent_id)
+                metric_context = ""
+            if metric_context:
+                messages.append({"role": "system", "content": metric_context})
         messages.extend(self.memory)
         return messages
 

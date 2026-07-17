@@ -96,6 +96,32 @@ def test_causal_batch_replay_is_idempotent(tmp_path):
     assert inventory_quantity(world, "warehouse", "grain") == 95
 
 
+def test_restart_after_world_command_commit_before_causal_ack_replays_idempotently(tmp_path):
+    world = make_world(tmp_path)
+    engine = engine_with_effects([{
+        "effect_type": "adjust_resource", "entity_id": "warehouse",
+        "resource_name": "grain", "quantity_delta": -5,
+    }])
+    engine.observe(source(), sim_time=0, world_state=world)
+    before_ack = copy.deepcopy(engine.snapshot())
+
+    event = engine.poll(2 * GAME_SECONDS_PER_DAY).events[0]
+    committed = execute_causal_world_commands(world, event, sim_time=event.generated_at)
+    assert committed is not None and committed.applied_count == 1
+    assert inventory_quantity(world, "warehouse", "grain") == 95
+
+    restarted = CausalEventEngine()
+    restarted.restore(before_ack, sim_time=2 * GAME_SECONDS_PER_DAY)
+    replay_event = restarted.poll(2 * GAME_SECONDS_PER_DAY).events[0]
+    replayed = execute_causal_world_commands(
+        world, replay_event, sim_time=replay_event.generated_at,
+    )
+
+    assert replayed is not None and replayed.ok and replayed.replayed_count == 1
+    assert replayed.applied_count == 0
+    assert inventory_quantity(world, "warehouse", "grain") == 95
+
+
 def test_atomic_rejection_rolls_back_sibling_effects(tmp_path):
     world = make_world(tmp_path, grain=5)
     engine = engine_with_effects([

@@ -21,7 +21,7 @@ function ParameterInput({ parameter, value, onChange }) {
   if ((parameter.options || []).length > 0) {
     return (
       <select value={value ?? ''} onChange={event => onChange(event.target.value)} required={parameter.required}>
-        <option value="">\u8bf7\u9009\u62e9</option>
+        <option value="">请选择</option>
         {parameter.options.map(option => <option key={option} value={option}>{option}</option>)}
       </select>
     )
@@ -76,7 +76,7 @@ function CapabilityForm({ selected, state, gameplay, title, onInvoke }) {
       <div className="capability-heading">
         <div>
           <h3>{title}</h3>
-          <small>Generation {state.generation} \u00b7 {state.capabilities.length} \u9879</small>
+          <small>Generation {state.generation} · {state.capabilities.length} 项</small>
         </div>
       </div>
       <div className="capability-summary">
@@ -84,7 +84,7 @@ function CapabilityForm({ selected, state, gameplay, title, onInvoke }) {
         <span className={`capability-handler handler-${selected.handler}`}>{HANDLER_NAMES[selected.handler] || selected.handler}</span>
         <code>{selected.capability_id}</code>
         {selected.description && <p>{selected.description}</p>}
-        {selected.handler === 'contract_action' && <small>\u7ed1\u5b9a Action\uff1a{selected.action_id}</small>}
+        {selected.handler === 'contract_action' && <small>绑定 Action：{selected.action_id}</small>}
       </div>
       {contentInput.content_required || selected.handler !== 'noop' ? (
         <label className="capability-field">
@@ -102,7 +102,7 @@ function CapabilityForm({ selected, state, gameplay, title, onInvoke }) {
           <span>{target.kind === 'agent' ? '\u76ee\u6807 Agent' : '\u76ee\u6807\u5b9e\u4f53'}{targetRequired ? ' *' : ''}</span>
           {(target.allowed_ids || []).length > 0 && !targetMultiple ? (
             <select value={form.targets} required={targetRequired} onChange={event => setForm(current => ({ ...current, targets: event.target.value }))}>
-              {!targetRequired && <option value="">\u81ea\u52a8\u9009\u62e9 / \u7559\u7a7a</option>}
+              {!targetRequired && <option value="">自动选择 / 留空</option>}
               {target.allowed_ids.map(id => <option key={id} value={id}>{id}</option>)}
             </select>
           ) : (
@@ -113,7 +113,7 @@ function CapabilityForm({ selected, state, gameplay, title, onInvoke }) {
               onChange={event => setForm(current => ({ ...current, targets: event.target.value }))}
             />
           )}
-          <small>\u76ee\u6807\u7c7b\u578b\uff1a{target.kind}\uff1b\u6a21\u5f0f\uff1a{target.mode}{(target.allowed_ids || []).length > 0 ? `\uff1b\u5141\u8bb8 ${target.allowed_ids.join('\u3001')}` : ''}</small>
+          <small>目标类型：{target.kind}；模式：{target.mode}{(target.allowed_ids || []).length > 0 ? `\uff1b\u5141\u8bb8 ${target.allowed_ids.join('\u3001')}` : ''}</small>
         </label>
       )}
       {(selected.parameters || []).map(parameter => (
@@ -125,11 +125,11 @@ function CapabilityForm({ selected, state, gameplay, title, onInvoke }) {
       ))}
       {selected.handler !== 'noop' && (
         <label className="capability-field capability-urgency">
-          <span>\u7d27\u6025\u5ea6</span>
+          <span>紧急度</span>
           <select value={form.urgency} onChange={event => setForm(current => ({ ...current, urgency: event.target.value }))}>
-            <option value="normal">\u666e\u901a</option>
-            <option value="urgent">\u7d27\u6025</option>
-            <option value="critical">\u5371\u6025</option>
+            <option value="normal">普通</option>
+            <option value="urgent">紧急</option>
+            <option value="critical">危急</option>
           </select>
         </label>
       )}
@@ -154,13 +154,13 @@ export default function CapabilityPanel({ state, gameplay, title = '\u53ef\u7528
   const selected = capabilities.find(item => item.capability_id === selectedId) || capabilities[0] || null
 
   if (!selected) {
-    return <div className="empty">\u5f53\u524d DLC \u6ca1\u6709\u5411\u73a9\u5bb6\u5f00\u653e\u80fd\u529b\u3002\u53ef\u5728 DLC Studio \u7684\u300c\u80fd\u529b\u300d\u9875\u7b7e\u4e2d\u65b0\u5efa\uff0c\u5e76\u52fe\u9009 player audience\u3002</div>
+    return <div className="empty">当前 DLC 没有向玩家开放能力。可在 DLC Studio 的「能力」页签中新建，并勾选 player audience。</div>
   }
 
   return (
     <>
       <label className="capability-picker">
-        <span>\u9009\u62e9\u80fd\u529b</span>
+        <span>选择能力</span>
         <select value={selected.capability_id} onChange={event => setSelectedId(event.target.value)}>
           {capabilities.map(item => <option key={item.capability_id} value={item.capability_id}>{item.display_name || item.capability_id}</option>)}
         </select>

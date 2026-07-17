@@ -338,6 +338,7 @@ class CausalEventEngine:
             knowledge_provider=provided.knowledge_provider,
             issue_manager=provided.issue_manager,
             action_catalog=provided.action_catalog,
+            derived_metric_provider=provided.derived_metric_provider,
         )
         counts = self._counts_for(chain_id)
         scheduled = 0
@@ -391,6 +392,16 @@ class CausalEventEngine:
             counts[rule.rule_id] = counts.get(rule.rule_id, 0) + 1
             scheduled += 1
         return scheduled
+
+    def next_due_key(self, now: float) -> tuple[float, str] | None:
+        """Return the stable key of the oldest due event without consuming it."""
+        current = float(now)
+        eligible = (
+            (pending.due_at, event_id)
+            for event_id, pending in self._pending.items()
+            if pending.due_at <= current
+        )
+        return min(eligible, default=None)
 
     def poll(self, now: float, *, max_events: int = 128) -> CausalEventPollResult:
         if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events <= 0:

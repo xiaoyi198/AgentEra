@@ -134,16 +134,16 @@
       "variables": {},
       "expect": {
         "version": "1.0",
-        "content_hash": "9e74363e4f5c77d3640f7f42c23af6131be1740168d51582bd8ff9e5c37dd2a6",
+        "content_hash": "0033e9b3ebffc9e108e47a73f4d54426428d5277d7608f70035d76cca2a59d86",
         "max_chars": 1800,
         "max_estimated_tokens": 900,
         "assertions": [
           {
-            "id": "query_before_action",
+            "id": "fc_tool_testing_purpose",
             "kind": "contains_all",
-            "patterns": ["不确定时，先用 `query_entity`", "再决定后续操作"],
+            "patterns": ["帮助用户完成fc工具测试", "每次工具调用结果会反馈给你"],
             "weight": 2,
-            "description": "调试 Agent 先查询真实状态"
+            "description": "调试 Agent 以 FC 工具测试和结果回报为首要职责"
           },
           {
             "id": "write_authority_boundary",

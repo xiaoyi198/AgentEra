@@ -276,7 +276,27 @@
   "prompts": {
     "official_template": "你是{name}，驻守{location}。{personality}\nActor={actor_id}，需求={actor_needs}，目标={actor_goals}，状态={actor_states}。\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
   },
-  "random_events": [],
+  "random_events": [
+    {
+      "template_id": "frontier_rumor_cycle",
+      "event_type": "frontier_rumor",
+      "target_agents": [
+        "哨站守备官"
+      ],
+      "initial_payload": {
+        "title": "边境流言",
+        "summary": "商旅带来未经证实的边境消息，需要结合正式巡查报告判断。",
+        "source": "random_event"
+      },
+      "severity_min": 1,
+      "severity_max": 3,
+      "min_interval_days": 2,
+      "max_interval_days": 4,
+      "probability": 0.7,
+      "max_occurrences": 0,
+      "enabled": true
+    }
+  ],
   "time_rules": [
     {
       "rule_id": "frontier_default",
@@ -523,11 +543,78 @@
       "enabled": true
     }
   ],
+  "derived_metrics": [
+    {
+      "metric_id": "frontier_readiness",
+      "display_name": "边境综合战备度",
+      "description": "将哨站警戒度、守备 Actor 警觉属性与统一锚定库存价值组合为 0~100 的确定性战备指标。",
+      "unit": "%",
+      "precision": 1,
+      "minimum": 0,
+      "maximum": 100,
+      "audiences": [
+        "player",
+        "ui",
+        "agent",
+        "rule",
+        "objective"
+      ],
+      "missing_policy": "fail",
+      "formula": {
+        "op": "round",
+        "precision": 1,
+        "value": {
+          "op": "clamp",
+          "min": 0,
+          "max": 100,
+          "value": {
+            "op": "weighted_sum",
+            "terms": [
+              {
+                "weight": 0.55,
+                "value": {
+                  "source": "metric",
+                  "entity_id": "边境哨站",
+                  "name": "警戒度"
+                }
+              },
+              {
+                "weight": 0.25,
+                "value": {
+                  "source": "actor_attribute",
+                  "entity_id": "frontier_guard",
+                  "name": "vigilance"
+                }
+              },
+              {
+                "weight": 0.2,
+                "value": {
+                  "op": "clamp",
+                  "min": 0,
+                  "max": 100,
+                  "value": {
+                    "source": "anchored_inventory",
+                    "entity_id": "边境哨站",
+                    "name": "边境银券"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "enabled": true,
+      "metadata": {
+        "example": "P1.6",
+        "formula_role": "readiness_projection"
+      }
+    }
+  ],
   "objectives": [
     {
       "objective_id": "secure_frontier",
       "display_name": "稳固边境防线",
-      "description": "保留足够的统一锚定资产，持续组织巡逻，并在期限前将哨站警戒度提升到安全线。",
+      "description": "保留足够的统一锚定资产，持续组织巡逻，并在期限前将边境综合战备度提升到安全线。",
       "category": "primary",
       "required": true,
       "milestone_mode": "ordered",
@@ -561,10 +648,9 @@
         }
       ],
       "completion": {
-        "kind": "metric",
-        "label": "警戒度达到安全线",
-        "entity_id": "边境哨站",
-        "name": "警戒度",
+        "kind": "derived_metric",
+        "label": "综合战备度达到安全线",
+        "name": "frontier_readiness",
         "operator": "gte",
         "value": 85
       },
@@ -574,7 +660,7 @@
     {
       "objective_id": "frontier_deadline_failed",
       "display_name": "边境防线逾期失守",
-      "description": "第 15 天到来时警戒度仍低于安全线，将触发失败结局。",
+      "description": "第 15 天到来时综合战备度仍低于安全线，将触发失败结局。",
       "category": "failure",
       "required": false,
       "milestone_mode": "independent",
@@ -590,10 +676,9 @@
             "value": 15
           },
           {
-            "kind": "metric",
-            "label": "警戒度低于安全线",
-            "entity_id": "边境哨站",
-            "name": "警戒度",
+            "kind": "derived_metric",
+            "label": "综合战备度低于安全线",
+            "name": "frontier_readiness",
             "operator": "lt",
             "value": 85
           }
@@ -756,6 +841,13 @@
           "visible": true
         },
         {
+          "widget_id": "frontier_readiness",
+          "kind": "derived_metrics",
+          "region": "top",
+          "order": 5,
+          "visible": true
+        },
+        {
           "widget_id": "frontier_issues",
           "kind": "issue_list",
           "region": "left",
@@ -774,6 +866,13 @@
           "kind": "player_message",
           "region": "main",
           "order": 30,
+          "visible": true
+        },
+        {
+          "widget_id": "frontier_outcome_feedback",
+          "kind": "outcome_feedback",
+          "region": "right",
+          "order": 35,
           "visible": true
         },
         {
@@ -1218,8 +1317,14 @@
     {
       "group_id": "frontier_response_readiness",
       "name": "边境应急响应就绪条件",
-      "description": "演示实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
+      "description": "演示派生指标、实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
       "conditions": [
+        {
+          "kind": "derived_metric",
+          "name": "frontier_readiness",
+          "operator": "gte",
+          "value": 70
+        },
         {
           "kind": "entity_tag",
           "entity_id": "边境哨站",
@@ -1428,6 +1533,39 @@
     }
   ],
   "causal_event_rules": [
+    {
+      "rule_id": "frontier_action_to_response",
+      "source_event_types": [
+        "frontier_patrol_started"
+      ],
+      "child_event_type": "frontier_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "巡逻行动开始推动应急响应"
+      },
+      "inherit_payload_keys": [
+        "target_id",
+        "action_id"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "adjust_resource",
+          "entity_id": "边境哨站",
+          "resource_name": "警戒度",
+          "quantity_delta": 5,
+          "reason": "巡逻行动开始推动应急响应"
+        }
+      ],
+      "delay_days": 1,
+      "probability": 1,
+      "max_depth": 4,
+      "max_fires_per_chain": 1,
+      "severity_delta": 1,
+      "enabled": true,
+      "priority": 120
+    },
     {
       "rule_id": "patrol_report_to_frontier_response",
       "template_id": "frontier_deterministic_follow_up",
@@ -1798,5 +1936,896 @@
         }
       ]
     }
-  ]
+  ],
+  "time_system": {
+    "enabled": true,
+    "calendar": {
+      "calendar_id": "frontier_garrison_calendar",
+      "display_name": "边境驻防历",
+      "epoch_label": "驻防纪元",
+      "start_year": 1,
+      "start_month_id": "snowmelt",
+      "start_day": 1,
+      "weekdays": [
+        "巡一日",
+        "巡二日",
+        "巡三日",
+        "巡四日",
+        "巡五日",
+        "整备日",
+        "议事日"
+      ],
+      "start_weekday": "巡一日",
+      "months": [
+        {
+          "month_id": "snowmelt",
+          "display_name": "融雪月",
+          "days": 30
+        },
+        {
+          "month_id": "sprouting",
+          "display_name": "萌芽月",
+          "days": 30
+        },
+        {
+          "month_id": "springwatch",
+          "display_name": "春巡月",
+          "days": 30
+        },
+        {
+          "month_id": "longlight",
+          "display_name": "长昼月",
+          "days": 30
+        },
+        {
+          "month_id": "highsun",
+          "display_name": "烈阳月",
+          "days": 30
+        },
+        {
+          "month_id": "thunder",
+          "display_name": "雷雨月",
+          "days": 30
+        },
+        {
+          "month_id": "harvest",
+          "display_name": "收获月",
+          "days": 30
+        },
+        {
+          "month_id": "windwatch",
+          "display_name": "风巡月",
+          "days": 30
+        },
+        {
+          "month_id": "frost",
+          "display_name": "霜降月",
+          "days": 30
+        },
+        {
+          "month_id": "firstsnow",
+          "display_name": "初雪月",
+          "days": 30
+        },
+        {
+          "month_id": "longnight",
+          "display_name": "长夜月",
+          "days": 30
+        },
+        {
+          "month_id": "yearguard",
+          "display_name": "岁守月",
+          "days": 30
+        }
+      ]
+    },
+    "seasons": [
+      {
+        "season_id": "thaw",
+        "display_name": "融雪季",
+        "start_day": 1,
+        "end_day": 90,
+        "description": "冰雪消退，商路与巡防线逐步恢复。",
+        "color": "#78a98b"
+      },
+      {
+        "season_id": "high_sun",
+        "display_name": "盛阳季",
+        "start_day": 91,
+        "end_day": 180,
+        "description": "长昼利于远程巡逻，但补给消耗上升。",
+        "color": "#d5a24a"
+      },
+      {
+        "season_id": "harvest_watch",
+        "display_name": "秋防季",
+        "start_day": 181,
+        "end_day": 270,
+        "description": "边贸与收获并行，哨站进入重点警戒期。",
+        "color": "#b47a45"
+      },
+      {
+        "season_id": "frozen_watch",
+        "display_name": "封冻季",
+        "start_day": 271,
+        "end_day": 360,
+        "description": "道路封冻，守军依靠库存与固定哨线过冬。",
+        "color": "#668fa8"
+      }
+    ],
+    "cycles": [
+      {
+        "cycle_id": "frontier_command_turn",
+        "display_name": "边境指挥回合",
+        "kind": "turn",
+        "period_days": 7,
+        "duration_days": 7,
+        "offset_days": 0,
+        "description": "每七天汇总战备、边情与补给，形成一轮指挥决策。",
+        "color": "#c9a84c",
+        "enabled": true
+      },
+      {
+        "cycle_id": "frontier_joint_meeting",
+        "display_name": "边境联席会议",
+        "kind": "meeting",
+        "period_days": 30,
+        "duration_days": 2,
+        "offset_days": 6,
+        "description": "每三十天召开一次、持续两天的指挥与守备联席会议。",
+        "color": "#b57373",
+        "enabled": true
+      },
+      {
+        "cycle_id": "frontier_patrol_task",
+        "display_name": "双周巡防任务",
+        "kind": "task",
+        "period_days": 14,
+        "duration_days": 14,
+        "offset_days": 0,
+        "description": "以十四天为周期滚动安排瞭望、巡逻与补给检查。",
+        "color": "#6693a2",
+        "enabled": true
+      }
+    ],
+    "boundary_events": [
+      {
+        "boundary_event_id": "frontier_turn_start_report",
+        "trigger": "cycle_start",
+        "cycle_id": "frontier_command_turn",
+        "event_type": "frontier_command_turn_started",
+        "severity": 4,
+        "target_agents": [
+          "边境指挥官",
+          "哨站守备官"
+        ],
+        "issue_type_id": "frontier_security_report",
+        "payload": {
+          "title": "新一轮边境指挥回合",
+          "summary": "请汇总当前战备、补给、巡防与边境风险，并形成安全报告。",
+          "source": "time_system"
+        },
+        "enabled": true
+      }
+    ],
+    "auto_pause_conditions": [
+      {
+        "pause_id": "frontier_joint_meeting_pause",
+        "display_name": "边境联席会议开始",
+        "trigger": "cycle_start",
+        "cycle_id": "frontier_joint_meeting",
+        "reason": "联席会议议程已经开启，需要玩家确认边境指挥安排。",
+        "mode": "all",
+        "conditions": [],
+        "cooldown_days": 0,
+        "once": false,
+        "edge_triggered": false,
+        "enabled": true
+      },
+      {
+        "pause_id": "frontier_readiness_alert",
+        "display_name": "边境战备告警",
+        "trigger": "condition",
+        "reason": "边境综合战备度低于 30，需要玩家立即检查风险与补给。",
+        "mode": "all",
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "frontier_readiness",
+            "operator": "lt",
+            "value": 30
+          }
+        ],
+        "cooldown_days": 7,
+        "once": false,
+        "edge_triggered": true,
+        "enabled": true
+      }
+    ]
+  },
+  "lifecycle": {
+    "enabled": true,
+    "recent_feedback_limit": 50,
+    "actor_templates": [
+      {
+        "template_id": "frontier_patrol_deputy",
+        "display_name": "动态巡防副官",
+        "actor": {
+          "display_name": "新任巡防副官",
+          "description": "由生命周期规则生成，负责一线巡防、警情复核与交接。",
+          "actor_type": "person",
+          "enabled": true,
+          "attributes": {
+            "rank": 2,
+            "vigilance": 78,
+            "stamina": 72,
+            "merit": 50
+          },
+          "traits": [
+            {
+              "trait_id": "adaptive_patroller",
+              "display_name": "机动巡防",
+              "description": "能根据季节、警戒度与任务周期调整巡防重点。",
+              "intensity": 0.75,
+              "tags": [
+                "patrol",
+                "adaptive"
+              ]
+            }
+          ],
+          "memberships": [
+            {
+              "organization_id": "frontier_garrison",
+              "role": "patrol_deputy",
+              "status": "active",
+              "rank": 2,
+              "primary": true,
+              "description": "加入边境守军巡防序列。"
+            }
+          ],
+          "states": {
+            "alive": true,
+            "duty_status": "ready",
+            "patrol_status": "awaiting_assignment"
+          },
+          "metadata": {
+            "lifecycle_template": "frontier_patrol_deputy"
+          }
+        },
+        "entity": {
+          "entity_type": "person",
+          "name": "巡防副官",
+          "description": "可在世界地图与事件中被引用的动态人物实体。",
+          "current_status": "在岗",
+          "location_id": "frontier_watchtower",
+          "metadata": {
+            "tags": [
+              "dynamic_actor",
+              "frontier_patrol"
+            ]
+          }
+        },
+        "agent": {
+          "source_agent_id": "哨站守备官",
+          "display_name": "巡防副官 Agent",
+          "system_prompt": "你是动态生成的边境巡防副官。继承守备官的模型路由、工具权限、多轮预算和记忆策略，先核验世界状态，再提交可执行的巡防与交接方案。",
+          "enabled": true,
+          "metadata": {
+            "inherit_source_profile": true,
+            "memory_migration": "copy_then_diverge"
+          }
+        },
+        "metadata": {
+          "example": true,
+          "dlc_owned": true
+        }
+      }
+    ],
+    "positions": [
+      {
+        "position_id": "frontier_patrol_captain",
+        "display_name": "边境巡防队长",
+        "organization_id": "frontier_garrison",
+        "role": "patrol_captain",
+        "rank": 3,
+        "capacity": 1,
+        "incumbent_actor_ids": [
+          "frontier_guard"
+        ],
+        "candidate_actor_ids": [
+          "frontier_guard",
+          "frontier_quartermaster"
+        ],
+        "scores": [
+          {
+            "source": "attribute",
+            "name": "vigilance",
+            "weight": 2,
+            "direction": "desc"
+          },
+          {
+            "source": "membership_rank",
+            "name": "",
+            "weight": 1,
+            "direction": "desc"
+          },
+          {
+            "source": "actor_id",
+            "name": "",
+            "weight": 0,
+            "direction": "asc"
+          }
+        ],
+        "metadata": {
+          "succession": "score_then_actor_id",
+          "example": true
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "frontier_patrol_recruitment",
+        "display_name": "双周补充巡防副官",
+        "kind": "birth",
+        "trigger": "cycle_start",
+        "cycle_id": "frontier_patrol_task",
+        "mode": "all",
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "frontier_readiness",
+            "operator": "gte",
+            "value": 30
+          },
+          {
+            "kind": "anchored_inventory",
+            "entity_id": "边境哨站",
+            "name": "边境银券",
+            "operator": "gte",
+            "value": 20
+          }
+        ],
+        "once": false,
+        "cooldown_days": 14,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "spawn_actor",
+            "template_id": "frontier_patrol_deputy",
+            "actor_id_pattern": "frontier_patrol_deputy_{sequence}",
+            "entity_id_pattern": "frontier_patrol_entity_{sequence}",
+            "agent_id_pattern": "frontier_patrol_agent_{sequence}",
+            "actor_patch": {
+              "states": {
+                "patrol_status": "newly_assigned"
+              }
+            },
+            "entity_patch": {},
+            "agent_patch": {}
+          }
+        ],
+        "feedback": {
+          "message": "边境守军补充了一名动态巡防副官。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "frontier_patrol_succession",
+        "display_name": "巡防队长继任",
+        "kind": "succession",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "vacate_position",
+            "position_id": "frontier_patrol_captain"
+          },
+          {
+            "operation": "appoint_position",
+            "position_id": "frontier_patrol_captain",
+            "replace": true
+          }
+        ],
+        "feedback": {
+          "message": "系统已按候选评分与 Actor ID 稳定顺序完成巡防队长交接。",
+          "level": "success",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "frontier_patrol_retirement",
+        "display_name": "巡防队长退役",
+        "kind": "death",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "retire_actor",
+            "position_id": "frontier_patrol_captain",
+            "reason": "完成边境轮换并交接",
+            "remove_entity": true
+          }
+        ],
+        "feedback": {
+          "message": "现任巡防队长已退役，其动态 Agent 被停用并自动腾出职位。",
+          "level": "warning",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "frontier_watchtower_winterization",
+        "display_name": "瞭望塔封冻改造",
+        "kind": "entity_transform",
+        "trigger": "season_start",
+        "season_id": "frozen_watch",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 300,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "transform_entity",
+            "entity_id": "frontier_watchtower",
+            "new_status": "封冻季强化值守",
+            "metadata_patch": {
+              "winterized": true,
+              "lifecycle_transform": "frozen_watch"
+            }
+          }
+        ],
+        "feedback": {
+          "message": "北境瞭望塔已切换为封冻季强化值守状态。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "frontier_garrison_split_drill",
+        "display_name": "守军分区演练",
+        "kind": "organization_split",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "split_organization",
+            "source_organization_id": "frontier_garrison",
+            "destinations": [
+              {
+                "organization_id": "frontier_east_patrol",
+                "name": "东线巡防队",
+                "actor_ids": [
+                  "frontier_guard"
+                ],
+                "role": "captain",
+                "rank": 3,
+                "metadata": {
+                  "drill": true
+                }
+              },
+              {
+                "organization_id": "frontier_west_patrol",
+                "name": "西线巡防队",
+                "actor_ids": [
+                  "frontier_quartermaster"
+                ],
+                "role": "quartermaster",
+                "rank": 2,
+                "metadata": {
+                  "drill": true
+                }
+              }
+            ],
+            "remove_source": false
+          }
+        ],
+        "feedback": {
+          "message": "边境守军已分为东、西两支演练队，成员关系迁移通过原子命令批次完成。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "frontier_joint_command_merge",
+        "display_name": "守军与商队合署指挥",
+        "kind": "organization_merge",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "merge_organizations",
+            "source_organization_ids": [
+              "frontier_garrison",
+              "frontier_caravan"
+            ],
+            "target_organization_id": "frontier_joint_command",
+            "target": {
+              "name": "边境联合指挥部",
+              "description": "由守军与商队临时合署形成的动态组织。",
+              "current_status": "联合值守",
+              "metadata": {
+                "lifecycle_created": true
+              }
+            },
+            "actor_ids": [
+              "frontier_guard",
+              "frontier_quartermaster"
+            ],
+            "role": "member",
+            "rank": 2,
+            "remove_sources": false
+          }
+        ],
+        "feedback": {
+          "message": "边境守军与商队已合并为联合指挥部，来源组织保留并标记为已合并。",
+          "level": "success",
+          "category": "lifecycle"
+        }
+      }
+    ]
+  },
+  "rhythm": {
+    "enabled": true,
+    "max_active_issues": 4,
+    "attention_budget": 10,
+    "attention_recovery_per_day": 3,
+    "queue_limit": 64,
+    "recent_feedback_limit": 48,
+    "quiet_period_days": 1,
+    "critical_bypasses_quiet": true,
+    "urgency_costs": {
+      "low": 1,
+      "normal": 2,
+      "high": 3.5,
+      "critical": 5
+    },
+    "rules": [
+      {
+        "rule_id": "frontier_security_crisis",
+        "display_name": "边境安全危机升级链",
+        "enabled": true,
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [
+          "frontier_response_started"
+        ],
+        "priority": 100,
+        "attention_cost": 3.5,
+        "max_active": 1,
+        "cooldown_days": 0.5,
+        "mutual_exclusion_group": "frontier_crisis",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0.5,
+        "escalation": {
+          "enabled": true,
+          "after_days": 1,
+          "interval_days": 1,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": [
+            "边境安全报告仍未处理，风险已进入高优先级队列。",
+            "边境风险持续累积，请立即调配巡防与补给资源。",
+            "边境安全事项已达到危急等级，即将进入高潮收束阶段。"
+          ]
+        },
+        "deescalation": {
+          "enabled": true,
+          "interval_days": 0.5,
+          "target_level": 1,
+          "issue_status": "monitoring",
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "frontier_readiness",
+              "value": 65
+            }
+          ],
+          "feedback": "边境综合战备度回升，安全危机降为持续观察。"
+        },
+        "climax": {
+          "enabled": true,
+          "level": 3,
+          "after_days": 0.5,
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "frontier_readiness",
+              "value": 75
+            }
+          ],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": "边境危机已经完成收束，相关决策请求关闭，世界进入三天恢复期。"
+        }
+      },
+      {
+        "rule_id": "frontier_stabilization",
+        "display_name": "稳定化与情报确认",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "frontier_stabilization",
+          "frontier_intelligence_confirmed"
+        ],
+        "priority": 80,
+        "attention_cost": 1,
+        "max_active": 2,
+        "cooldown_days": 0,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 1,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "frontier_routine_reports",
+        "display_name": "常规边疆报告",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "patrol_report",
+          "frontier_command_turn_started"
+        ],
+        "priority": 20,
+        "attention_cost": 1.5,
+        "max_active": 2,
+        "cooldown_days": 0.25,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "frontier_rumor_noise",
+        "display_name": "低优先级边境流言",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "frontier_rumor"
+        ],
+        "priority": -50,
+        "attention_cost": 1,
+        "max_active": 1,
+        "cooldown_days": 3,
+        "mutual_exclusion_group": "frontier_noise",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "low",
+            "normal",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      }
+    ]
+  },
+  "outcome_feedback": {
+    "enabled": true,
+    "recent_limit": 128,
+    "pending_limit": 256,
+    "receipt_limit": 2048,
+    "metric_delta_epsilon": 0.1,
+    "immediate": {
+      "enabled": true,
+      "include_command_changes": true,
+      "include_metric_changes": true,
+      "max_changes": 12,
+      "max_metric_changes": 8
+    },
+    "case_summaries": {
+      "enabled": true,
+      "include_decisions": true,
+      "include_changes": true,
+      "include_metric_changes": true
+    },
+    "rules": [
+      {
+        "rule_id": "frontier_patrol_immediate_result",
+        "display_name": "巡逻行动即时结果",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": [
+          "action"
+        ],
+        "delivery": "immediate",
+        "action_ids": [
+          "frontier_patrol"
+        ],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "巡逻命令已执行",
+        "summary": "巡逻行动已转化为可见的边境状态、库存与战备度变化。",
+        "reason": "变化来自玩家已执行的边境巡逻行动。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": false
+      },
+      {
+        "rule_id": "frontier_decision_followup_report",
+        "display_name": "边境决策后续报告",
+        "enabled": true,
+        "priority": 80,
+        "source_kinds": [
+          "decision"
+        ],
+        "delivery": "delayed",
+        "action_ids": [],
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 2,
+        "conditions": [],
+        "title": "边境处置后续报告",
+        "summary": "两个模拟日后回报处置方案的实际执行结果。",
+        "reason": "该报告是对玩家边境决策的延迟效果追踪。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      },
+      {
+        "rule_id": "frontier_stabilization_causal_reveal",
+        "display_name": "稳定化因果揭示",
+        "enabled": true,
+        "priority": 60,
+        "source_kinds": [
+          "causal_event"
+        ],
+        "delivery": "causal_reveal",
+        "action_ids": [],
+        "issue_type_ids": [
+          "frontier_security_report"
+        ],
+        "event_types": [
+          "frontier_stabilization"
+        ],
+        "metric_ids": [
+          "frontier_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "frontier_readiness",
+            "operator": "gte",
+            "value": 55
+          }
+        ],
+        "title": "边境稳定化原因已查明",
+        "summary": "边境战备度达到可持续水平后，系统交付事后因果说明。",
+        "reason": "揭示只在玩家可见的战备度达标后交付。",
+        "reveal_text": "事后核验表明，早期巡逻、支援组织与路线核验共同推动了边境稳定。",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      }
+    ]
+  }
 }
