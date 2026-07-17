@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import copy
 import heapq
+import json
 import math
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
@@ -58,6 +60,12 @@ class DeferredTimelineRuntime:
         self._next_sequence = 0
         self._archives: dict[str, dict[str, Any]] = {}
         self.last_restore_error = ""
+        self._backpressure_count = 0
+        self._restore_failure_count = 0
+        self._last_snapshot_build_ms = 0.0
+        self._last_snapshot_serialization_ms = 0.0
+        self._last_snapshot_bytes = 0
+        self._last_snapshot_entry_count = 0
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -70,6 +78,13 @@ class DeferredTimelineRuntime:
         self._entries.clear()
         self._next_sequence = 0
         self._archives.clear()
+        self.last_restore_error = ""
+        self._backpressure_count = 0
+        self._restore_failure_count = 0
+        self._last_snapshot_build_ms = 0.0
+        self._last_snapshot_serialization_ms = 0.0
+        self._last_snapshot_bytes = 0
+        self._last_snapshot_entry_count = 0
 
     def register_archive(self, archive_id: str, value: Mapping[str, Any]) -> None:
         key = str(archive_id or "").strip()
@@ -77,6 +92,7 @@ class DeferredTimelineRuntime:
             raise DeferredTimelineError("deferred_timeline.archive_id_invalid")
         payload = self._normalize_mapping(value, "deferred_timeline.archive_invalid")
         if key not in self._archives and len(self._archives) >= MAX_DEFERRED_TIMELINE_ARCHIVES:
+            self._backpressure_count += 1
             raise DeferredTimelineError("deferred_timeline.archive_capacity_exceeded")
         self._archives[key] = payload
 
@@ -150,6 +166,7 @@ class DeferredTimelineRuntime:
         if isinstance(rows, (str, bytes, bytearray)) or not isinstance(rows, Sequence):
             raise DeferredTimelineError("deferred_timeline.batch_invalid")
         if len(self._entries) + len(rows) > self.max_entries:
+            self._backpressure_count += 1
             raise DeferredTimelineError("deferred_timeline.capacity_exceeded")
         normalized: list[tuple[float, int, str, dict[str, Any], dict[str, Any]]] = []
         for row in rows:
@@ -202,13 +219,76 @@ class DeferredTimelineRuntime:
         return replacement
 
     def snapshot(self) -> dict[str, Any]:
+        started = time.perf_counter()
         ordered = [item[3].to_dict() for item in sorted(self._entries)]
-        return {
+        result = {
             "schema_version": "1.0",
             "max_entries": self.max_entries,
             "next_sequence": self._next_sequence,
+            "operational": {
+                "backpressure_count": self._backpressure_count,
+                "restore_failure_count": self._restore_failure_count,
+            },
             "archives": {key: copy.deepcopy(self._archives[key]) for key in sorted(self._archives)},
             "entries": ordered,
+        }
+        self._last_snapshot_build_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        self._last_snapshot_entry_count = len(ordered)
+        return result
+
+    def measure_snapshot(self) -> dict[str, Any]:
+        """Measure one complete snapshot without returning queue payloads.
+
+        This is intentionally opt-in because JSON encoding a large deferred queue is
+        real work. The returned diagnostics are aggregate-only and safe for
+        operational tooling.
+        """
+        snapshot = self.snapshot()
+        started = time.perf_counter()
+        encoded = json.dumps(
+            snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        self._last_snapshot_serialization_ms = round(
+            (time.perf_counter() - started) * 1000.0, 3,
+        )
+        self._last_snapshot_bytes = len(encoded)
+        return {
+            "entry_count": self._last_snapshot_entry_count,
+            "archive_count": len(self._archives),
+            "build_ms": self._last_snapshot_build_ms,
+            "serialization_ms": self._last_snapshot_serialization_ms,
+            "serialized_bytes": self._last_snapshot_bytes,
+        }
+
+    def public_status(self, *, sim_time: float = 0.0) -> dict[str, Any]:
+        """Return bounded aggregate diagnostics without payloads or entity IDs."""
+        try:
+            normalized_time = self._normalize_time(sim_time)
+        except DeferredTimelineError:
+            normalized_time = 0.0
+        oldest = self.peek()
+        oldest_time = oldest.occurrence_time if oldest is not None else None
+        oldest_age = (
+            max(0.0, normalized_time - oldest_time)
+            if oldest_time is not None else 0.0
+        )
+        return {
+            "pending_count": len(self._entries),
+            "capacity": self.max_entries,
+            "utilization": round(len(self._entries) / self.max_entries, 6),
+            "oldest_occurrence_time": oldest_time,
+            "oldest_age_seconds": round(oldest_age, 6),
+            "archive_count": len(self._archives),
+            "archive_capacity": MAX_DEFERRED_TIMELINE_ARCHIVES,
+            "backpressure_count": self._backpressure_count,
+            "restore_failure_count": self._restore_failure_count,
+            "last_restore_error": self.last_restore_error,
+            "last_snapshot": {
+                "entry_count": self._last_snapshot_entry_count,
+                "build_ms": self._last_snapshot_build_ms,
+                "serialization_ms": self._last_snapshot_serialization_ms,
+                "serialized_bytes": self._last_snapshot_bytes,
+            },
         }
 
     def restore(self, value: Any) -> bool:
@@ -234,6 +314,14 @@ class DeferredTimelineRuntime:
                 if not key or len(key) > 256:
                     raise DeferredTimelineError("deferred_timeline.archive_id_invalid")
                 archives[key] = self._normalize_mapping(archive_value, "deferred_timeline.archive_invalid")
+            raw_operational = value.get("operational", {})
+            if not isinstance(raw_operational, Mapping):
+                raise DeferredTimelineError("deferred_timeline.operational_invalid")
+            backpressure_count = raw_operational.get("backpressure_count", 0)
+            restore_failure_count = raw_operational.get("restore_failure_count", 0)
+            for counter in (backpressure_count, restore_failure_count):
+                if isinstance(counter, bool) or not isinstance(counter, int) or counter < 0:
+                    raise DeferredTimelineError("deferred_timeline.operational_invalid")
             restored: list[tuple[float, int, int, DeferredTimelineEntry]] = []
             seen: set[int] = set()
             highest = -1
@@ -263,12 +351,31 @@ class DeferredTimelineRuntime:
             if isinstance(next_sequence, bool) or not isinstance(next_sequence, int) or next_sequence < highest + 1:
                 raise DeferredTimelineError("deferred_timeline.next_sequence_invalid")
         except DeferredTimelineError as exc:
+            previous_backpressure = self._backpressure_count
+            previous_failures = self._restore_failure_count
+            previous_snapshot_metrics = (
+                self._last_snapshot_build_ms,
+                self._last_snapshot_serialization_ms,
+                self._last_snapshot_bytes,
+                self._last_snapshot_entry_count,
+            )
             self.clear()
+            self._backpressure_count = previous_backpressure
+            self._restore_failure_count = previous_failures + 1
+            (
+                self._last_snapshot_build_ms,
+                self._last_snapshot_serialization_ms,
+                self._last_snapshot_bytes,
+                self._last_snapshot_entry_count,
+            ) = previous_snapshot_metrics
             self.last_restore_error = str(exc)
             return False
         self._entries = restored
         heapq.heapify(self._entries)
         self._next_sequence = next_sequence
         self._archives = archives
+        self._backpressure_count = backpressure_count
+        self._restore_failure_count = restore_failure_count
+        self.last_restore_error = ""
         self.prune_archives()
         return True

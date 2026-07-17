@@ -100,6 +100,33 @@ def test_marker_transition_spawns_actor_entity_agent_and_position_atomically(tmp
     assert len(world.get_gameplay_effect_state()["lifecycle"]["receipts"]) == 1
 
 
+def test_restart_after_lifecycle_receipt_commit_before_cursor_ack_is_idempotent(tmp_path):
+    world = WorldState(str(tmp_path / "world.db"))
+    contract = _spawn_contract()
+    runtime = LifecycleRuntime(contract, generation=3)
+    before_ack = runtime.snapshot()
+    marker = {
+        "trigger": "week_start",
+        "sim_time": 7 * DAY,
+        "day_index": 7,
+        "date": {"day": 8, "day_of_year": 8, "month_id": "month_01"},
+    }
+
+    committed = runtime.poll(7 * DAY, markers=[marker], world_state=world)
+    assert committed.applied_count == 1
+    assert world.get_entity("entity_guard_1") is not None
+
+    restarted = LifecycleRuntime(contract, generation=3)
+    restarted.restore(before_ack)
+    replayed = restarted.poll(7 * DAY, markers=[marker], world_state=world)
+
+    assert replayed.applied_count == 0
+    assert replayed.skipped[0]["reason"] == "already_applied"
+    lifecycle = world.get_gameplay_effect_state()["lifecycle"]
+    assert list(lifecycle["dynamic_actors"]) == ["guard_1"]
+    assert len(lifecycle["receipts"]) == 1
+
+
 def test_cooldown_uses_sqlite_receipts_across_runtime_recreation(tmp_path):
     world = WorldState(str(tmp_path / "world.db"))
     contract = _spawn_contract(cooldown_days=7)

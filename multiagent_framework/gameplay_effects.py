@@ -677,7 +677,7 @@ def normalize_materialized_command(value: Any) -> dict[str, Any]:
         reason = str(payload_value.get("reason") or "")
         if len(reason) > 512:
             raise CausalEventError("causal_snapshot_invalid")
-        if reason:
+        if "reason" in payload_value:
             normalized_payload["reason"] = reason
         for key in ("anchored_base_value", "anchor_rate"):
             if key in payload_value:

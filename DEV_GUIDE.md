@@ -3571,3 +3571,42 @@ git diff --check
 ```
 
 Required cases include: 129 earlier causal events blocking later temporal/random work, second-tick continuation at causal item 129, paused save/new-Orchestrator recovery with stable sequence and payload, 300 lifecycle attempts split exactly 256 + 44, DLC hot reload during continuation, in-place head updates preserving the key, and malformed/oversized snapshots failing closed.
+
+## Operating and testing the deferred timeline (v0.41.0)
+
+### Public status contract
+
+Use `Orchestrator.deferred_timeline_status()` or `GET /api/timeline` for diagnostics. New callers must consume only these aggregate fields: pending/capacity/utilization, oldest occurrence time and age, archive count/capacity, backpressure/restore-failure counters, bounded restore error code, and last snapshot entry count/bytes/timings. Never add event payloads, archive bodies, Agent IDs, entity IDs, prompts, memory, or world secrets to this projection.
+
+`OperationalMetricsCollector` must continue to copy a fixed whitelist rather than serializing `public_status()` wholesale. Non-mapping or malformed status values fail closed to zero/empty aggregates. Prometheus names introduced in v0.41.0 use gauges for current queue/snapshot state and counters for cumulative backpressure/restore failures.
+
+### Backpressure and restore rules
+
+1. Producer polling and timeline publication are one transaction. If `enqueue_many()` fails for capacity, restore every producer cursor/snapshot involved in that poll before returning.
+2. Increment backpressure exactly once per rejected publication or archive-capacity rejection; do not count ordinary validation errors as successful publication.
+3. Snapshot restore remains atomic and fail closed. Never skip malformed entries, repair sequence order, or partially accept archives.
+4. Preserve accumulated operational counters when a restore fails, then increment `restore_failure_count` and expose only the stable error code.
+5. `measure_snapshot()` is opt-in. Do not JSON-encode the full queue on every metrics scrape.
+
+### Crash replay gates
+
+- World Command committed, Causal queue not acknowledged: restart must return a replayed command result and must not apply inventory/resource changes twice.
+- Lifecycle Receipt committed, cursor not acknowledged: restart must resolve as `already_applied` and must not create a second dynamic Actor/Entity.
+- Canonical command normalization must preserve field presence when presence participates in idempotency. In particular, an explicit empty `reason` is not equivalent to an omitted `reason`.
+- Agent wakeups are not yet a durable outbox. Do not claim exactly-once wakeup delivery until `_pending_wakeups` and chain IDs have receipt-backed persistence.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_timeline_runtime.py tests/unit/test_timeline_api.py tests/unit/test_operational_metrics.py tests/unit/test_event_generator.py tests/unit/test_causal_world_effects.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q multiagent_framework routers tests/unit
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Required stress/recovery coverage includes 20,000 queued lifecycle markers, exact UTF-8 snapshot bytes, stable full drain ordering, producer cursor rollback at capacity, aggregate-only API/metrics output, World Command pre-ack restart replay, and Lifecycle Receipt pre-ack restart replay.

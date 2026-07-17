@@ -220,6 +220,55 @@ def _economy_snapshot(orchestrator: Any, runtime: Mapping[str, Any]) -> dict[str
     }
 
 
+def _timeline_snapshot(orchestrator: Any) -> dict[str, Any]:
+    runtime = getattr(orchestrator, "deferred_timeline", None)
+    raw_value = (
+        runtime.public_status(
+            sim_time=_number(getattr(orchestrator, "sim_time", 0.0)),
+        )
+        if runtime is not None and hasattr(runtime, "public_status")
+        else {}
+    )
+    raw = raw_value if isinstance(raw_value, Mapping) else {}
+    snapshot_value = raw.get("last_snapshot", {})
+    snapshot_raw = snapshot_value if isinstance(snapshot_value, Mapping) else {}
+    oldest_raw = raw.get("oldest_occurrence_time")
+    oldest = None if oldest_raw is None else round(max(0.0, _number(oldest_raw)), 6)
+    error_code = str(raw.get("last_restore_error", ""))[:128]
+    if error_code and not all(
+        character.isascii() and (character.isalnum() or character in "._-")
+        for character in error_code
+    ):
+        error_code = "deferred_timeline.restore_failed"
+    return {
+        "pending_count": _integer(raw.get("pending_count", 0)),
+        "capacity": _integer(raw.get("capacity", 0)),
+        "utilization": round(
+            max(0.0, min(1.0, _number(raw.get("utilization", 0)))),
+            6,
+        ),
+        "oldest_occurrence_time": oldest,
+        "oldest_age_seconds": round(
+            max(0.0, _number(raw.get("oldest_age_seconds", 0))),
+            6,
+        ),
+        "archive_count": _integer(raw.get("archive_count", 0)),
+        "archive_capacity": _integer(raw.get("archive_capacity", 0)),
+        "backpressure_count": _integer(raw.get("backpressure_count", 0)),
+        "restore_failure_count": _integer(raw.get("restore_failure_count", 0)),
+        "last_restore_error": error_code,
+        "last_snapshot": {
+            "entry_count": _integer(snapshot_raw.get("entry_count", 0)),
+            "build_ms": round(max(0.0, _number(snapshot_raw.get("build_ms", 0))), 3),
+            "serialization_ms": round(
+                max(0.0, _number(snapshot_raw.get("serialization_ms", 0))),
+                3,
+            ),
+            "serialized_bytes": _integer(snapshot_raw.get("serialized_bytes", 0)),
+        },
+    }
+
+
 def _agent_and_memory_snapshot(orchestrator: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     agents = list(getattr(orchestrator, "agents", {}).values())
     busy = sum(bool(getattr(agent, "is_busy", False)) for agent in agents)
@@ -263,6 +312,7 @@ class OperationalMetricsCollector:
         llm = _llm_snapshot(self.orchestrator)
         dlc = _dlc_snapshot(self.orchestrator)
         world_commands = _world_command_snapshot(self.orchestrator)
+        timeline = _timeline_snapshot(self.orchestrator)
         agents, memory = _agent_and_memory_snapshot(self.orchestrator)
         runtime = (
             self.orchestrator.operational_metrics_snapshot()
@@ -340,6 +390,7 @@ class OperationalMetricsCollector:
                 "agent_turns": agent_turns,
                 "agents": agents,
                 "world_commands": world_commands,
+                "timeline": timeline,
                 "economy": economy,
                 "memory": memory,
                 "rates": rates,
@@ -420,6 +471,26 @@ def render_prometheus(snapshot: Mapping[str, Any]) -> str:
         f'world_sim_memory_messages {metrics["memory"]["messages"]}',
         "# TYPE world_sim_memory_structured_records gauge",
         f'world_sim_memory_structured_records {metrics["memory"]["structured_records"]}',
+        "# TYPE world_sim_timeline_pending gauge",
+        f'world_sim_timeline_pending {metrics["timeline"]["pending_count"]}',
+        "# TYPE world_sim_timeline_capacity gauge",
+        f'world_sim_timeline_capacity {metrics["timeline"]["capacity"]}',
+        "# TYPE world_sim_timeline_utilization_ratio gauge",
+        f'world_sim_timeline_utilization_ratio {metrics["timeline"]["utilization"]}',
+        "# TYPE world_sim_timeline_oldest_age_seconds gauge",
+        f'world_sim_timeline_oldest_age_seconds {metrics["timeline"]["oldest_age_seconds"]}',
+        "# TYPE world_sim_timeline_archives gauge",
+        f'world_sim_timeline_archives {metrics["timeline"]["archive_count"]}',
+        "# TYPE world_sim_timeline_backpressure_total counter",
+        f'world_sim_timeline_backpressure_total {metrics["timeline"]["backpressure_count"]}',
+        "# TYPE world_sim_timeline_restore_failures_total counter",
+        f'world_sim_timeline_restore_failures_total {metrics["timeline"]["restore_failure_count"]}',
+        "# TYPE world_sim_timeline_snapshot_bytes gauge",
+        f'world_sim_timeline_snapshot_bytes {metrics["timeline"]["last_snapshot"]["serialized_bytes"]}',
+        "# TYPE world_sim_timeline_snapshot_build_milliseconds gauge",
+        f'world_sim_timeline_snapshot_build_milliseconds {metrics["timeline"]["last_snapshot"]["build_ms"]}',
+        "# TYPE world_sim_timeline_snapshot_serialization_milliseconds gauge",
+        f'world_sim_timeline_snapshot_serialization_milliseconds {metrics["timeline"]["last_snapshot"]["serialization_ms"]}',
     ]
     lines.extend((
         "# TYPE world_sim_llm_calls_total counter",

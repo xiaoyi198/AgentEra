@@ -2483,3 +2483,25 @@ Malformed kinds, duplicate or regressing sequences, non-finite timestamps, inval
 ### Remaining boundary
 
 v0.40.0 removes the two v0.39.0 budget-ordering gaps: later temporal/random work no longer crosses the 129th earlier causal event, and lifecycle marker tails no longer disappear after the Temporal cursor advances. The queue and per-tick execution budgets remain intentionally bounded. Agent wakeups are still not a transactional message queue, so future long-session work should add crash-point injection, save-size stress, and explicit delivery semantics.
+
+## Deferred timeline operations and crash replay architecture (v0.41.0)
+
+v0.41.0 keeps the v0.40.0 snapshot schema additive and backward compatible while adding an aggregate operational projection. `DeferredTimelineRuntime.public_status(sim_time=...)` exposes only queue counts, capacity utilization, oldest occurrence age, archive usage, persistent backpressure/restore-failure counters, and the latest opt-in snapshot measurement. It never returns timeline payloads, Agent IDs, entity IDs, archive contents, or hidden world facts.
+
+### Snapshot pressure and operational counters
+
+`measure_snapshot()` builds the canonical snapshot, serializes it with deterministic compact JSON, and records exact UTF-8 bytes plus build/serialization milliseconds. The measurement is opt-in because encoding a large queue is real work; routine metrics reads only return the last aggregate measurement. Backpressure and restore-failure counters are stored in `deferred_timeline.operational`, so long-session evidence survives save/load. A malformed restore atomically clears untrusted entries and archives but preserves already accumulated local operational evidence before incrementing the failure counter.
+
+A 20,000-entry lifecycle-marker stress regression covers snapshot construction, exact byte measurement, restore, and complete heap drain. The hard runtime limits remain 32,768 pending entries and 64 archived lifecycle contracts.
+
+### Safe API and monitoring boundary
+
+`GET /api/timeline` returns the public aggregate status and a stable empty structure before Orchestrator initialization. `OperationalMetricsCollector` copies only an explicit field whitelist and sanitizes restore failures to bounded error codes. Prometheus exports pending/capacity/utilization/oldest-age/archive gauges, monotonic backpressure and restore-failure counters, and last-snapshot size/timing gauges.
+
+### Publication rollback and replay idempotency
+
+Temporal/Random polling plus `enqueue_many()` is treated as one publication transaction. Capacity failure restores both producer snapshots, leaves the deferred queue unchanged, increments backpressure once, and reports `timeline_backpressure` in the tick result.
+
+Crash-point tests now cover two durable-side-effect windows: a World Command committed before Causal queue acknowledgement, and a Lifecycle Receipt committed before lifecycle cursor acknowledgement. Restarting from the pre-ack runtime snapshot must replay the durable ledger result without applying inventory changes or dynamic Actor creation twice. Command normalization therefore preserves an explicitly present empty `reason` field; removing it would change the canonical payload and incorrectly produce `idempotency_conflict`.
+
+Agent wakeup delivery remains outside this transaction boundary: `_pending_wakeups` is not persisted and injected chain IDs are not yet receipt-backed. The gameplay framework goal therefore remains active until delivery semantics are explicitly designed as at-least-once with durable deduplication or as another transactional outbox.

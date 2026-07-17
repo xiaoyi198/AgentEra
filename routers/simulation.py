@@ -90,6 +90,24 @@ async def get_time_system():
     return state.orchestrator.time_system_public_state()
 
 
+@router.get("/timeline")
+async def get_timeline():
+    """Return safe deferred-work queue health without event or Agent payloads."""
+    if not state.orchestrator:
+        return {
+            "pending_count": 0, "capacity": 0, "utilization": 0.0,
+            "oldest_occurrence_time": None, "oldest_age_seconds": 0.0,
+            "archive_count": 0, "archive_capacity": 0,
+            "backpressure_count": 0, "restore_failure_count": 0,
+            "last_restore_error": "",
+            "last_snapshot": {
+                "entry_count": 0, "build_ms": 0.0,
+                "serialization_ms": 0.0, "serialized_bytes": 0,
+            },
+        }
+    return state.orchestrator.deferred_timeline_status()
+
+
 @router.get("/rhythm")
 async def get_rhythm():
     """Return the active DLC pacing budget, queue, rules, and recent feedback."""

@@ -1072,6 +1072,10 @@ class Orchestrator:
         """Return aggregate causal scheduler metadata without event payloads."""
         return self.causal_event_engine.public_status()
 
+    def deferred_timeline_status(self) -> dict[str, Any]:
+        """Return aggregate deferred-work diagnostics without hidden payloads."""
+        return self.deferred_timeline.public_status(sim_time=self._sim_time)
+
     def configure_time_rules(self, rules: list[dict[str, Any]]) -> None:
         """Atomically publish DLC action-duration rules for future work."""
         if self.action_agent is not None:

@@ -59,6 +59,25 @@ class FakeLoader:
         }
 
 
+class FakeTimeline:
+    def public_status(self, *, sim_time=0.0):
+        return {
+            "pending_count": 3, "capacity": 32, "utilization": 0.09375,
+            "oldest_occurrence_time": 100.0,
+            "oldest_age_seconds": sim_time - 100.0,
+            "archive_count": 2, "archive_capacity": 64,
+            "backpressure_count": 4, "restore_failure_count": 1,
+            "last_restore_error": "deferred_timeline.snapshot_invalid|api_key=timeline-secret",
+            "payload": "timeline-secret",
+            "agent_id": "private-agent",
+            "last_snapshot": {
+                "entry_count": 3, "build_ms": 1.25,
+                "serialization_ms": 2.5, "serialized_bytes": 4096,
+                "encoded_payload": "timeline-secret",
+            },
+        }
+
+
 class FakeAgent:
     def __init__(self, busy=False):
         self.is_busy = busy
@@ -71,6 +90,7 @@ def _orchestrator(world):
     return SimpleNamespace(
         model_gateway=FakeGateway(),
         dlc_loader=FakeLoader(),
+        deferred_timeline=FakeTimeline(),
         world_state=world,
         agents={"a": FakeAgent(True), "b": FakeAgent(False)},
         agent_generation=4,
@@ -132,6 +152,37 @@ def test_world_command_metrics_are_aggregate_and_track_replays(tmp_path):
     assert "error_message" not in serialized
 
 
+def test_timeline_metrics_fail_closed_on_non_mapping_status(tmp_path):
+    world = WorldState(str(tmp_path / "world.db"))
+    orchestrator = _orchestrator(world)
+    orchestrator.deferred_timeline = SimpleNamespace(
+        public_status=lambda **_kwargs: ["timeline-secret", "private-agent"],
+    )
+
+    timeline = OperationalMetricsCollector(orchestrator).collect()["metrics"]["timeline"]
+
+    assert timeline == {
+        "pending_count": 0,
+        "capacity": 0,
+        "utilization": 0.0,
+        "oldest_occurrence_time": None,
+        "oldest_age_seconds": 0.0,
+        "archive_count": 0,
+        "archive_capacity": 0,
+        "backpressure_count": 0,
+        "restore_failure_count": 0,
+        "last_restore_error": "",
+        "last_snapshot": {
+            "entry_count": 0,
+            "build_ms": 0.0,
+            "serialization_ms": 0.0,
+            "serialized_bytes": 0,
+        },
+    }
+    assert "timeline-secret" not in json.dumps(timeline)
+    assert "private-agent" not in json.dumps(timeline)
+
+
 def test_collector_alerts_and_prometheus_are_secret_free(tmp_path):
     world = WorldState(str(tmp_path / "world.db"))
     snapshot = OperationalMetricsCollector(
@@ -160,9 +211,23 @@ def test_collector_alerts_and_prometheus_are_secret_free(tmp_path):
         "failures": 1, "rejection_rate": 0.4,
     }
     assert snapshot["metrics"]["rates"]["causal_effect_rejection_rate"] == 0.4
+    assert snapshot["metrics"]["timeline"] == {
+        "pending_count": 3, "capacity": 32, "utilization": 0.09375,
+        "oldest_occurrence_time": 100.0, "oldest_age_seconds": 23.5,
+        "archive_count": 2, "archive_capacity": 64,
+        "backpressure_count": 4, "restore_failure_count": 1,
+        "last_restore_error": "deferred_timeline.restore_failed",
+        "last_snapshot": {
+            "entry_count": 3, "build_ms": 1.25,
+            "serialization_ms": 2.5, "serialized_bytes": 4096,
+        },
+    }
     prometheus = render_prometheus(snapshot)
     assert "world_sim_economy_current_base_value 0.0" in prometheus
     assert "world_sim_causal_effect_rejections_total 1" in prometheus
+    assert "world_sim_timeline_pending 3" in prometheus
+    assert "world_sim_timeline_backpressure_total 4" in prometheus
+    assert "world_sim_timeline_snapshot_bytes 4096" in prometheus
     assert 'world_sim_operational_rate{rate="causal_effect_rejection_rate"} 0.4' in prometheus
     assert 'task_type="agent.turn\\\",escaped"' in prometheus
     assert 'world_sim_alert_active{alert="archive_issues"} 1' in prometheus
@@ -170,6 +235,6 @@ def test_collector_alerts_and_prometheus_are_secret_free(tmp_path):
     for secret in (
         "provider-secret", "secret.invalid", "private prompt", "private memory",
         "private summary", "archive-secret", "c:/private", "api_key",
-        "provider_url", "authorization",
+        "provider_url", "authorization", "timeline-secret", "private-agent",
     ):
         assert secret not in serialized

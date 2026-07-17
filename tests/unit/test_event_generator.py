@@ -8,6 +8,7 @@ import pytest
 
 from multiagent_framework.orchestrator import Orchestrator
 from multiagent_framework.temporal_contract import TemporalContract
+from multiagent_framework.timeline_runtime import DeferredTimelineRuntime
 from multiagent_framework.types import EventObject
 from multiagent_framework.event_generator import (
     GAME_SECONDS_PER_DAY,
@@ -463,6 +464,47 @@ def _configure_deferred_budget_scenario(orch):
         target_agents=[], initial_payload={}, generated_at=0,
     ))
     orch._sim_time = GAME_SECONDS_PER_DAY
+
+
+def test_timeline_backpressure_rolls_producer_cursors_back_before_publication():
+    orch = make_orchestrator_for_events()
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "backpressure_calendar",
+            "display_name": "Backpressure Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=41)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=1)
+    ], preserve_state=False)
+    orch.deferred_timeline = DeferredTimelineRuntime(max_entries=1)
+    orch._sim_time = GAME_SECONDS_PER_DAY
+    temporal_before = copy.deepcopy(orch.temporal_runtime.snapshot())
+    random_before = copy.deepcopy(orch.random_event_generator.snapshot())
+
+    result = asyncio.run(orch._tick())
+
+    assert orch.deferred_timeline.pending_count == 0
+    assert orch.temporal_runtime.snapshot() == temporal_before
+    assert orch.random_event_generator.snapshot() == random_before
+    assert orch.deferred_timeline.public_status(sim_time=orch.sim_time)["backpressure_count"] == 1
+    error = next(item for item in result.agent_errors if item["error"] == "timeline_backpressure")
+    assert error["detail"] == "deferred_timeline.capacity_exceeded"
 
 
 def test_causal_budget_persists_later_sources_until_oldest_due_work_finishes():

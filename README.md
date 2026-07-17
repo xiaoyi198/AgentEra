@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.40.0**
+> 当前版本：**v0.41.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -457,6 +457,19 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.41.0 发布说明
+
+v0.41.0 为持久 deferred timeline 补齐长对局运维、背压和崩溃重放验证，不改变既有 `(occurrence_time, source_rank, sequence)` 排序契约。
+
+- `DeferredTimelineRuntime` 持久记录发布背压与恢复失败计数，并提供 pending、容量利用率、最老条目年龄、archive 使用量和最近快照测量等聚合状态。
+- 新增安全接口 `GET /api/timeline`；只返回聚合运维字段，不暴露事件 payload、Agent ID、实体身份或隐藏世界信息。
+- Operational Metrics JSON 与 Prometheus 新增 timeline 队列、背压、恢复失败、快照字节数和构建/序列化耗时指标；错误代码经过白名单投影，异常返回类型按空状态 fail closed。
+- Temporal/Random producer 在 timeline 满载时回滚各自游标并报告 `timeline_backpressure`，避免“游标已推进但事件未发布”的静默丢失。
+- 新增 World Command 提交后 queue ack 前、Lifecycle Receipt 提交后 cursor ack 前的崩溃恢复回归；修复空 `reason` 字段在命令重放规范化时被删除而触发幂等冲突的问题。
+- 增加 20,000 条 lifecycle marker 的快照体积、JSON 序列化、恢复和稳定顺序 drain 压力测试；失败恢复会清空不可信队列，同时保留已累计的运维计数。
+
+Validation: **799 Python unit tests passed**; **11 integration tests passed, 2 skipped**; **97 frontend tests passed**; Python compileall、版本一致性、ESLint、Vite build 与 `git diff --check` 通过。
 
 ## v0.40.0 Release Notes
 
