@@ -38,6 +38,10 @@ class AgentDefaultSettings:
     structured_memory_max_records: int = 500
     structured_memory_retrieval_limit: int = 8
     structured_memory_char_budget: int = 2400
+    structured_memory_min_query_overlap: float = 0.08
+    structured_memory_unrelated_commitment_limit: int = 1
+    structured_memory_duplicate_overlap_threshold: float = 0.85
+    structured_memory_kind_diversity_bonus: float = 0.6
     knowledge_context_max_records: int = 24
     knowledge_context_char_budget: int = 6000
     derived_metric_context_max_records: int = 16
@@ -127,6 +131,10 @@ class RuntimeSettings:
                 structured_memory_max_records=_integer(agents.get("structured_memory_max_records", 500), "agent_defaults.structured_memory_max_records", 10, 100000),
                 structured_memory_retrieval_limit=_integer(agents.get("structured_memory_retrieval_limit", 8), "agent_defaults.structured_memory_retrieval_limit", 1, 256),
                 structured_memory_char_budget=_integer(agents.get("structured_memory_char_budget", 2400), "agent_defaults.structured_memory_char_budget", 128, 200000),
+                structured_memory_min_query_overlap=_number(agents.get("structured_memory_min_query_overlap", 0.08), "agent_defaults.structured_memory_min_query_overlap", 0.0, 1.0),
+                structured_memory_unrelated_commitment_limit=_integer(agents.get("structured_memory_unrelated_commitment_limit", 1), "agent_defaults.structured_memory_unrelated_commitment_limit", 0, 16),
+                structured_memory_duplicate_overlap_threshold=_number(agents.get("structured_memory_duplicate_overlap_threshold", 0.85), "agent_defaults.structured_memory_duplicate_overlap_threshold", 0.5, 1.0),
+                structured_memory_kind_diversity_bonus=_number(agents.get("structured_memory_kind_diversity_bonus", 0.6), "agent_defaults.structured_memory_kind_diversity_bonus", 0.0, 4.0),
                 knowledge_context_max_records=_integer(agents.get("knowledge_context_max_records", 24), "agent_defaults.knowledge_context_max_records", 1, 256),
                 knowledge_context_char_budget=_integer(agents.get("knowledge_context_char_budget", 6000), "agent_defaults.knowledge_context_char_budget", 128, 200000),
                 derived_metric_context_max_records=_integer(agents.get("derived_metric_context_max_records", 16), "agent_defaults.derived_metric_context_max_records", 0, 64),
@@ -310,6 +318,10 @@ def settings_schema() -> dict[str, Any]:
             field_meta("agent_defaults.structured_memory_max_records", "结构化记忆最大条数", "每个 Agent 可保存的事实、关系、承诺和经历记录上限。", minimum=10, maximum=100000, hot_reload=True),
             field_meta("agent_defaults.structured_memory_retrieval_limit", "每轮召回条数", "每次模型调用最多注入多少条相关结构化记忆。", minimum=1, maximum=256, hot_reload=True),
             field_meta("agent_defaults.structured_memory_char_budget", "召回字符预算", "注入提示词的结构化记忆最大字符数。", minimum=128, maximum=200000, hot_reload=True),
+            field_meta("agent_defaults.structured_memory_min_query_overlap", "主题最小词元重合率", "当前回合有查询文本时，普通记忆至少命中该比例的中英文词元，或命中实体与元数据，才进入候选；设为 0 可关闭文本相关性门槛。", minimum=0, maximum=1, hot_reload=True),
+            field_meta("agent_defaults.structured_memory_unrelated_commitment_limit", "无关未结承诺保底条数", "当前主题无关但尚未结案的承诺，每轮最多额外保留多少条；设为 0 完全关闭保底，过高会稀释当前任务。", minimum=0, maximum=16, hot_reload=True),
+            field_meta("agent_defaults.structured_memory_duplicate_overlap_threshold", "近重复抑制阈值", "两条候选记忆的词元集合重合达到该比例时只保留更优一条；较低值去重更严格，1 仅抑制词元完全相同的内容。", minimum=0.5, maximum=1, hot_reload=True),
+            field_meta("agent_defaults.structured_memory_kind_diversity_bonus", "记忆类型多样性加分", "召回结果尚未包含某类经历、事实、关系或承诺时给予的边际加分；设为 0 关闭类型多样性偏好。", minimum=0, maximum=4, hot_reload=True),
             field_meta("agent_defaults.knowledge_context_max_records", "知识上下文最大条数", "每轮 Agent 调用最多注入多少条该 Agent 可知的事实与信念；只读取对应持有者的知识视图。", minimum=1, maximum=256, hot_reload=True),
             field_meta("agent_defaults.knowledge_context_char_budget", "知识上下文字符预算", "限制知识与信念摘要占用的 Prompt 长度，避免隐藏知识外泄并控制 Token 消耗。", minimum=128, maximum=200000, hot_reload=True),
             field_meta("agent_defaults.derived_metric_context_max_records", "派生指标上下文最大条数", "每轮 Agent 调用最多注入多少条当前世界的只读派生指标；设为 0 可关闭注入，过大会增加 Token 消耗。", minimum=0, maximum=64, hot_reload=True),

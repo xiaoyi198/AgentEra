@@ -1037,7 +1037,7 @@ CREATE TABLE pending_timers (
 
 ### v1 已完成
 - **天玑 AI**：全工具注入的调试对话 Agent，独立前端页面，SSE 流式回复，工具调用可视化
-- **记忆压缩**：LLM 记忆压缩器，Agent 记忆超阈值时自动摘要，v2 格式存档
+- **记忆压缩与结构化召回**：LLM 记忆压缩器在 Agent 记忆超阈值时自动摘要；当前使用 v3 快照并持久化结构化长期记忆
 - **OngoingEvent 系统**：延迟生效事件，到期自动落账（状态 + 库存）
 - **实体关系系统**：实体间有向关系边（subordinate/affiliated）
 - **资源目录与价值锚**：资产/指标/参数分层，资产统一折算基础价值，版本与账本可审计，机构不适用项为 -1
@@ -1060,7 +1060,7 @@ CREATE TABLE pending_timers (
 6. **FC 工具单点定义**：工具 schema 在 `fc_tools.py`，handler 在 `fc_handlers.py`，每个工具只有一份代码；添加新工具只需改这两个文件
 7. **FCContext 模式**：调用方组装上下文，handler 消费上下文；Orchestrator 和天玑用同一个 handler，靠 context 字段决定执行路径
 8. **共享数据库**：CourtGraph、TimerSystem、WorldState 共用 `runtime/world.db`，各自管理独立的表
-9. **记忆压缩**：Agent 记忆超阈值时自动触发 LLM 摘要，序列化格式为 v2 dict（`{version, summary, messages}`），兼容 v1 list 反序列化
+9. **记忆压缩与结构化长期记忆**：Agent 记忆超阈值时自动触发 LLM 摘要；快照格式为 v3 dict（`{version, summary, messages, structured_memory}`），继续兼容 v1 list 与 v2 summary/message 对象
 10. **OngoingEvent 原子落账**：Orchestrator 只调用 `apply_matured_events()`；状态、全部资源变化、账本和事件删除同事务提交
 11. **资源目录与统一价值锚**：资产、指标、参数分表；资产使用 `quantity × anchor_rate` 形成可比较的基础价值
 12. **命令幂等与可审计**：核心世界写入拥有稳定 command ID、乐观版本、成功/拒绝回执和资产账本
@@ -1234,7 +1234,7 @@ Agent 多轮调用、DLC Studio、Hybrid Router、世界事务/价值锚、Memor
 ### Memory v3
 
 - `multiagent_framework/memory_store.py` defines episodic, semantic, relationship, and commitment records with status, entities, importance, recency, expiry, source chain, and metadata.
-- Retrieval is deterministic and budgeted. It combines text and Chinese-bigram overlap, entity overlap, importance, recency decay, memory-kind weights, and commitment status.
+- Retrieval is deterministic, topic-aware, and budgeted. It combines text/English-prefix/Chinese-bigram overlap, entity and bounded-Metadata overlap, importance, recency decay, memory-kind weights, commitment status, duplicate suppression, and marginal kind diversity.
 - Accepted `submit_action` / `request_action` intents create unresolved commitments. Final execution feedback resolves or fails the matching commitment; queued dispatch feedback does not close it early.
 - Agent snapshots now use `{version: 3, summary, messages, structured_memory}` and remain compatible with v1 message lists and v2 summary/message objects.
 - `RuntimePersistor` writes v3 snapshots under the Agent lock, and startup restore round-trips unresolved structured commitments.
@@ -2669,3 +2669,37 @@ frontend/src/GameplayBranchTools.test.js 覆盖默认参与者推导、完整引
 - Python：`833 passed, 2 skipped, 1 failed`；唯一失败为既有的 0.2 秒 deadline 浮点表示边界。
 - Frontend：`102 passed`，ESLint 与 Vite production build 通过。
 - `python -m compileall -q multiagent_framework routers tests` 通过。
+
+## 主题感知结构化记忆召回架构（v0.47.0）
+
+### 两条检索路径
+
+`StructuredMemoryStore.retrieve()` 根据本轮是否存在 Query 或实体焦点选择检索语义：
+
+1. 有焦点时，普通 episodic、semantic、relationship 记录必须命中文本、实体或可检索的有界 Metadata；已关闭承诺也必须主题相关。高重要性不能绕过相关性门槛。
+2. 无焦点时，只召回 `active` / `unresolved` 记录，避免没有用户主题时把已解决历史重新注入 Prompt。
+3. 未结承诺可以占用 `structured_memory_unrelated_commitment_limit` 个保底槽位，但相关候选始终优先，且保底同样受总条数和字符预算约束。
+
+检索文本由正文、实体 ID、source chain 和有界 Metadata 组成。英文词元支持至少三字符前缀近似，中文使用连续汉字双字词元。最终字符预算按实际 `## Relevant long-term memory` 标题和格式化行计算，未入选记录不会更新访问时间。
+
+### 去重与类型多样性
+
+候选按稳定 `dedupe_key`、`intent_id`、完全相同正文和可配置 Jaccard 阈值去重。相同 intent 的承诺只保留最有用的一条；若其为已结承诺，格式化上下文会保留有界 `resolution`，防止去重后丢失执行结果。选择循环为尚未出现的 episodic、semantic、relationship、commitment 类型增加边际分，降低单一记忆类型占满 Prompt 的概率。
+
+### 配置、热更新与存档
+
+`AgentConfig`、`AgentDefaultSettings`、运行时 Schema 和中文设置中心统一暴露：
+
+- `structured_memory_min_query_overlap`：0.0–1.0，普通记录的最小主题重叠。
+- `structured_memory_unrelated_commitment_limit`：0–16，无关未结承诺的最大保底条数。
+- `structured_memory_duplicate_overlap_threshold`：0.5–1.0，近重复正文抑制阈值。
+- `structured_memory_kind_diversity_bonus`：0.0–4.0，新记忆类型的边际加分。
+
+设置保存沿用 Generation 乐观锁和通用热更新：现有 Agent 配置、DLC AgentFactory 默认值及后续新建 Agent 同步生效。记忆持久化 Schema 仍为 v3，继续兼容 v1/v2，不需要迁移已有存档。
+
+### v0.47.0 验证
+
+- Memory Store 定向测试：**10 passed**；Memory/Settings/Agent/Turn 定向测试：**36 passed**。
+- Python 单元：**826 passed, 1 failed**；唯一失败为既有的 0.2 秒 deadline 浮点表示边界。
+- Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
+- Python compileall、ESLint、Vite production build、版本一致性和 Git Diff 检查通过。

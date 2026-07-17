@@ -92,6 +92,16 @@ def test_settings_schema_and_document_return_local_plaintext_key(monkeypatch, tm
         assert schema.status_code == 200
         assert schema.json()["categories"][0]["label"] == "配置总览"
         assert any(item["path"] == "agent_defaults.max_rounds" for item in schema.json()["fields"])
+        memory_paths = {item["path"]: item for item in schema.json()["fields"]}
+        for path in (
+            "agent_defaults.structured_memory_min_query_overlap",
+            "agent_defaults.structured_memory_unrelated_commitment_limit",
+            "agent_defaults.structured_memory_duplicate_overlap_threshold",
+            "agent_defaults.structured_memory_kind_diversity_bonus",
+        ):
+            assert path in memory_paths
+            assert memory_paths[path]["label"]
+            assert memory_paths[path]["description"]
         assert any(item["path"] == "providers.*.api_key" for item in schema.json()["fields"])
         assert any(item["path"] == "providers.*.retry_delay_s" for item in schema.json()["fields"])
         assert any(item["path"] == "providers.*.max_concurrent" for item in schema.json()["fields"])
@@ -132,6 +142,10 @@ def test_settings_save_persists_plaintext_key_and_hot_reloads(monkeypatch, tmp_p
             payload["model_gateway"]["models"]["fast"]["max_retries"] = 5
             payload["runtime"]["simulation"] = {"seconds_per_day": 75, "tick_interval": 0.4}
             payload["runtime"]["agent_defaults"]["max_rounds"] = 7
+            payload["runtime"]["agent_defaults"]["structured_memory_min_query_overlap"] = 0.12
+            payload["runtime"]["agent_defaults"]["structured_memory_unrelated_commitment_limit"] = 2
+            payload["runtime"]["agent_defaults"]["structured_memory_duplicate_overlap_threshold"] = 0.8
+            payload["runtime"]["agent_defaults"]["structured_memory_kind_diversity_bonus"] = 0.9
             payload["runtime"]["action_agent"]["max_tool_calls"] = 55
             payload["model_gateway"]["providers"]["primary"]["api_key"] = "local-hot-key"
             payload["model_gateway"]["providers"]["primary"]["retry_delay_s"] = 6.5
@@ -148,6 +162,12 @@ def test_settings_save_persists_plaintext_key_and_hot_reloads(monkeypatch, tmp_p
         assert orchestrator._tick_interval == 0.4
         assert orchestrator.action_agent.max_tool_calls == 55
         assert orchestrator.dlc_loader.agent_factory.agent_defaults["max_rounds"] == 7
+        assert orchestrator.dlc_loader.agent_factory.agent_defaults[
+            "structured_memory_min_query_overlap"
+        ] == 0.12
+        assert orchestrator.dlc_loader.agent_factory.agent_defaults[
+            "structured_memory_unrelated_commitment_limit"
+        ] == 2
         saved_models = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
         assert saved_models["providers"]["primary"]["api_key"] == "local-hot-key"
         assert refreshed.json()["model_gateway"]["providers"]["primary"]["api_key"] == "local-hot-key"
@@ -165,6 +185,10 @@ def test_settings_save_persists_plaintext_key_and_hot_reloads(monkeypatch, tmp_p
         assert saved_models["providers"]["primary"]["queue_interval_s"] == 1.25
         saved_runtime = json.loads((tmp_path / "runtime.json").read_text(encoding="utf-8-sig"))
         assert saved_runtime["agent_defaults"]["max_rounds"] == 7
+        assert saved_runtime["agent_defaults"]["structured_memory_min_query_overlap"] == 0.12
+        assert saved_runtime["agent_defaults"]["structured_memory_unrelated_commitment_limit"] == 2
+        assert saved_runtime["agent_defaults"]["structured_memory_duplicate_overlap_threshold"] == 0.8
+        assert saved_runtime["agent_defaults"]["structured_memory_kind_diversity_bonus"] == 0.9
     finally:
         state.orchestrator = previous
 

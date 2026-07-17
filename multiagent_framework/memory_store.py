@@ -286,62 +286,147 @@ class StructuredMemoryStore:
         limit: int = 8,
         max_chars: int = 2400,
         now: float | None = None,
+        min_query_overlap: float = 0.08,
+        unrelated_commitment_limit: int = 1,
+        duplicate_overlap_threshold: float = 0.85,
+        kind_diversity_bonus: float = 0.6,
     ) -> list[MemorySearchResult]:
+        """Retrieve a bounded, topic-aware and diverse memory context.
+
+        When a query or entity focus exists, ordinary records must match that focus.
+        A small, explicitly bounded number of unrelated unresolved commitments may
+        still be recalled so long-running promises are not silently forgotten.
+        """
         now_value = time.time() if now is None else float(now)
         query_tokens = self._tokens(query)
         entity_set = {str(item).casefold() for item in entities if str(item).strip()}
         kind_set = {str(item) for item in kinds}
-        scored: list[MemorySearchResult] = []
+        has_focus = bool(query_tokens or entity_set)
+        minimum_overlap = min(1.0, max(0.0, float(min_query_overlap)))
+        duplicate_threshold = min(1.0, max(0.5, float(duplicate_overlap_threshold)))
+        diversity_bonus = max(0.0, float(kind_diversity_bonus))
+        limit_value = max(1, int(limit))
+        char_budget = max(0, int(max_chars))
+        fallback_limit = max(0, int(unrelated_commitment_limit))
+
+        relevant: list[MemorySearchResult] = []
+        commitment_fallbacks: list[MemorySearchResult] = []
         for record in self._records.values():
             if record.expires_at is not None and record.expires_at <= now_value:
                 continue
             if kind_set and record.kind not in kind_set:
                 continue
+
             age = max(0.0, now_value - record.created_at)
             recency = math.pow(0.5, age / self.recency_half_life_s)
-            record_tokens = self._tokens(record.content)
-            overlap = len(query_tokens & record_tokens) / max(1, len(query_tokens))
+            record_tokens = self._record_tokens(record)
+            overlap = self._overlap_ratio(query_tokens, record_tokens)
             record_entities = {item.casefold() for item in record.entities}
             entity_overlap = len(entity_set & record_entities)
+            topic_related = not has_focus or overlap >= minimum_overlap or entity_overlap > 0
+
+            if not has_focus and record.status in {"resolved", "failed", "superseded"}:
+                continue
+            is_unresolved_commitment = (
+                record.kind == "commitment" and record.status == "unresolved"
+            )
+            if has_focus and not topic_related and not is_unresolved_commitment:
+                continue
+            if (
+                has_focus
+                and not topic_related
+                and is_unresolved_commitment
+                and fallback_limit <= 0
+            ):
+                continue
+
             kind_bonus = {
                 "commitment": 0.8,
                 "semantic": 0.5,
                 "relationship": 0.35,
                 "episodic": 0.2,
             }[record.kind]
-            unresolved_bonus = 2.5 if (
-                record.kind == "commitment" and record.status == "unresolved"
-            ) else 0.0
-            resolved_penalty = -0.5 if record.status in {"resolved", "failed", "superseded"} else 0.0
+            unresolved_bonus = 2.5 if is_unresolved_commitment else 0.0
+            resolved_penalty = -0.5 if record.status in {
+                "resolved", "failed", "superseded"
+            } else 0.0
             score = (
                 record.importance * 4.0
                 + recency * 1.5
                 + overlap * 4.0
-                + entity_overlap * 2.5
+                + min(entity_overlap, 3) * 2.5
                 + kind_bonus
                 + unresolved_bonus
                 + resolved_penalty
+                + (0.75 if has_focus and topic_related else 0.0)
             )
-            scored.append(MemorySearchResult(record=record, score=score))
+            result = MemorySearchResult(record=record, score=score)
+            if has_focus and not topic_related:
+                commitment_fallbacks.append(
+                    MemorySearchResult(record=record, score=score - 3.0)
+                )
+            else:
+                relevant.append(result)
 
-        scored.sort(key=lambda item: (
-            -item.score,
-            -item.record.created_at,
-            item.record.memory_id,
-        ))
+        def base_key(item: MemorySearchResult) -> tuple[float, float, str]:
+            return (-item.score, -item.record.created_at, item.record.memory_id)
+
+        relevant.sort(key=base_key)
+        commitment_fallbacks.sort(key=base_key)
         selected: list[MemorySearchResult] = []
-        used_chars = 0
-        for item in scored:
-            line_size = len(item.record.content) + 48
-            if selected and used_chars + line_size > max_chars:
-                continue
-            if line_size > max_chars and not selected:
-                continue
-            selected.append(item)
-            used_chars += line_size
+        selected_ids: set[str] = set()
+        selected_kinds: set[str] = set()
+        used_chars = len("## Relevant long-term memory") + 1
+
+        def select_from(pool: list[MemorySearchResult], target_total: int) -> None:
+            nonlocal used_chars
+            while len(selected) < target_total:
+                candidates: list[tuple[float, MemorySearchResult, int]] = []
+                selected_records = [item.record for item in selected]
+                for item in pool:
+                    record = item.record
+                    if record.memory_id in selected_ids:
+                        continue
+                    if self._is_duplicate(
+                        record, selected_records, threshold=duplicate_threshold
+                    ):
+                        continue
+                    line_size = len(self._format_context_line(record)) + 1
+                    if used_chars + line_size > char_budget:
+                        continue
+                    marginal_score = item.score
+                    if record.kind not in selected_kinds:
+                        marginal_score += diversity_bonus
+                    candidates.append((marginal_score, item, line_size))
+                if not candidates:
+                    return
+                candidates.sort(key=lambda candidate: (
+                    -candidate[0],
+                    -candidate[1].score,
+                    -candidate[1].record.created_at,
+                    candidate[1].record.memory_id,
+                ))
+                _, chosen, line_size = candidates[0]
+                selected.append(chosen)
+                selected_ids.add(chosen.record.memory_id)
+                selected_kinds.add(chosen.record.kind)
+                used_chars += line_size
+
+        if has_focus and commitment_fallbacks:
+            if relevant:
+                reserved = min(fallback_limit, max(0, limit_value - 1))
+            else:
+                reserved = min(fallback_limit, limit_value)
+        else:
+            reserved = 0
+        select_from(relevant, limit_value - reserved)
+        if reserved:
+            select_from(commitment_fallbacks, min(limit_value, len(selected) + reserved))
+        if len(selected) < limit_value:
+            select_from(relevant, limit_value)
+
+        for item in selected:
             item.record.last_accessed_at = now_value
-            if len(selected) >= max(1, int(limit)):
-                break
         return selected
 
     def format_context(
@@ -352,6 +437,10 @@ class StructuredMemoryStore:
         limit: int = 8,
         max_chars: int = 2400,
         now: float | None = None,
+        min_query_overlap: float = 0.08,
+        unrelated_commitment_limit: int = 1,
+        duplicate_overlap_threshold: float = 0.85,
+        kind_diversity_bonus: float = 0.6,
     ) -> str:
         results = self.retrieve(
             query,
@@ -359,16 +448,15 @@ class StructuredMemoryStore:
             limit=limit,
             max_chars=max_chars,
             now=now,
+            min_query_overlap=min_query_overlap,
+            unrelated_commitment_limit=unrelated_commitment_limit,
+            duplicate_overlap_threshold=duplicate_overlap_threshold,
+            kind_diversity_bonus=kind_diversity_bonus,
         )
         if not results:
             return ""
         lines = ["## Relevant long-term memory"]
-        for item in results:
-            record = item.record
-            labels = [record.kind, record.status]
-            if record.entities:
-                labels.append("entities=" + ",".join(record.entities))
-            lines.append(f"- [{' | '.join(labels)}] {record.content}")
+        lines.extend(self._format_context_line(item.record) for item in results)
         return "\n".join(lines)
 
     def prune(self, *, now: float | None = None) -> None:
@@ -434,6 +522,103 @@ class StructuredMemoryStore:
             else:
                 tokens.update(sequence[index:index + 2] for index in range(len(sequence) - 1))
         return tokens
+
+    @classmethod
+    def _record_tokens(cls, record: MemoryRecord) -> set[str]:
+        parts = [record.content, *record.entities]
+        if record.source_chain_id:
+            parts.append(record.source_chain_id)
+        metadata_text = cls._metadata_text(record.metadata)
+        if metadata_text:
+            parts.append(metadata_text)
+        return cls._tokens(" ".join(parts))
+
+    @classmethod
+    def _metadata_text(cls, value: Any) -> str:
+        rendered: list[str] = []
+        stack: list[Any] = [value]
+        while stack and len(rendered) < 64:
+            current = stack.pop()
+            if isinstance(current, Mapping):
+                for key in sorted(current, key=lambda item: str(item), reverse=True):
+                    stack.append(current[key])
+                    stack.append(str(key))
+            elif isinstance(current, (list, tuple, set)):
+                stack.extend(reversed(tuple(current)))
+            elif current not in (None, ""):
+                rendered.append(str(current)[:256])
+        return " ".join(rendered)
+
+    @staticmethod
+    def _overlap_ratio(query_tokens: set[str], record_tokens: set[str]) -> float:
+        if not query_tokens:
+            return 0.0
+        matched = 0
+        for query_token in query_tokens:
+            if query_token in record_tokens:
+                matched += 1
+                continue
+            if len(query_token) < 3:
+                continue
+            if any(
+                len(record_token) >= 3
+                and (
+                    record_token.startswith(query_token)
+                    or query_token.startswith(record_token)
+                )
+                for record_token in record_tokens
+            ):
+                matched += 1
+        return matched / len(query_tokens)
+
+    @classmethod
+    def _is_duplicate(
+        cls,
+        record: MemoryRecord,
+        selected: Iterable[MemoryRecord],
+        *,
+        threshold: float,
+    ) -> bool:
+        identity = cls._dedupe_identity(record)
+        record_tokens = cls._tokens(record.content)
+        normalized = " ".join(str(record.content).casefold().split())
+        for other in selected:
+            other_identity = cls._dedupe_identity(other)
+            if identity and other_identity and identity == other_identity:
+                return True
+            other_normalized = " ".join(str(other.content).casefold().split())
+            if normalized and normalized == other_normalized:
+                return True
+            other_tokens = cls._tokens(other.content)
+            if not record_tokens or not other_tokens:
+                continue
+            similarity = len(record_tokens & other_tokens) / len(record_tokens | other_tokens)
+            if similarity >= threshold:
+                return True
+        return False
+
+    @staticmethod
+    def _dedupe_identity(record: MemoryRecord) -> str:
+        dedupe_key = str(record.metadata.get("dedupe_key", "") or "").strip()
+        if dedupe_key:
+            if dedupe_key.startswith("intent:"):
+                return dedupe_key
+            return f"dedupe:{dedupe_key}"
+        intent_id = str(record.metadata.get("intent_id", "") or "").strip()
+        if intent_id:
+            return f"intent:{intent_id}"
+        return ""
+
+    @staticmethod
+    def _format_context_line(record: MemoryRecord) -> str:
+        labels = [record.kind, record.status]
+        if record.entities:
+            labels.append("entities=" + ",".join(record.entities))
+        content = " ".join(record.content.split())
+        resolution = str(record.metadata.get("resolution", "") or "").strip()
+        if record.kind == "commitment" and resolution and record.status != "unresolved":
+            content += " | resolution: " + " ".join(resolution.split())[:500]
+        return f"- [{' | '.join(labels)}] {content}"
 
     @staticmethod
     def _payload_entities(payload: Mapping[str, Any], *, agent_id: str = "") -> tuple[str, ...]:

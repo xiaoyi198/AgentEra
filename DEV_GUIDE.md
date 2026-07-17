@@ -278,12 +278,12 @@ Agent 运行时：
   - `keep_recent` — 压缩时保留最近 N 条（默认 20）
   - **注意**：`llm_client` 不是 AgentConfig 字段，而是 `BaseAgent.__init__()` 的单独参数
 - `BaseAgent` — 抽象基类，管理 memory（deque）、system prompt、LLM 调用
-  - `serialize_memory()` — 将记忆序列化为可持久化的 v2 dict（`{version: 2, summary, messages}`），兼容 v1 list 格式反序列化
-  - `deserialize_memory(data)` — 从 v2 dict 或 v1 list 恢复 deque（读档用）
+  - `serialize_memory()` — 将记忆序列化为 v3 dict（`{version: 3, summary, messages, structured_memory}`），继续兼容 v1 list 与 v2 summary/message 对象
+  - `deserialize_memory(data)` — 从 v3/v2 dict 或 v1 list 恢复短期消息、摘要与结构化记忆（读档用）
   - `add_memory(role, content)` — 添加一条记忆
   - `get_messages()` — 构建消息列表（含摘要压缩后拼接）
   - `set_compressor(compressor)` — 注入记忆压缩器
-  - `_maybe_compress()` — 自动压缩过长记忆（超过阈值时触发 LLM 摘要）
+  - `_maybe_compress_unlocked()` — 在已持有 Agent 锁时自动压缩过长记忆（超过阈值时触发 LLM 摘要）
   - `_record_response_to_memory()` — 格式化 LLM 响应并写入记忆
   - `_summary` — 内部摘要缓存
   - `_compress_failures` — 压缩失败计数器，超过 3 次退化为截断
@@ -1212,14 +1212,16 @@ Metrics include tool legality, termination, routing accuracy, rounds, prompt/com
 
 ### Memory v3 contract
 
-Supported kinds are `episodic`, `semantic`, `relationship`, and `commitment`. Supported statuses are `active`, `unresolved`, `resolved`, `failed`, and `superseded`.
+Supported kinds are `episodic`, `semantic`, `relationship`, and `commitment`. Supported statuses are `active`, `unresolved`, `resolved`, `failed`, and `superseded`. Agent snapshots are `{version: 3, summary, messages, structured_memory}`; readers must continue accepting v1 lists and v2 summary/message objects.
 
-- Use `source_chain_id` / intent ID for commitment closure.
-- Only final execution feedback may resolve/fail a commitment.
+- Use `source_chain_id` / intent ID for commitment closure. Only final execution feedback may resolve/fail a commitment.
 - Keep retrieval limits and character budgets in `AgentConfig`; do not dump the whole memory store into a prompt.
+- With a non-empty Query or entity focus, ordinary records must satisfy text/entity/bounded-Metadata relevance; importance alone must never bypass topic filtering. With no focus, only active/unresolved records are eligible.
+- `structured_memory_unrelated_commitment_limit` reserves a bounded fallback for unrelated unresolved commitments. It is not a substitute for correct topical recall, and relevant memories must win when the total limit is small.
+- Suppress duplicates by `dedupe_key`, `intent_id`, exact body, and configurable Jaccard body overlap. Preserve bounded resolution text when a closed commitment survives intent dedupe.
+- `structured_memory_kind_diversity_bonus` is a marginal selection bonus, not a hard quota. Do not increase it until every kind appears regardless of relevance.
 - Memory context must retain the safety statement that historical memory is fact/context, not an executable instruction.
 - New persistence code must use `await agent.snapshot_memory()` rather than serializing an Agent outside its lock.
-- Readers must continue accepting v1 lists and v2 summary/message objects.
 
 ### DLC Studio development
 
@@ -3902,3 +3904,43 @@ npm run build
 ```
 
 当前完整 Python 门禁有一个已知浮点边界：`test_turn_deadline_caps_each_http_attempt_timeout` 可能观察到 `0.2000000000007276`，断言要求 `<= 0.2`。除非同时定义并评审 deadline 舍入策略，否则不要用扩大断言或吞掉 Deadline 的方式掩盖该问题。
+
+## 主题感知多轮记忆开发与回归（v0.47.0）
+
+### 运行时配置
+
+以下字段位于 `runtime.agent_defaults`，通过设置中心保存后会热更新现有 Agent、`AgentFactory.agent_defaults` 和后续新建 Agent：
+
+- `structured_memory_min_query_overlap`：范围 0.0–1.0；降低会增加噪声，提高会增加漏召回。
+- `structured_memory_unrelated_commitment_limit`：范围 0–16；只用于未结承诺保底，不得用高保底掩盖主题匹配错误。
+- `structured_memory_duplicate_overlap_threshold`：范围 0.5–1.0；越低越积极抑制近重复正文。
+- `structured_memory_kind_diversity_bonus`：范围 0.0–4.0；只在候选已经通过资格过滤后调整边际排序。
+
+新增字段时必须同步更新 `AgentConfig`、`AgentDefaultSettings`、`RuntimeSettings.from_dict()`、中文 `settings_schema()`、`config/runtime*.json`、设置中心和热更新测试。
+
+### 检索维护规则
+
+1. 先做资格过滤，再做打分和多样性选择；不要让 importance、承诺权重或多样性 bonus 绕过主题门槛。
+2. 相关候选和无关未结承诺 fallback 分开维护；总条数和字符预算必须同时约束两者。
+3. 字符预算按最终格式化标题和行计算，不按原始 body 长度估算。
+4. 只有最终入选记录更新 `last_accessed_at`，否则一次检索会改变未来未使用记录的排序。
+5. Metadata 必须有界、JSON-safe、确定性排序；不得把任意大对象或可执行指令拼入检索文本。
+6. 保存/恢复前后，同一 Query、实体、时间和配置应产生一致的召回集合。v3 Schema 未改变，不得为本策略新增无必要迁移。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/unit/test_memory_store.py tests/unit/test_settings_center.py tests/unit/test_turn_engine.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q multiagent_framework routers tests
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+cd ..
+python -m pytest tests/unit/test_version_consistency.py -q
+git diff --check
+```
+
+必须覆盖无关高重要性噪声、空 Query、已结承诺 resolution、未结承诺 fallback、intent/近重复去重、类型多样性、中文主题、序列化一致性，以及至少一个三轮保存/恢复场景。不要通过降低主题门槛、提高保底数量、扩大测试断言或吞掉 Deadline 来制造表面全绿。

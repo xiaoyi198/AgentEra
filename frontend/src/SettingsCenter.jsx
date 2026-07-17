@@ -462,8 +462,8 @@ function SettingsCenter({ open, onClose, onSaved }) {
       <NumberSetting meta={fieldMap['memory.compression_temperature']} value={draft.runtime.memory.compression_temperature} step={0.05} onChange={value => setRuntime('memory', 'compression_temperature', value)} />
     </div><div className="settings-callout">关联约束：压缩后保留消息数必须小于压缩阈值，否则后端拒绝保存。</div></section>
     <section className="settings-card"><h4>结构化长期记忆</h4><div className="settings-form-grid two">
-      {['structured_memory_max_records', 'structured_memory_retrieval_limit', 'structured_memory_char_budget'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} onChange={value => setRuntime('agent_defaults', name, value)} />)}
-    </div></section>
+      {['structured_memory_max_records', 'structured_memory_retrieval_limit', 'structured_memory_char_budget', 'structured_memory_min_query_overlap', 'structured_memory_unrelated_commitment_limit', 'structured_memory_duplicate_overlap_threshold', 'structured_memory_kind_diversity_bonus'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} step={['structured_memory_min_query_overlap', 'structured_memory_duplicate_overlap_threshold'].includes(name) ? 0.01 : name === 'structured_memory_kind_diversity_bonus' ? 0.1 : 1} onChange={value => setRuntime('agent_defaults', name, value)} />)}
+    </div><div className="settings-callout">有明确主题时先过滤无关普通记忆，再为未结承诺保留受控名额；候选结果还会按意图、去重键和内容相似度抑制重复，并适度补齐不同记忆类型。</div></section>
     <section className="settings-card"><h4>Agent 可知知识上下文</h4><p>只向 Agent 注入其自身持有的事实、信念和调查结果，不会把世界真相或其他角色的私有知识混入 Prompt。</p><div className="settings-form-grid two">
       {['knowledge_context_max_records', 'knowledge_context_char_budget'].map(name => <NumberSetting key={name} meta={fieldMap[`agent_defaults.${name}`]} value={draft.runtime.agent_defaults[name]} onChange={value => setRuntime('agent_defaults', name, value)} />)}
     </div></section>

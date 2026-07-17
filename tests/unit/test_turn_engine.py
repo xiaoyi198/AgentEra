@@ -442,6 +442,53 @@ def test_agent_memory_v2_migrates_to_v3_and_injects_relevant_context():
 
 
 @async_test
+async def test_three_turn_topic_memory_survives_restore_without_high_importance_noise() -> None:
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[_tool_call("finish-1", "finish_turn", {"summary": "已记录北港事实"})]),
+        LLMResponse(tool_calls=[_tool_call("finish-2", "finish_turn", {"summary": "已处理庆典消息"})]),
+        LLMResponse(tool_calls=[_tool_call("finish-3", "finish_turn", {"summary": "已恢复北港方案"})]),
+    ])
+    config = AgentConfig(
+        agent_id="memory_keeper",
+        display_name="Memory Keeper",
+        system_prompt="Keep durable operational memory.",
+        structured_memory_retrieval_limit=6,
+        structured_memory_unrelated_commitment_limit=0,
+    )
+    agent = OfficialAgent(config, llm)
+
+    await agent.process({
+        "message": "记录北港压力门校准规则",
+        "entity_id": "north_harbor",
+        "memory_facts": ["北港压力门只能在低潮校准"],
+        "chain_id": "north-1",
+    })
+    await agent.process({
+        "description": "王都庆典宴席临时增加一百桌",
+        "severity": 10,
+        "entity_id": "capital",
+        "chain_id": "capital-noise",
+    })
+
+    restored = OfficialAgent(config, llm)
+    restored.deserialize_memory(await agent.snapshot_memory())
+    await restored.process({
+        "message": "请制定北港压力门校准方案",
+        "entity_id": "north_harbor",
+        "chain_id": "north-2",
+    })
+
+    context = next(
+        message["content"]
+        for message in llm.message_snapshots[2]
+        if str(message.get("content", "")).startswith("## Relevant long-term memory")
+    )
+    assert "北港压力门只能在低潮校准" in context
+    assert "王都庆典宴席" not in context
+
+
+
+@async_test
 async def test_action_agent_replaces_non_finite_llm_duration_with_safe_estimate() -> None:
     llm = ScriptedLLM([
         LLMResponse(tool_calls=[_tool_call("done-invalid-time", "complete_action", {

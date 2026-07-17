@@ -61,6 +61,10 @@ class AgentConfig:
     structured_memory_max_records: int = 500
     structured_memory_retrieval_limit: int = 8
     structured_memory_char_budget: int = 2400
+    structured_memory_min_query_overlap: float = 0.08
+    structured_memory_unrelated_commitment_limit: int = 1
+    structured_memory_duplicate_overlap_threshold: float = 0.85
+    structured_memory_kind_diversity_bonus: float = 0.6
     knowledge_context_max_records: int = 24
     knowledge_context_char_budget: int = 6000
     derived_metric_context_max_records: int = 16
@@ -244,6 +248,14 @@ class BaseAgent:
             entities=self._memory_query_entities,
             limit=self.config.structured_memory_retrieval_limit,
             max_chars=self.config.structured_memory_char_budget,
+            min_query_overlap=self.config.structured_memory_min_query_overlap,
+            unrelated_commitment_limit=(
+                self.config.structured_memory_unrelated_commitment_limit
+            ),
+            duplicate_overlap_threshold=(
+                self.config.structured_memory_duplicate_overlap_threshold
+            ),
+            kind_diversity_bonus=self.config.structured_memory_kind_diversity_bonus,
         )
         if memory_context:
             messages.append({

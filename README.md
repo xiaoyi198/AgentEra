@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.46.0**
+> 当前版本：**v0.47.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -9,7 +9,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 ## 核心能力
 
 - **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
-- **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
+- **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化；v0.47.0 增加主题相关性过滤、未结承诺有限保底、意图/近重复去重与记忆类型多样性排序。
 - **持久唤醒投递**：Agent 唤醒采用有界 Outbox 与 `pending → inflight → ack/retry` 状态机，崩溃恢复提供明确的 at-least-once 语义。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
@@ -33,7 +33,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 - **Generation 观测与安全回滚**：加密保留模型配置历史，按代聚合调用质量，并将历史配置作为新的递增 Generation 原子恢复。
 - **Generation 热重载**：DLC、Prompt、模型与时间规则按代发布；在途工作继续使用开始时的版本语义。
 - **任务模型路由**：可按全局任务、DLC、Agent 和显式 Profile 选择不同模型。
-- **详细中文设置中心**：在主界面可视化管理 Provider、模型 Profile、三级任务路由、Agent 多轮预算、记忆压缩、世界 Tick 与安全运维状态；支持后端校验、变更预览、Generation 乐观锁和热更新。
+- **详细中文设置中心**：在主界面可视化管理 Provider、模型 Profile、三级任务路由、Agent 多轮预算、记忆压缩与主题召回策略、世界 Tick 与安全运维状态；支持后端校验、变更预览、Generation 乐观锁和热更新。
 - **通用 Issue / Case / DecisionRequest**：DLC 可声明题型、证据、期限、紧迫度和动态选项，运行时支持创建、决策、执行 Action、关闭、过期、幂等与存档恢复。
 - **权威目标与结局**：主 DLC 可声明主目标、可选目标、失败条件、有序/独立里程碑与胜利/失败/中立结局；框架只从权威世界事实和持久回执判定，客户端与 LLM 不能直接改写完成状态。
 - **模型评测与晋级**：支持真实轨迹矩阵、独立人工评审、cohort 分区、环境门禁、安全预览、原子应用和失败回滚。
@@ -114,7 +114,7 @@ npm run dev -- --host
 - 模型 Profile：配置 Provider、模型 ID、能力标签、并发和重试；Profile 改名会同步更新三级任务路由引用。
 - 任务路由：可视化编辑全局 `task_policies`、DLC `dlc_task_policies` 和 Agent `agent_task_policies`，候选 Profile 顺序即失败回退顺序。
 - Agent 多轮调用：分别控制普通 Agent 与 ActionAgent 的轮数、工具调用数、Token、耗时和无进展终止预算。
-- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度；`knowledge_context_max_records` / `knowledge_context_char_budget` 限制每轮可见知识条数与字符数，`derived_metric_context_max_records` / `derived_metric_context_char_budget` 限制只读派生指标条数与字符数。后两项设为 `0` 可关闭派生指标注入，四项均支持热更新。
+- 多轮记忆：控制短期记忆容量、压缩阈值、保留条数、结构化记忆容量/检索/字符预算和压缩温度；新增 `structured_memory_min_query_overlap`、`structured_memory_unrelated_commitment_limit`、`structured_memory_duplicate_overlap_threshold`、`structured_memory_kind_diversity_bonus`，分别控制主题门槛、无关未结承诺保底、近重复阈值和类型多样性加分。`knowledge_context_max_records` / `knowledge_context_char_budget` 限制每轮可见知识条数与字符数，`derived_metric_context_max_records` / `derived_metric_context_char_budget` 限制只读派生指标条数与字符数。后两项设为 `0` 可关闭派生指标注入，全部运行时字段均支持热更新。
 - 世界模拟：控制游戏日与现实秒换算及后台 Tick 间隔；保存后可热更新当前 Orchestrator。
 - 安全与运维：只读展示管理 API、管理令牌、归档加密密钥和告警相关环境变量是否配置，不展示其值。
 - 高级 JSON：只编辑模型文档中的 Provider、Profile 与三级路由五个段；保存前统一经过后端 Schema 校验，并展示 Warning 与变更 Diff。
@@ -460,6 +460,18 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+
+## v0.47.0 发布说明
+
+v0.47.0 聚焦普通 Agent 的多轮结构化记忆召回质量。检索现在会根据本轮文本、实体和有界 Metadata 识别主题，避免无关的高重要性历史仅凭分数挤入 Prompt，同时保留可配置数量的未结承诺提醒。
+
+- 有明确 Query 或实体焦点时，普通记忆必须满足主题相关性；空 Query 时只注入 active/unresolved 记录，不再默认混入已关闭历史。
+- 未结承诺拥有受控保底槽位，但相关记忆优先；已解决、失败或废弃承诺只有在主题相关时召回，并附带有界 resolution。
+- 候选结果按 dedupe_key、intent_id、完全相同正文和 Jaccard 近重复正文抑制重复，并为尚未出现的 episodic、semantic、relationship、commitment 类型提供边际多样性加分。
+- 英文检索支持至少三字符的前缀近似，中文继续使用连续汉字双字词元；字符预算按实际格式化标题和行计算，只有真正入选的记录更新 last_accessed_at。
+- 设置中心新增四项完整中文配置：主题最小重叠、无关未结承诺上限、近重复阈值和记忆类型多样性加分；保存后会热更新现有 Agent、DLC AgentFactory 默认值和后续新建 Agent。
+- Agent 记忆快照仍为 v3，继续兼容 v1/v2，不需要存档迁移。新增三轮保存/恢复场景验证“北港”事实能够跨恢复召回，而无关高重要性“王都庆典”噪声不会进入 Prompt。
+- 版本同步更新到 `0.47.0`。验证结果：Python 单元 **826 passed, 1 failed**，唯一失败仍为已知的 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`；集成测试 **13 passed, 2 skipped**；前端 **102 passed**，Python compileall、ESLint、Vite production build、版本一致性和 Git Diff 检查通过。
 
 ## v0.46.0 发布说明
 

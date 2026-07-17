@@ -1,6 +1,6 @@
 {
   "simulation": {
-    "seconds_per_day": 120.0,
+    "seconds_per_day": 120,
     "tick_interval": 0.25
   },
   "agent_defaults": {
@@ -10,11 +10,15 @@
     "max_rounds": 4,
     "max_tool_calls": 12,
     "max_turn_tokens": 12000,
-    "max_turn_seconds": 60.0,
+    "max_turn_seconds": 60,
     "no_progress_rounds": 2,
     "structured_memory_max_records": 500,
     "structured_memory_retrieval_limit": 8,
     "structured_memory_char_budget": 2400,
+    "structured_memory_min_query_overlap": 0.08,
+    "structured_memory_unrelated_commitment_limit": 1,
+    "structured_memory_duplicate_overlap_threshold": 0.85,
+    "structured_memory_kind_diversity_bonus": 0.6,
     "knowledge_context_max_records": 24,
     "knowledge_context_char_budget": 6000,
     "derived_metric_context_max_records": 16,
@@ -24,7 +28,7 @@
     "max_rounds": 10,
     "max_tool_calls": 40,
     "max_turn_tokens": 50000,
-    "max_turn_seconds": 120.0,
+    "max_turn_seconds": 120,
     "no_progress_rounds": 2
   },
   "memory": {
