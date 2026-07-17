@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import heapq
 import logging
 import math
 import threading
@@ -50,6 +49,7 @@ from .fc_handlers import (
 from .router import RouterAgent, MAX_HOPS
 from .time_simulator import TimeSimulator
 from .temporal_contract import TemporalContract, TemporalRuntime
+from .timeline_runtime import DeferredTimelineError, DeferredTimelineRuntime
 from .runtime_persistor import RuntimePersistor
 from .runtime_bindings import (
     ACTION_TASK,
@@ -180,6 +180,8 @@ class Orchestrator:
         )
         self.temporal_runtime = TemporalRuntime()
         self.lifecycle_runtime = LifecycleRuntime()
+        self.deferred_timeline = DeferredTimelineRuntime()
+        self._last_timeline_restore_error = ""
         self._auto_pause_reason: dict[str, Any] | None = None
         self._last_real_time: float = 0.0
         self._running = False
@@ -1320,6 +1322,7 @@ class Orchestrator:
             "time_rules": self.time_rule_status(),
             "time_system_runtime": self.temporal_runtime.snapshot(),
             "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
+            "deferred_timeline": self.deferred_timeline.snapshot(),
             "rhythm_runtime": self.rhythm_runtime.snapshot(),
             "outcome_feedback_runtime": self.outcome_feedback_runtime.snapshot(),
             "auto_pause_reason": self._auto_pause_reason,
@@ -1359,6 +1362,10 @@ class Orchestrator:
         else:
             self.temporal_runtime.last_polled_time = self._sim_time
         self.lifecycle_runtime.restore(state.get("lifecycle_runtime", {}))
+        timeline_ok = self.deferred_timeline.restore(state.get("deferred_timeline", {}))
+        self._last_timeline_restore_error = self.deferred_timeline.last_restore_error
+        if not timeline_ok:
+            logger.warning("Deferred timeline snapshot rejected: %s", self._last_timeline_restore_error)
         self.rhythm_runtime.restore(state.get("rhythm_runtime", {}), sim_time=self._sim_time)
         self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
         self.outcome_feedback_runtime.restore(state.get("outcome_feedback_runtime", {}), sim_time=self._sim_time)
@@ -1514,46 +1521,75 @@ class Orchestrator:
         if (rhythm_poll.activated or rhythm_poll.transitions) and self.persistor:
             self.persistor.mark_state_dirty()
 
-        # Poll deterministic producers first, then execute their output through one
-        # chronological queue. Same-time ties retain the legacy source precedence:
-        # temporal boundary -> lifecycle marker -> random event -> causal event.
-        temporal_poll = self.temporal_runtime.poll(
-            self._sim_time,
-            condition_context=self._feedback_condition_context(),
-        )
-        if temporal_poll.pause_requests:
-            requests = [dict(item) for item in temporal_poll.pause_requests]
-            self._auto_pause_reason = {**requests[0], "requests": requests}
-            self._pausing = True
-            result.auto_pause = dict(self._auto_pause_reason)
-        result.time_system = self.time_system_public_state()
-        if (temporal_poll.markers or temporal_poll.events or temporal_poll.pause_requests) and self.persistor:
-            self.persistor.mark_state_dirty()
-
-        random_poll = self.random_event_generator.poll(self._sim_time)
-        if random_poll.attempts and self.persistor:
-            self.persistor.mark_state_dirty()
-
-        timeline: list[tuple[float, int, int, str, Any, Any]] = []
-        timeline_sequence = 0
-
-        def enqueue_timeline(
-            kind: str, occurrence_time: Any, source_rank: int, payload: Any, metadata: Any = None,
-        ) -> None:
-            nonlocal timeline_sequence
-            event_time = self._effective_event_time(occurrence_time)
-            heapq.heappush(
-                timeline,
-                (event_time, source_rank, timeline_sequence, kind, payload, metadata),
+        # Materialized producer output lives in a persistent queue.  If a prior
+        # tick left deferred work, producer cursors stay untouched until that backlog
+        # drains, preventing newer work from overtaking an older budget boundary.
+        if not self.deferred_timeline.pending_count:
+            temporal_before = self.temporal_runtime.snapshot()
+            random_before = self.random_event_generator.snapshot()
+            temporal_poll = self.temporal_runtime.poll(
+                self._sim_time,
+                condition_context=self._feedback_condition_context(),
             )
-            timeline_sequence += 1
-
-        for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
-            enqueue_timeline("temporal", event.generated_at, 0, event, dict(event_metadata))
-        for marker in temporal_poll.markers:
-            enqueue_timeline("lifecycle_marker", marker.get("sim_time", self._sim_time), 1, dict(marker))
-        for event in random_poll.events:
-            enqueue_timeline("random", event.generated_at, 2, event)
+            random_poll = self.random_event_generator.poll(self._sim_time)
+            timeline_rows: list[dict[str, Any]] = []
+            lifecycle_fingerprint = self.lifecycle_runtime.contract.fingerprint()
+            lifecycle_archive_id = (
+                f"lifecycle:{self.lifecycle_runtime.generation}:{lifecycle_fingerprint}"
+            )
+            lifecycle_metadata = {
+                "generation": self.lifecycle_runtime.generation,
+                "fingerprint": lifecycle_fingerprint,
+                "archive_id": lifecycle_archive_id,
+                "start_transition_index": 0,
+            }
+            for event, event_metadata in zip(temporal_poll.events, temporal_poll.event_metadata):
+                timeline_rows.append({
+                    "kind": "temporal", "occurrence_time": self._effective_event_time(event.generated_at),
+                    "source_rank": 0, "payload": self.deferred_timeline.event_payload(event),
+                    "metadata": dict(event_metadata),
+                })
+            for marker in temporal_poll.markers:
+                timeline_rows.append({
+                    "kind": "lifecycle_marker",
+                    "occurrence_time": self._effective_event_time(marker.get("sim_time", self._sim_time)),
+                    "source_rank": 1, "payload": dict(marker),
+                    "metadata": dict(lifecycle_metadata),
+                })
+            for event in random_poll.events:
+                timeline_rows.append({
+                    "kind": "random", "occurrence_time": self._effective_event_time(event.generated_at),
+                    "source_rank": 2, "payload": self.deferred_timeline.event_payload(event),
+                    "metadata": {},
+                })
+            try:
+                if any(row["kind"] == "lifecycle_marker" for row in timeline_rows):
+                    self.deferred_timeline.register_archive(
+                        lifecycle_archive_id, self.lifecycle_runtime.contract.to_dict(),
+                    )
+                self.deferred_timeline.enqueue_many(timeline_rows)
+                self.deferred_timeline.prune_archives()
+            except DeferredTimelineError as exc:
+                # Producer polls are transactional with queue publication.  A bounded
+                # queue must apply backpressure rather than silently advancing cursors.
+                self.temporal_runtime.restore(temporal_before, sim_time=self._sim_time)
+                self.random_event_generator.restore(random_before, sim_time=self._sim_time)
+                result.agent_errors.append({
+                    "agent_id": "timeline_system", "error": "timeline_backpressure",
+                    "detail": str(exc),
+                })
+            else:
+                if temporal_poll.pause_requests:
+                    requests = [dict(item) for item in temporal_poll.pause_requests]
+                    self._auto_pause_reason = {**requests[0], "requests": requests}
+                    self._pausing = True
+                    result.auto_pause = dict(self._auto_pause_reason)
+                if (
+                    temporal_poll.markers or temporal_poll.events or temporal_poll.pause_requests
+                    or random_poll.attempts
+                ) and self.persistor:
+                    self.persistor.mark_state_dirty()
+        result.time_system = self.time_system_public_state()
 
         lifecycle_applied: list[dict[str, Any]] = []
         lifecycle_skipped: list[dict[str, Any]] = []
@@ -1597,21 +1633,35 @@ class Orchestrator:
                 )
                 tick_feedback_deliveries.extend(feedback["delivered"])
 
+        def archived_lifecycle_runtime(metadata: dict[str, Any]) -> LifecycleRuntime:
+            fingerprint = str(metadata.get("fingerprint", ""))
+            if fingerprint == self.lifecycle_runtime.contract.fingerprint():
+                return self.lifecycle_runtime
+            archive = self.deferred_timeline.archive(str(metadata.get("archive_id", "")))
+            if archive is None:
+                raise DeferredTimelineError("deferred_timeline.lifecycle_archive_missing")
+            contract = LifecycleContract.from_mapping(archive)
+            runtime = LifecycleRuntime(contract, generation=int(metadata.get("generation", 0)))
+            runtime.restore(metadata.get("runtime_state", {}))
+            return runtime
+
         def run_lifecycle_poll(
-            poll_time: float, *, markers: tuple[dict[str, Any], ...] = (),
-            evaluate_conditions: bool,
-        ) -> None:
+            runtime: LifecycleRuntime, poll_time: float, *,
+            markers: tuple[dict[str, Any], ...] = (), evaluate_conditions: bool,
+            start_transition_index: int = 0,
+        ) -> LifecyclePollResult | None:
             nonlocal lifecycle_truncated, lifecycle_runtime_error
             if lifecycle_remaining <= 0:
                 lifecycle_truncated = True
-                return
+                return None
             try:
-                poll = self.lifecycle_runtime.poll(
+                poll = runtime.poll(
                     poll_time, markers=markers,
                     world_state=self.world_state, actor_manager=self.actor_manager,
                     condition_context=self._feedback_condition_context(sim_time=poll_time),
                     max_transitions=lifecycle_remaining,
                     evaluate_conditions=evaluate_conditions,
+                    start_transition_index=start_transition_index,
                 )
             except Exception as exc:
                 logger.exception("Lifecycle poll crashed")
@@ -1621,27 +1671,30 @@ class Orchestrator:
                     "error": "lifecycle_poll_failed",
                     "detail": str(exc),
                 })
-                return
+                return None
             consume_lifecycle_poll(poll, poll_time=poll_time)
+            return poll
 
         causal_processed = 0
         causal_budget = 128
 
-        # The hard causal budget still bounds zero-delay storms. Strict cross-source
-        # ordering is guaranteed while due causal work fits this tick's budget. Once
-        # exhausted, already-materialized temporal/random entries finish draining and
-        # older causal work remains pending for the next tick rather than being dropped.
-        while timeline or (
-            causal_processed < causal_budget
-            and self.causal_event_engine.next_due_key(self._sim_time) is not None
-        ):
-            causal_key = (math.inf, "")
-            if causal_processed < causal_budget:
-                causal_key = self.causal_event_engine.next_due_key(self._sim_time) or causal_key
-            next_timeline_key = timeline[0][:2] if timeline else (math.inf, math.inf)
-            process_causal = causal_key[0] < next_timeline_key[0] or (
-                causal_key[0] == next_timeline_key[0] and 3 < next_timeline_key[1]
-            )
+        while True:
+            timeline_entry = self.deferred_timeline.peek()
+            causal_key = self.causal_event_engine.next_due_key(self._sim_time)
+            if timeline_entry is None and causal_key is None:
+                break
+            process_causal = False
+            if causal_key is not None:
+                if timeline_entry is None:
+                    process_causal = True
+                else:
+                    process_causal = causal_key[0] < timeline_entry.occurrence_time or (
+                        causal_key[0] == timeline_entry.occurrence_time
+                        and 3 < timeline_entry.source_rank
+                    )
+            if process_causal and causal_processed >= causal_budget:
+                # Do not let any later materialized work cross the oldest causal item.
+                break
 
             if process_causal:
                 causal_poll = self.causal_event_engine.poll(self._sim_time, max_events=1)
@@ -1739,14 +1792,61 @@ class Orchestrator:
                     self.persistor.mark_state_dirty()
                 continue
 
-            event_time, _source_rank, _sequence, kind, payload, metadata = heapq.heappop(timeline)
-            if kind == "lifecycle_marker":
-                run_lifecycle_poll(
-                    event_time, markers=(dict(payload),), evaluate_conditions=False,
-                )
+            timeline_entry = self.deferred_timeline.peek()
+            if timeline_entry is None:
+                break
+            event_time = timeline_entry.occurrence_time
+            kind = timeline_entry.kind
+            metadata = dict(timeline_entry.metadata)
+
+            if kind in {"lifecycle_marker", "lifecycle_condition"}:
+                try:
+                    runtime = archived_lifecycle_runtime(metadata)
+                    cursor = int(metadata.get("start_transition_index", 0))
+                    markers = (dict(timeline_entry.payload),) if kind == "lifecycle_marker" else ()
+                    poll = run_lifecycle_poll(
+                        runtime, event_time, markers=markers,
+                        evaluate_conditions=kind == "lifecycle_condition",
+                        start_transition_index=cursor,
+                    )
+                except Exception as exc:
+                    logger.exception("Deferred lifecycle entry is invalid")
+                    lifecycle_runtime_error = str(exc)
+                    result.agent_errors.append({
+                        "agent_id": "timeline_system",
+                        "error": "deferred_lifecycle_invalid",
+                        "detail": str(exc),
+                    })
+                    self.deferred_timeline.pop()
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
+                    continue
+                if poll is None:
+                    break
+                if poll.truncated and poll.next_transition_index is not None:
+                    metadata["start_transition_index"] = poll.next_transition_index
+                    metadata["runtime_state"] = runtime.snapshot()
+                    self.deferred_timeline.replace_head(metadata=metadata)
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
+                    break
+                self.deferred_timeline.pop()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
                 continue
 
-            event = payload
+            try:
+                event = self.deferred_timeline.decode_event(timeline_entry.payload)
+            except DeferredTimelineError as exc:
+                result.agent_errors.append({
+                    "agent_id": "timeline_system", "error": "deferred_event_invalid",
+                    "detail": str(exc),
+                })
+                self.deferred_timeline.pop()
+                if self.persistor:
+                    self.persistor.mark_state_dirty()
+                continue
+
             rhythm_event = self.rhythm_runtime.allow_event(
                 event.event_type, sim_time=event_time, issue_manager=self.issue_manager,
             )
@@ -1760,53 +1860,91 @@ class Orchestrator:
                     "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
                 }
                 result.generated_events.append(generated_metadata)
-                if not allowed:
-                    continue
-                self.inject_event(event)
-                issue_type_id = str(event_metadata.get("issue_type_id", ""))
-                if issue_type_id:
-                    issue_payload = dict(event.initial_payload)
-                    try:
-                        opened = self._open_issue_at({
-                            "external_id": f"time_system:{event.event_id}",
-                            "issue_type_id": issue_type_id,
-                            "type": event.event_type,
-                            "source": {"kind": "system", "id": "time_system", "display_name": "????"},
-                            "title": str(issue_payload.get("title", event.event_type)),
-                            "summary": str(issue_payload.get("summary", issue_payload.get("description", event.event_type))),
-                            "details": {"temporal_boundary": issue_payload.get("temporal_boundary", {}), "payload": issue_payload},
-                            "urgency": issue_payload.get("urgency", "normal"),
-                            "metadata": {"event_id": event.event_id, "boundary_event_id": issue_payload.get("boundary_event_id", "")},
-                        }, sim_time=event_time)
-                        result.new_issues.append(opened["issue"])
-                        result.new_cases.append(opened["case"])
-                        result.new_decision_requests.extend(opened["decision_requests"])
-                    except IssueContractError as exc:
-                        result.agent_errors.append({
-                            "agent_id": "time_system", "error": "issue_contract_rejected",
-                            "code": exc.code, "event_id": event.event_id,
-                        })
-                continue
+                if allowed:
+                    self.inject_event(event)
+                    issue_type_id = str(event_metadata.get("issue_type_id", ""))
+                    if issue_type_id:
+                        issue_payload = dict(event.initial_payload)
+                        try:
+                            opened = self._open_issue_at({
+                                "external_id": f"time_system:{event.event_id}",
+                                "issue_type_id": issue_type_id,
+                                "type": event.event_type,
+                                "source": {"kind": "system", "id": "time_system", "display_name": "时间系统"},
+                                "title": str(issue_payload.get("title", event.event_type)),
+                                "summary": str(issue_payload.get("summary", issue_payload.get("description", event.event_type))),
+                                "details": {"temporal_boundary": issue_payload.get("temporal_boundary", {}), "payload": issue_payload},
+                                "urgency": issue_payload.get("urgency", "normal"),
+                                "metadata": {"event_id": event.event_id, "boundary_event_id": issue_payload.get("boundary_event_id", "")},
+                            }, sim_time=event_time)
+                            result.new_issues.append(opened["issue"])
+                            result.new_cases.append(opened["case"])
+                            result.new_decision_requests.extend(opened["decision_requests"])
+                        except IssueContractError as exc:
+                            result.agent_errors.append({
+                                "agent_id": "time_system", "error": "issue_contract_rejected",
+                                "code": exc.code, "event_id": event.event_id,
+                            })
+            else:
+                if allowed:
+                    self.inject_event(event)
+                result.generated_events.append({
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "target_count": len(event.target_agents) if allowed else 0,
+                    "generated_at": event.generated_at,
+                    "source": "random",
+                    "rhythm_status": "allowed" if allowed else "suppressed",
+                    "rhythm_reason": str(rhythm_event.get("reason", "")),
+                    "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
+                })
+            self.deferred_timeline.pop()
+            if self.persistor:
+                self.persistor.mark_state_dirty()
 
-            if allowed:
-                self.inject_event(event)
-            result.generated_events.append({
-                "event_id": event.event_id,
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "target_count": len(event.target_agents) if allowed else 0,
-                "generated_at": event.generated_at,
-                "source": "random",
-                "rhythm_status": "allowed" if allowed else "suppressed",
-                "rhythm_reason": str(rhythm_event.get("reason", "")),
-                "rhythm_rule_id": str(rhythm_event.get("rule_id", "")),
-            })
+        # Current-time condition transitions are rank 4.  If their own budget is
+        # exhausted, persist an explicit continuation before any future producer poll.
+        due_causal = self.causal_event_engine.next_due_key(self._sim_time)
+        if not self.deferred_timeline.pending_count and due_causal is None:
+            condition_transitions = any(
+                item.enabled and item.trigger == "condition"
+                for item in self.lifecycle_runtime.contract.transitions
+            )
+            if condition_transitions:
+                condition_poll = run_lifecycle_poll(
+                    self.lifecycle_runtime, self._sim_time, markers=(),
+                    evaluate_conditions=True, start_transition_index=0,
+                )
+                next_cursor = (
+                    condition_poll.next_transition_index
+                    if condition_poll is not None and condition_poll.truncated
+                    else (0 if condition_poll is None and lifecycle_remaining <= 0 else None)
+                )
+                if next_cursor is not None:
+                    condition_fingerprint = self.lifecycle_runtime.contract.fingerprint()
+                    condition_archive_id = (
+                        f"lifecycle:{self.lifecycle_runtime.generation}:{condition_fingerprint}"
+                    )
+                    self.deferred_timeline.register_archive(
+                        condition_archive_id, self.lifecycle_runtime.contract.to_dict(),
+                    )
+                    self.deferred_timeline.enqueue_many(({
+                        "kind": "lifecycle_condition",
+                        "occurrence_time": self._sim_time, "source_rank": 4,
+                        "payload": {"sim_time": self._sim_time},
+                        "metadata": {
+                            "generation": self.lifecycle_runtime.generation,
+                            "fingerprint": condition_fingerprint,
+                            "archive_id": condition_archive_id,
+                            "runtime_state": self.lifecycle_runtime.snapshot(),
+                            "start_transition_index": next_cursor,
+                        },
+                    },))
+                    if self.persistor:
+                        self.persistor.mark_state_dirty()
 
-        # Condition-triggered lifecycle rules belong to the current simulation
-        # instant and run after all same-time authored/random/causal occurrences.
-        run_lifecycle_poll(
-            self._sim_time, markers=(), evaluate_conditions=True,
-        )
+        self.deferred_timeline.prune_archives()
         lifecycle_poll = LifecyclePollResult(
             applied=tuple(lifecycle_applied),
             skipped=tuple(lifecycle_skipped),
@@ -1814,6 +1952,7 @@ class Orchestrator:
             truncated=lifecycle_truncated,
         )
         result.lifecycle = lifecycle_poll.to_dict()
+        result.lifecycle["deferred_count"] = self.deferred_timeline.pending_count
         if lifecycle_runtime_error:
             result.lifecycle["runtime_error"] = lifecycle_runtime_error
 

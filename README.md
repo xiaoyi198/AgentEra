@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.39.0**
+> 当前版本：**v0.40.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -457,6 +457,20 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.40.0 Release Notes
+
+v0.40.0 upgrades the v0.39.0 per-tick heap into a persistent deferred timeline. Materialized temporal events, lifecycle markers, random events, and lifecycle condition continuations now survive tick budgets, save/load, rollback, and process restarts without allowing later work to overtake earlier work.
+
+- Added `DeferredTimelineRuntime`, ordered by `(occurrence_time, source_rank, sequence)`, with a 32,768-entry hard limit and fail-closed snapshot restore.
+- Preserved the causal budget of 128 and lifecycle budget of 256 while deferring later sources whenever an older causal item or lifecycle continuation remains.
+- Added `start_transition_index` / `next_transition_index` lifecycle cursors, so a marker matching more than 256 transitions resumes from the exact unattempted transition instead of replaying receipts or starving the tail.
+- Archived lifecycle contracts once per generation fingerprint. DLC hot reload affects future materialization, while already queued lifecycle work keeps its committed semantics.
+- Added `deferred_timeline` to `save_state()` / `load_state()`, including stable sequence numbers, event payloads, lifecycle cursors, and deduplicated contract archives. Old saves without the field remain compatible.
+- Restored the generated Issue source label to `time system` in Chinese UI text.
+- Added regressions for 129 earlier causal events blocking later temporal/random work, restart recovery, 300 lifecycle transitions resuming as 256 + 44, hot-reload preservation, and malformed/oversized snapshots.
+
+Validation: **791 Python unit tests passed**; **11 integration tests passed, 2 skipped**; **97 frontend tests passed**; ESLint and Vite build passed.
 
 ## v0.39.0 发布说明
 

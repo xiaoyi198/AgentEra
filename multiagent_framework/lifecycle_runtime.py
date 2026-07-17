@@ -39,6 +39,7 @@ class LifecyclePollResult:
     skipped: tuple[dict[str, Any], ...] = ()
     failed: tuple[dict[str, Any], ...] = ()
     truncated: bool = False
+    next_transition_index: int | None = None
 
     @property
     def applied_count(self) -> int:
@@ -56,6 +57,7 @@ class LifecyclePollResult:
             "skipped": copy.deepcopy(list(self.skipped)),
             "failed": copy.deepcopy(list(self.failed)),
             "truncated": self.truncated,
+            "next_transition_index": self.next_transition_index,
         }
 
 
@@ -114,6 +116,7 @@ class LifecycleRuntime:
         actor_manager: Any = None,
         max_transitions: int = MAX_LIFECYCLE_TRANSITIONS_PER_POLL,
         evaluate_conditions: bool = True,
+        start_transition_index: int = 0,
     ) -> LifecyclePollResult:
         now = self._sim_time(sim_time)
         if not self.contract.configured:
@@ -123,10 +126,18 @@ class LifecycleRuntime:
         skipped: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
         limit = max(1, int(max_transitions))
+        if isinstance(start_transition_index, bool):
+            raise ValueError("lifecycle_transition_cursor_invalid")
+        cursor = int(start_transition_index)
+        if cursor < 0 or cursor > len(self.contract.transitions):
+            raise ValueError("lifecycle_transition_cursor_invalid")
         attempted = 0
         truncated = False
+        next_transition_index: int | None = None
 
-        for transition in self.contract.transitions:
+        for transition_index, transition in enumerate(self.contract.transitions):
+            if transition_index < cursor:
+                continue
             if not transition.enabled or transition.trigger == "manual":
                 continue
             if transition.trigger == "condition":
@@ -156,6 +167,7 @@ class LifecycleRuntime:
             for marker in candidates:
                 if attempted >= limit:
                     truncated = True
+                    next_transition_index = transition_index
                     break
                 attempted += 1
                 outcome = self._execute_if_eligible(
@@ -172,7 +184,10 @@ class LifecycleRuntime:
                 bucket.append(outcome)
             if truncated:
                 break
-        return LifecyclePollResult(tuple(applied), tuple(skipped), tuple(failed), truncated)
+        return LifecyclePollResult(
+            tuple(applied), tuple(skipped), tuple(failed), truncated,
+            next_transition_index,
+        )
 
     def execute_manual(
         self,

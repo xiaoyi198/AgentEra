@@ -3541,3 +3541,33 @@ python -m pytest tests/unit/test_version_consistency.py -q
 ```
 
 至少覆盖：不同来源跨日归并、同刻稳定 tie、零延迟因果、未来 pending 不提前消费、历史因果效果早于未来生命周期实体生成、`next_due_key()` 不改变 snapshot、历史 marker 不更新 condition latch、因果 128 条预算后 pending 保留，以及 lifecycle `truncated` 传播。
+
+## Developing the persistent deferred timeline (v0.40.0)
+
+### Required invariants
+
+1. Materialized producer output enters `DeferredTimelineRuntime` before Agent wakeups, Issues, or world side effects. Do not poll Temporal or Random while the queue is non-empty.
+2. Keep `(occurrence_time, source_rank, sequence)` stable. Same-time precedence remains temporal, lifecycle marker, random, causal, then condition lifecycle.
+3. Once the causal budget is exhausted, only already queued same-time ranks below causal may continue. Never execute a future head past an older due causal item.
+4. Orchestrator lifecycle entries pass one marker per poll. `next_transition_index` is a transition cursor, not a marker-within-batch cursor. Batched marker polling requires a second cursor before it is safe.
+5. Deferred lifecycle entries must reference the committed `archive_id`. A hot reload must not reinterpret an old fingerprint with the current contract.
+6. Producer polling and `enqueue_many()` form one publication transaction. If enqueue fails, restore both Temporal and Random snapshots.
+7. Snapshot restore is atomic and fail-closed. Skipping one malformed item would invalidate the global ordering proof.
+8. Mark RuntimePersistor dirty after consuming or updating the head; otherwise restart can replay an already consumed queue.
+
+### Lifecycle cursor rules
+
+`LifecycleRuntime.poll(..., start_transition_index=N)` skips only contract transitions with an index below `N`. `LifecyclePollResult.next_transition_index` is set only when matching candidate work remains unattempted because of budget. Disabled, manual, or non-matching transitions must not create false truncation. When a continuation uses an archived generation, save its isolated runtime state back into head metadata.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_timeline_runtime.py tests/unit/test_event_generator.py tests/unit/test_lifecycle_runtime.py tests/unit/test_lifecycle_orchestrator.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q multiagent_framework routers
+python -m pytest tests/unit/test_version_consistency.py -q
+git diff --check
+```
+
+Required cases include: 129 earlier causal events blocking later temporal/random work, second-tick continuation at causal item 129, paused save/new-Orchestrator recovery with stable sequence and payload, 300 lifecycle attempts split exactly 256 + 44, DLC hot reload during continuation, in-place head updates preserving the key, and malformed/oversized snapshots failing closed.

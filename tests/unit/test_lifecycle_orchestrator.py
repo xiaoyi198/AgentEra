@@ -305,3 +305,44 @@ def test_save_state_contains_lifecycle_latch_snapshot(tmp_path):
 
     assert state["lifecycle_runtime"]["generation"] == 4
     assert state["lifecycle_runtime"]["fingerprint"] == orchestrator.lifecycle_runtime.contract.fingerprint()
+
+
+
+def test_lifecycle_marker_continues_after_transition_budget_without_replaying_prefix(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+    storm_contract = LifecycleContract.from_mapping({
+        "enabled": True,
+        "transitions": [{
+            "transition_id": f"storm_{index:03d}",
+            "display_name": f"Storm {index}",
+            "kind": "custom",
+            "trigger": "day_start",
+            "operations": [{
+                "operation": "transform_entity",
+                "entity_id": f"missing_{index:03d}",
+                "new_status": "processed",
+            }],
+        } for index in range(300)],
+    })
+    orchestrator.configure_lifecycle_system(
+        storm_contract, generation=40, preserve_state=False,
+    )
+
+    first = asyncio.run(orchestrator._tick())
+
+    assert first.lifecycle["failed_count"] == 256
+    assert first.lifecycle["truncated"] is True
+    assert first.lifecycle["deferred_count"] == 1
+    assert orchestrator.deferred_timeline.peek().metadata["start_transition_index"] == 256
+
+    # A DLC hot reload cannot rewrite already materialized marker semantics.
+    orchestrator.configure_lifecycle_system(
+        LifecycleContract.from_mapping({}), generation=41, preserve_state=True,
+    )
+    second = asyncio.run(orchestrator._tick())
+
+    assert second.lifecycle["failed_count"] == 44
+    assert second.lifecycle["deferred_count"] == 0
+    assert [item["transition_id"] for item in second.lifecycle["failed"]] == [
+        f"storm_{index:03d}" for index in range(256, 300)
+    ]

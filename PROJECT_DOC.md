@@ -2456,3 +2456,30 @@ v0.39.0 在 `Orchestrator._tick()` 内引入统一的、仅存在于当前 tick 
 ### 状态与兼容性
 
 统一时间线本身不进入存档，持久状态仍由 Temporal cursor、Random generator snapshot、Causal pending、Lifecycle Receipt/latch 和世界命令账本承担。同刻来源优先级保持 v0.38.0 以前的来源顺序，因此普通短 tick 行为不变；变化只发生在长跳时不同来源拥有不同历史时间的场景。
+
+## Persistent budget-deferred timeline architecture (v0.40.0)
+
+v0.40.0 replaces the v0.39.0 `_tick()`-local heap with `multiagent_framework.timeline_runtime.DeferredTimelineRuntime`. Once a producer materializes a temporal event, lifecycle marker, random event, or condition continuation, the JSON-safe item enters the persistent queue before execution. The stable key is:
+
+```text
+(occurrence_time, source_rank, sequence)
+source_rank: temporal=0, lifecycle marker=1, random=2, causal=3, condition lifecycle=4
+```
+
+Causal work remains authoritative in `CausalEventEngine.pending` rather than being copied. Every drain iteration compares `next_due_key()` with the deferred head. When the 128-event causal budget is exhausted and the oldest causal item precedes the head, the tick stops and preserves every later item. Temporal and Random producers are not polled while the deferred queue is non-empty, preventing cursor advancement from producing unbounded newer work.
+
+### Lifecycle continuation and generation semantics
+
+`LifecycleRuntime.poll()` accepts `start_transition_index`; `LifecyclePollResult` exposes `next_transition_index`. If a marker or condition set exceeds the remaining 256-attempt lifecycle budget, the head entry is updated in place and the next tick begins at the first unattempted transition. This avoids both receipt-prefix replay and permanent tail starvation.
+
+Deferred lifecycle entries store only `archive_id`, generation, fingerprint, cursor, and runtime state. The full `LifecycleContract.to_dict()` is deduplicated in a bounded archive keyed by generation fingerprint. If a DLC hot reload changes the current fingerprint, the Orchestrator constructs an isolated runtime from the archived contract, preserving committed semantics for already materialized work. Unreferenced archives are pruned.
+
+### Persistence, backpressure, and failure behavior
+
+`save_state()` now includes `deferred_timeline`: the next sequence, sorted entries, and contract archives. `load_state()` restores it atomically; missing data from older saves means an empty queue. The entry limit is 32,768 and the archive limit is 64. If publication exceeds capacity, Temporal and Random snapshots are restored and the tick reports `timeline_backpressure` rather than silently losing cursor output.
+
+Malformed kinds, duplicate or regressing sequences, non-finite timestamps, invalid payloads, and oversized entry/archive collections fail closed: the timeline is cleared, `last_restore_error` is recorded, and the remainder of the save can still load. World Command and Lifecycle Receipt ledgers continue to provide idempotency for replayable side effects.
+
+### Remaining boundary
+
+v0.40.0 removes the two v0.39.0 budget-ordering gaps: later temporal/random work no longer crosses the 129th earlier causal event, and lifecycle marker tails no longer disappear after the Temporal cursor advances. The queue and per-tick execution budgets remain intentionally bounded. Agent wakeups are still not a transactional message queue, so future long-session work should add crash-point injection, save-size stress, and explicit delivery semantics.

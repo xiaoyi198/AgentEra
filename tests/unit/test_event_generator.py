@@ -207,13 +207,22 @@ def make_orchestrator_for_events():
         def get_in_transit(self):
             return []
 
+        def save_all(self):
+            return 0
+
+        def load_from_db(self):
+            return None
+
     class Router:
         def __init__(self):
             self.llm = SimpleNamespace(token_counter=SimpleNamespace(to_dict=lambda: {}))
 
+        def update_time_scale(self, _seconds_per_day):
+            return None
+
     return Orchestrator(
         court_graph=Court(), timer_system=Timers(),
-        chain_log=SimpleNamespace(), router=Router(),
+        chain_log=SimpleNamespace(load_from_file=lambda: None), router=Router(),
     )
 
 
@@ -411,3 +420,88 @@ def test_player_wakeup_issue_contract_failure_is_reported_without_crashing_tick(
     assert len(result.agent_errors) == 2
     assert {item["code"] for item in result.agent_errors} == {"issue.evidence.required"}
     assert all(item["error"] == "issue_contract_rejected" for item in result.agent_errors)
+
+
+
+def _configure_deferred_budget_scenario(orch):
+    orch.configure_time_system(TemporalContract.from_mapping({
+        "enabled": True,
+        "calendar": {
+            "calendar_id": "deferred_calendar",
+            "display_name": "Deferred Calendar",
+            "epoch_label": "Era",
+            "start_year": 1,
+            "start_month_id": "m1",
+            "start_day": 1,
+            "weekdays": ["d1", "d2", "d3", "d4", "d5", "d6", "d7"],
+            "start_weekday": "d1",
+            "months": [{"month_id": "m1", "display_name": "Month", "days": 30}],
+        },
+        "boundary_events": [{
+            "boundary_event_id": "daily_signal",
+            "trigger": "day_start",
+            "event_type": "daily_signal",
+            "severity": 1,
+            "target_agents": [],
+        }],
+    }), generation=40)
+    orch.configure_random_events([
+        template(min_interval_days=1, max_interval_days=1, max_occurrences=1)
+    ], preserve_state=False)
+    orch.configure_causal_events([{
+        "rule_id": f"seed-{index:03d}",
+        "source_event_types": ["seed"],
+        "child_event_type": f"early-{index:03d}",
+        "target_agents": ["county-a"],
+        "delay_days": 0,
+        "probability": 1,
+        "max_depth": 1,
+        "max_fires_per_chain": 1,
+    } for index in range(129)])
+    orch.inject_event(EventObject(
+        event_id="deferred-seed", event_type="seed", severity=1,
+        target_agents=[], initial_payload={}, generated_at=0,
+    ))
+    orch._sim_time = GAME_SECONDS_PER_DAY
+
+
+def test_causal_budget_persists_later_sources_until_oldest_due_work_finishes():
+    orch = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(orch)
+
+    first = asyncio.run(orch._tick())
+
+    assert len(first.generated_events) == 128
+    assert all(item["source"] == "causal" for item in first.generated_events)
+    assert orch.causal_event_status()["pending_count"] == 1
+    assert orch.deferred_timeline.pending_count > 0
+
+    second = asyncio.run(orch._tick())
+
+    visible = [(item["source"], item["event_type"]) for item in second.generated_events]
+    assert visible[0][0] == "causal"
+    assert ("time_system", "daily_signal") in visible[1:]
+    assert ("random", "locust_plague") in visible[1:]
+    assert orch.causal_event_status()["pending_count"] == 0
+    assert orch.deferred_timeline.pending_count == 0
+
+
+def test_deferred_timeline_survives_orchestrator_save_and_restart():
+    original = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(original)
+    asyncio.run(original._tick())
+    original._paused = True
+    state = copy.deepcopy(original.save_state())
+    expected_timeline = state["deferred_timeline"]
+
+    restored = make_orchestrator_for_events()
+    _configure_deferred_budget_scenario(restored)
+    restored.load_state(state)
+
+    assert restored.deferred_timeline.snapshot() == expected_timeline
+    resumed = asyncio.run(restored._tick())
+    visible = [(item["source"], item["event_type"]) for item in resumed.generated_events]
+    assert visible[0][0] == "causal"
+    assert ("time_system", "daily_signal") in visible[1:]
+    assert ("random", "locust_plague") in visible[1:]
+    assert restored.deferred_timeline.pending_count == 0
