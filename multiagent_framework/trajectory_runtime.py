@@ -9,14 +9,20 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import inspect
+import json
 import math
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 from typing import Any, AsyncIterator, Mapping
 
+from .court_graph import CourtGraph, Official
+from .llm_client import LLMResponse
 from .memory_store import StructuredMemoryStore
+from .router import RouterAgent
 from .trajectory_evaluation import LiveToolExecutor
+from .types import AgentAction, RouterCommandType
 from .world_commands import WorldCommand, WorldCommandType
 from .world_state import Entity, ResourceDefinition, WorldState
 
@@ -59,6 +65,56 @@ class _WorldSnapshot:
     external_purchase_available: bool
 
 
+@dataclass(frozen=True)
+class _RouterRequest:
+    source_agent_id: str
+    action: str
+    content: str
+    original_intent: str
+    urgency: str
+    intent_id: str
+    chain_id: str
+
+
+class _RouterReplayLLM:
+    """Feed one evaluated target through the production RouterAgent parser."""
+
+    def __init__(self) -> None:
+        self._decision: dict[str, str] | None = None
+
+    def prepare(self, *, target: str, request: _RouterRequest) -> None:
+        self._decision = {
+            "target": target,
+            "message": request.content,
+            "from_agent": request.source_agent_id,
+            "urgency": request.urgency,
+            "intent_id": request.intent_id,
+        }
+
+    def discard(self) -> None:
+        self._decision = None
+
+    async def chat(self, **_kwargs: Any) -> LLMResponse:
+        decision = self._decision
+        self.discard()
+        if decision is None:
+            raise TrajectoryRuntimeError("Router replay decision is unavailable")
+        return LLMResponse(tool_calls=[{
+            "id": "trajectory-router-decision",
+            "function": {
+                "name": "wake_agent",
+                "arguments": json.dumps(decision, ensure_ascii=False),
+            },
+        }])
+
+
+@dataclass
+class _RouterRuntime:
+    router: RouterAgent
+    replay_llm: _RouterReplayLLM
+    request: _RouterRequest
+
+
 class IsolatedTrajectoryRuntimeFactory:
     """Open one disposable runtime session for every scenario execution."""
 
@@ -89,6 +145,7 @@ class _TrajectoryRuntimeSession:
         transfer_scopes: tuple[_TransferScope, ...],
         snapshots: tuple[_WorldSnapshot, ...],
         retrieval: Mapping[str, Any],
+        router_runtime: _RouterRuntime | None,
     ) -> None:
         self.world = world
         self.memory = memory
@@ -96,6 +153,7 @@ class _TrajectoryRuntimeSession:
         self.transfer_scopes = transfer_scopes
         self.snapshots = snapshots
         self.retrieval = dict(retrieval)
+        self.router_runtime = router_runtime
         self.results: dict[str, list[dict[str, Any]]] = {}
         self.command_counter = 0
 
@@ -106,18 +164,20 @@ class _TrajectoryRuntimeSession:
         *,
         database_path: Path,
     ) -> "_TrajectoryRuntimeSession":
-        _allow_keys(fixture, {"schema_version", "world", "memory"}, "runtime_fixture")
+        _allow_keys(fixture, {"schema_version", "world", "memory", "router"}, "runtime_fixture")
         if str(fixture.get("schema_version", "")) != "1.0":
             raise TrajectoryRuntimeError("Unsupported runtime_fixture schema_version")
 
         world_fixture = _mapping(fixture.get("world", {}), "runtime_fixture.world")
         memory_fixture = _mapping(fixture.get("memory", {}), "runtime_fixture.memory")
+        router_fixture = _mapping(fixture.get("router", {}), "runtime_fixture.router")
         _allow_keys(
             world_fixture,
             {"generation", "entities", "resources", "inventory", "transfer_scopes", "snapshots"},
             "runtime_fixture.world",
         )
         _allow_keys(memory_fixture, {"records", "retrieval"}, "runtime_fixture.memory")
+        _allow_keys(router_fixture, {"agents", "request"}, "runtime_fixture.router")
 
         world = WorldState(str(database_path))
         resources = _bounded_list(world_fixture.get("resources", []), "world.resources")
@@ -242,6 +302,14 @@ class _TrajectoryRuntimeSession:
             "kind_diversity_bonus": _finite(retrieval.get("kind_diversity_bonus", 0.6), "memory.retrieval.kind_diversity_bonus"),
         }
         generation = _bounded_int(world_fixture.get("generation", 1), "world.generation", 0, 2_147_483_647)
+        router_runtime = (
+            _build_router_runtime(
+                router_fixture,
+                database_path=database_path.with_name("router.sqlite3"),
+            )
+            if router_fixture
+            else None
+        )
         return cls(
             world=world,
             memory=memory,
@@ -249,6 +317,7 @@ class _TrajectoryRuntimeSession:
             transfer_scopes=tuple(transfer_scopes),
             snapshots=tuple(snapshots),
             retrieval=normalized_retrieval,
+            router_runtime=router_runtime,
         )
 
     async def execute(
@@ -263,6 +332,8 @@ class _TrajectoryRuntimeSession:
         handler = getattr(self, f"_tool_{name}")
         try:
             result = handler(dict(arguments))
+            if inspect.isawaitable(result):
+                result = await result
         except (KeyError, TypeError, ValueError):
             result = _rejected("invalid_tool_arguments")
         self.results.setdefault(name, []).append(dict(result))
@@ -496,15 +567,48 @@ class _TrajectoryRuntimeSession:
             return _rejected("advice_not_grounded")
         return {"ok": True, "accepted": True, "grounded": True}
 
-    def _tool_route_intent(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    async def _tool_route_intent(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         target = _identifier(arguments.get("target"), "route_intent.target")
         reason_code = _identifier(arguments.get("reason_code"), "route_intent.reason_code")
+        runtime = self.router_runtime
+        if runtime is None:
+            return _rejected("router_runtime_unavailable")
+        request = runtime.request
+        runtime.replay_llm.prepare(target=target, request=request)
+        try:
+            commands = await runtime.router.process_batch([AgentAction(
+                agent_id=request.source_agent_id,
+                action=request.action,
+                content=request.content,
+                original_intent=request.original_intent,
+                urgency=request.urgency,
+                metadata={
+                    "intent_id": request.intent_id,
+                    "chain_id": request.chain_id,
+                    "hop_count": 0,
+                },
+            )], context={"evaluation_reason_code": reason_code})
+        finally:
+            runtime.replay_llm.discard()
+        if len(commands) != 1:
+            return _rejected("router_route_rejected")
+        command = commands[0]
+        if command.command_type != RouterCommandType.WAKE_AGENT or command.target != target:
+            return _rejected("router_command_mismatch")
         return {
             "ok": True,
             "accepted": True,
-            "target": target,
+            "target": command.target,
             "reason_code": reason_code,
-            "_evaluation_evidence": {"route_target": target},
+            "command_type": command.command_type.value,
+            "route_strategy": str(command.metadata.get("route_strategy", "")),
+            "intent_id": command.intent_id,
+            "chain_id": command.chain_id,
+            "_evaluation_evidence": {
+                "route_target": command.target,
+                "router_command_type": command.command_type.value,
+                "router_route_strategy": str(command.metadata.get("route_strategy", "")),
+            },
         }
 
     def _last(self, tool: str) -> dict[str, Any] | None:
@@ -516,6 +620,127 @@ class _TrajectoryRuntimeSession:
             (item for item in self.world.get_inventory(entity_id) if item.item_name == resource_id),
             None,
         )
+
+
+def _build_router_runtime(
+    fixture: Mapping[str, Any],
+    *,
+    database_path: Path,
+) -> _RouterRuntime:
+    raw_agents = _bounded_list(fixture.get("agents", []), "router.agents")
+    if len(raw_agents) < 2:
+        raise TrajectoryRuntimeError("router.agents requires at least two entries")
+    agents: list[Official] = []
+    seen_ids: set[str] = set()
+    parent_ids: dict[str, str | None] = {}
+    enabled_ids: set[str] = set()
+    for index, raw in enumerate(raw_agents):
+        item = _mapping(raw, f"router.agents[{index}]")
+        _allow_keys(
+            item,
+            {
+                "id",
+                "name",
+                "rank",
+                "location_id",
+                "role",
+                "agent_type",
+                "superior_id",
+                "personality_seed",
+                "enabled",
+            },
+            f"router.agents[{index}]",
+        )
+        agent_id = _identifier(item.get("id"), f"router.agents[{index}].id")
+        if agent_id in seen_ids:
+            raise TrajectoryRuntimeError("router agent ids must be unique")
+        seen_ids.add(agent_id)
+        superior_raw = item.get("superior_id")
+        superior_id = (
+            None
+            if superior_raw is None or (isinstance(superior_raw, str) and not superior_raw.strip())
+            else _identifier(superior_raw, f"router.agents[{index}].superior_id")
+        )
+        enabled = _boolean(item.get("enabled", True), f"router.agents[{index}].enabled")
+        parent_ids[agent_id] = superior_id
+        if enabled:
+            enabled_ids.add(agent_id)
+        agents.append(Official(
+            id=agent_id,
+            name=_text(item.get("name"), f"router.agents[{index}].name", maximum=128),
+            rank=_bounded_int(item.get("rank", 1), f"router.agents[{index}].rank", 0, 1000),
+            location_id=_identifier(
+                item.get("location_id"),
+                f"router.agents[{index}].location_id",
+            ),
+            role=_identifier(item.get("role", "actor"), f"router.agents[{index}].role"),
+            agent_type=_identifier(
+                item.get("agent_type", "actor"),
+                f"router.agents[{index}].agent_type",
+            ),
+            superior_id=superior_id,
+            personality_seed=_text(
+                item.get("personality_seed", "steady"),
+                f"router.agents[{index}].personality_seed",
+                maximum=128,
+            ),
+            enabled=enabled,
+        ))
+    for agent_id, superior_id in parent_ids.items():
+        if superior_id == agent_id or (superior_id is not None and superior_id not in seen_ids):
+            raise TrajectoryRuntimeError("router agent hierarchy is invalid")
+        visited = {agent_id}
+        current = superior_id
+        while current is not None:
+            if current in visited:
+                raise TrajectoryRuntimeError("router agent hierarchy is invalid")
+            visited.add(current)
+            current = parent_ids.get(current)
+
+    request_raw = _mapping(fixture.get("request", {}), "router.request")
+    _allow_keys(
+        request_raw,
+        {
+            "source_agent_id",
+            "action",
+            "content",
+            "original_intent",
+            "urgency",
+            "intent_id",
+            "chain_id",
+        },
+        "router.request",
+    )
+    source_agent_id = _identifier(
+        request_raw.get("source_agent_id"),
+        "router.request.source_agent_id",
+    )
+    if source_agent_id not in enabled_ids:
+        raise TrajectoryRuntimeError("router request source must be an enabled fixture agent")
+    urgency = _text(request_raw.get("urgency", "normal"), "router.request.urgency", maximum=16)
+    if urgency not in {"critical", "urgent", "express", "normal"}:
+        raise TrajectoryRuntimeError("router request urgency is invalid")
+    request = _RouterRequest(
+        source_agent_id=source_agent_id,
+        action=_identifier(request_raw.get("action"), "router.request.action"),
+        content=_text(request_raw.get("content"), "router.request.content"),
+        original_intent=_text(
+            request_raw.get("original_intent", ""),
+            "router.request.original_intent",
+            required=False,
+        ),
+        urgency=urgency,
+        intent_id=_identifier(request_raw.get("intent_id"), "router.request.intent_id"),
+        chain_id=_identifier(request_raw.get("chain_id"), "router.request.chain_id"),
+    )
+    court = CourtGraph(str(database_path))
+    court.bulk_load_officials(agents)
+    replay_llm = _RouterReplayLLM()
+    return _RouterRuntime(
+        router=RouterAgent(replay_llm, court),
+        replay_llm=replay_llm,
+        request=request,
+    )
 
 
 def _rejected(code: str) -> dict[str, Any]:

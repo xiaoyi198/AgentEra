@@ -2740,7 +2740,7 @@ Router 的 `_route_target()` 采用证据优先级：模型实际工具参数 �
 - 完整 Python：855 passed, 2 skipped, 1 known failure；唯一失败为既有 LLM HTTP deadline 浮点边界。
 - Frontend：102 passed；ESLint、Vite production build、Python compileall 和版本一致性检查通过。
 
-## 隔离真实轨迹运行时架构（v0.49.0）
+## 隔离真实轨迹运行时架构（v0.49.0–v0.50.0）
 
 ### 每次执行独立的 Session 生命周期
 
@@ -2750,20 +2750,21 @@ Router 的 `_route_target()` 采用证据优先级：模型实际工具参数 �
 
 ### 受控 `runtime_fixture` 边界
 
-live 场景可在执行配置中声明 `runtime_fixture.schema_version = "1.0"`，并仅使用两个顶层域：
+live 场景可在执行配置中声明 `runtime_fixture.schema_version = "1.0"`，并仅使用三个顶层域：
 
 - `world`：受限的 generation、entities、resources、inventory、transfer_scopes 与 snapshots。
 - `memory`：受限的 records 与 retrieval 参数。
+- `router`：受限的 Agent 层级图与单次评测请求；不接受 Provider、模型、Prompt 或任意执行器配置。
 
 `IsolatedTrajectoryRuntimeFactory` 为每次会话创建临时目录和独立 SQLite。fixture 不接受数据库路径、Python import、任意 handler、Provider URL、模型配置路径或其他未知字段；数组规模、字符串长度、数值有限性、布尔类型和标识符均在构造运行时前校验。安全标识符支持 Unicode，因此 DLC 可以直接使用中文实体、资源和作用域 ID。
 
-### 真实 World 与 Memory 执行路径
+### 真实 World、Memory 与 Router 执行路径
 
 固定白名单工具为 `recall_memory`、`inspect_memory`、`inspect_inventory`、`apply_world_command`、`inspect_world`、`submit_report`、`submit_memory_summary`、`submit_advice`、`route_intent`。不在白名单内的名称返回固定脱敏拒绝结果。
 
 Memory fixture 会先通过 `StructuredMemoryStore.remember()` 写入，召回时再调用 `StructuredMemoryStore.retrieve()`；评测不会把 fixture 原样伪装成工具结果。World fixture 会构造真实 `WorldState`、`Entity` 和 `ResourceDefinition`，库存读取采用权威 Inventory API。`apply_world_command` 通过 `WorldCommandBus.execute_batch(..., atomic=True)` 执行借贷双边转移，并在前后调用 `get_economic_invariants()` 生成动态资源守恒证据。
 
-终局报告、记忆摘要和建议 receipt 必须引用当前 session 先前产生的真实工具结果，虚构 ID、代次或库存证据会被拒绝。Router 场景目前只验证模型提交的 `target` / `reason_code` 并返回受控 receipt；它尚未调用生产 Router executor，因此不能据此宣称生产路由实现已经通过真实运行时评估。
+终局报告、记忆摘要和建议 receipt 必须引用当前 session 先前产生的真实工具结果，虚构 ID、代次或库存证据会被拒绝。v0.50.0 起，Router 场景把外层模型提交的 `target` 通过单次 replay adapter 包装为 `wake_agent` Function Call，并交给生产 `RouterAgent.process_batch()`；最终 receipt 读取生产 `RouterCommand.target`。这会真实执行候选生成、FC 解析、候选约束、启用/自路由/层级可达性检查、幂等、链路环路和命令生成，但不会再次调用外部 Provider。当前边界止于 `RouterAgent → RouterCommand`，尚未进入 Orchestrator 命令投递和世界副作用。
 
 ### 故障与脱敏
 
@@ -2776,3 +2777,27 @@ Memory fixture 会先通过 `StructuredMemoryStore.remember()` 写入，召回�
 - Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
 - Python compileall、版本一致性、ESLint、Vite production build 与 `git diff --check` 通过。
 - 本轮没有调用外部 Provider；这些证据证明隔离运行时和离线门禁，不代表真实 API 连通性或人工模型晋级复核已经完成。
+
+## 生产 Router 轨迹评测边界（v0.50.0）
+
+### Replay adapter 与单次模型调用
+
+`route_intent(target, reason_code)` 仍是外层评测模型的终局工具。隔离 runtime 不直接信任或回显 `target`，而是把该目标准备到一次性 `_RouterReplayLLM` 中，再调用生产 `RouterAgent.process_batch()`。当 Router 请求 LLM Function Calling 时，adapter 仅返回一次已经由外层模型作出的 `wake_agent` 决策；它不会访问 `config/models.json`，也不会发起第二次 Provider 请求。无论 Router 走 LLM、确定性路径或异常路径，准备态都会在调用后清空，避免决策污染下一次调用。
+
+### 独立 Router 状态
+
+每个 runtime session 从 `router.agents` 构造新的临时 `CourtGraph` 和 `RouterAgent`。Fixture 校验 Agent 数量、ID 唯一性、字段白名单、上级存在性、自引用与层级环、启用来源、urgency 和安全标识符。生产 Router 的 `_recent_keys`、chain edges 与 dead letters 只存活于当前 session；同一 session 重复 intent 会被幂等规则拒绝，新 session 可重新成功。
+
+成功 receipt 只暴露脱敏的 `target`、`reason_code`、`command_type`、`route_strategy`、`intent_id` 和 `chain_id`。失败统一映射为固定 runtime error code，不返回生产 Router 的 Prompt、候选描述、dead-letter reason、临时 SQLite 路径或 Provider 信息。
+
+### 明确不覆盖的范围
+
+该评测证明模型决策能通过生产 Router 的候选、Function Calling 解析、目标校验、层级可达性、幂等和 `RouterCommand` 生成。它不证明 Orchestrator 已接收/执行命令，不证明 Agent 已真正被唤醒或世界状态已发生后续变化，也不替代真实 Provider 连接测试和独立人工模型评审。
+
+### v0.50.0 验证证据
+
+- Router 轨迹 runtime/evaluator/matrix 与生产 Router 聚焦回归：**84 passed**。
+- Python 单元：**852 passed, 1 failed**；唯一失败为既有 LLM deadline 浮点表示边界 `0.2000000000007276 <= 0.2`，本轮未修改 deadline 语义、断言或异常处理。
+- Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
+- Python compileall、版本一致性、ESLint、Vite production build 与 `git diff --check` 通过。
+- 本轮没有调用外部 Provider；这些证据只证明离线 replay 到生产 `RouterCommand` 的边界，不代表真实 API 连通性、Orchestrator 副作用或人工模型晋级复核已经完成。

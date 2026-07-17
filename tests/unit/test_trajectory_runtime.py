@@ -187,6 +187,204 @@ def test_fixture_accepts_unicode_dlc_identifiers():
     assert result["source_base_value_total"] == 12
 
 
+def test_router_tool_executes_production_router_and_resets_idempotency_per_session():
+    scenario = _scenario("live-router-ambiguous-intent")
+    fixture = scenario["live"]["runtime_fixture"]["router"]
+    fixture["agents"].append({
+        "id": "isolated_office",
+        "name": "Isolated Office",
+        "rank": 5,
+        "location_id": "remote",
+        "role": "isolated",
+        "agent_type": "institution",
+        "superior_id": None,
+        "personality_seed": "steady",
+        "enabled": True,
+    })
+    factory = IsolatedTrajectoryRuntimeFactory()
+
+    async def run():
+        async with factory(scenario, scenario["live"]) as execute:
+            accepted = await execute(scenario, "route_intent", {
+                "target": "hubu",
+                "reason_code": "fiscal_reserve",
+            }, {})
+            duplicate = await execute(scenario, "route_intent", {
+                "target": "hubu",
+                "reason_code": "fiscal_reserve",
+            }, {})
+            outside = await execute(scenario, "route_intent", {
+                "target": "ghost_office",
+                "reason_code": "fiscal_reserve",
+            }, {})
+            self_route = await execute(scenario, "route_intent", {
+                "target": "petition_intake",
+                "reason_code": "fiscal_reserve",
+            }, {})
+            unreachable = await execute(scenario, "route_intent", {
+                "target": "isolated_office",
+                "reason_code": "fiscal_reserve",
+            }, {})
+        async with factory(scenario, scenario["live"]) as execute:
+            fresh = await execute(scenario, "route_intent", {
+                "target": "hubu",
+                "reason_code": "fiscal_reserve",
+            }, {})
+        return accepted, duplicate, outside, self_route, unreachable, fresh
+
+    accepted, duplicate, outside, self_route, unreachable, fresh = asyncio.run(run())
+
+    assert accepted["accepted"] is True
+    assert accepted["target"] == "hubu"
+    assert accepted["command_type"] == "wake_agent"
+    assert accepted["route_strategy"] == "llm"
+    assert accepted["intent_id"] == "router-eval-intent"
+    assert accepted["chain_id"] == "router-eval-chain"
+    for rejected in (duplicate, outside, self_route, unreachable):
+        assert rejected == {
+            "ok": False,
+            "accepted": False,
+            "error_code": "router_route_rejected",
+            "error": "runtime tool rejected",
+        }
+        assert "dead_letter" not in json.dumps(rejected)
+    assert fresh == accepted
+
+
+def test_router_fixture_rejects_invalid_graphs_sources_and_fields():
+    base = _scenario("live-router-ambiguous-intent")["live"]["runtime_fixture"]
+    invalid_fixtures = []
+
+    duplicate = deepcopy(base)
+    duplicate["router"]["agents"][2]["id"] = "petition_intake"
+    invalid_fixtures.append(duplicate)
+
+    unknown_superior = deepcopy(base)
+    unknown_superior["router"]["agents"][2]["superior_id"] = "missing_parent"
+    invalid_fixtures.append(unknown_superior)
+
+    cycle = deepcopy(base)
+    cycle["router"]["agents"][0]["superior_id"] = "hubu"
+    invalid_fixtures.append(cycle)
+
+    disabled_source = deepcopy(base)
+    disabled_source["router"]["agents"][1]["enabled"] = False
+    invalid_fixtures.append(disabled_source)
+
+    unknown_field = deepcopy(base)
+    unknown_field["router"]["provider_url"] = "https://should-not-be-accepted.invalid"
+    invalid_fixtures.append(unknown_field)
+
+    async def open_fixture(fixture):
+        async with IsolatedTrajectoryRuntimeFactory()({}, {"runtime_fixture": fixture}):
+            pass
+
+    for fixture in invalid_fixtures:
+        with pytest.raises(TrajectoryRuntimeError):
+            asyncio.run(open_fixture(fixture))
+
+
+class _RouterLLM:
+    async def chat(self, **_kwargs):
+        return LLMResponse(
+            tool_calls=[{
+                "id": "route-1",
+                "function": {
+                    "name": "route_intent",
+                    "arguments": json.dumps({
+                        "target": "hubu",
+                        "reason_code": "fiscal_reserve",
+                    }),
+                },
+            }],
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=1,
+        )
+
+
+class _RouterGateway:
+    def __init__(self, *, strict=False):
+        self.strict = strict
+        self.profiles = {
+            "alpha": {
+                "profile": "alpha",
+                "provider": "test-provider",
+                "model": "test-model",
+                "supports_tools": True,
+            }
+        }
+
+    def has_profile(self, profile):
+        return profile in self.profiles
+
+    def profile_metadata(self, profile):
+        return dict(self.profiles[profile])
+
+    def candidates(self, _task, profile_override="", *, strict_profile=False):
+        if self.strict:
+            assert strict_profile
+            return [profile_override] if profile_override in self.profiles else []
+        return ["alpha"]
+
+    def credentials_available(self, _task, _profile_override="", *, strict_profile=False):
+        if self.strict:
+            assert strict_profile
+        return True
+
+    def for_task(self, _task, **kwargs):
+        if self.strict:
+            assert kwargs.get("strict_profile") is True
+        return _RouterLLM()
+
+
+def test_evaluator_routes_live_scenario_through_production_router():
+    scenario = _scenario("live-router-ambiguous-intent")
+    suite = {
+        "schema_version": "1.0",
+        "suite_id": "runtime-router-suite",
+        "minimum_score": 100,
+        "scenarios": [scenario],
+    }
+    report = asyncio.run(TrajectoryEvaluator(
+        gateway=_RouterGateway(),
+        live_tool_session_factory=IsolatedTrajectoryRuntimeFactory(),
+    ).evaluate_suite(suite, mode="live"))
+
+    assert report.passed
+    assert report.metrics["routing_accuracy"] == 1
+    assert all(item.passed for item in report.scenarios[0].checks)
+    assert "runtime_fixture" not in json.dumps(report.to_dict(), ensure_ascii=False)
+
+
+def test_matrix_repetitions_open_fresh_router_sessions():
+    scenario = _scenario("live-router-ambiguous-intent")
+    suite = {
+        "schema_version": "1.0",
+        "suite_id": "runtime-router-matrix-suite",
+        "minimum_score": 100,
+        "scenarios": [scenario],
+    }
+    matrix = {
+        "schema_version": "1.0",
+        "matrix_id": "runtime-router-isolation-matrix",
+        "tasks": {"router.ambiguous": ["alpha"]},
+        "repetitions": 2,
+        "cohorts": ["daming-core"],
+        "minimum_review_coverage": 1.0,
+    }
+    result = asyncio.run(TrajectoryMatrixRunner(
+        gateway=_RouterGateway(strict=True),
+        live_tool_session_factory=IsolatedTrajectoryRuntimeFactory(),
+    ).evaluate(matrix, suite))
+
+    assert result.passed
+    assert len(result.cells) == 1
+    assert result.cells[0].runs == 2
+    assert result.cells[0].passed_runs == 2
+    assert result.cells[0].routing_accuracy == 1
+
+
 class _ActionLLM:
     def __init__(self):
         self.calls = 0

@@ -4009,7 +4009,7 @@ npm run build
 
 真实 Provider 配置必须留在 Git 忽略文件中，运行报告也不得提交。矩阵只有在重复运行证据稳定且完成人工复核后才能标记晋级批准；没有人工复核时必须保持 `approved = false`，即使所有 Cell 都通过也不能声称模型已获批准。
 
-## 隔离真实轨迹 Fixture 开发指南（v0.49.0）
+## 隔离真实轨迹 Fixture 开发指南（v0.50.0）
 
 ### 最小 Fixture 示例
 
@@ -4055,10 +4055,39 @@ npm run build
 
 Memory 场景在 `memory.records` 中声明受限结构化记录，并在 `memory.retrieval` 中声明查询、实体与数量/字符预算。不要把预期结果直接复制成 scripted result；终局工具应通过 `equals_tool_result` 或 receipt 校验引用真实召回结果。
 
+### Router Fixture 与执行边界
+
+Router 场景在 `runtime_fixture.router` 中声明：
+
+```json
+{
+  "router": {
+    "agents": [
+      {"id": "central_router", "name": "Central Router", "rank": 15, "location_id": "capital", "role": "coordinator", "agent_type": "institution", "superior_id": null, "personality_seed": "steady", "enabled": true},
+      {"id": "petition_intake", "name": "Petition Intake", "rank": 1, "location_id": "capital", "role": "intake", "agent_type": "institution", "superior_id": "central_router", "personality_seed": "steady", "enabled": true},
+      {"id": "hubu", "name": "Finance Office", "rank": 10, "location_id": "capital", "role": "finance", "agent_type": "institution", "superior_id": "central_router", "personality_seed": "steady", "enabled": true}
+    ],
+    "request": {
+      "source_agent_id": "petition_intake",
+      "action": "route_petition",
+      "content": "Verify treasury grain reserve accounts.",
+      "original_intent": "Route by institutional responsibility.",
+      "urgency": "normal",
+      "intent_id": "router-eval-intent",
+      "chain_id": "router-eval-chain"
+    }
+  }
+}
+```
+
+至少声明两个 Agent；全部 ID 必须唯一，上级必须存在且层级不得自引用或成环，request source 必须存在并启用。用于预期选择的目标必须进入生产 Router 的最多 12 个候选中，并与 source 在启用层级图中可达。
+
+外层评测模型只调用一次 `route_intent`。runtime 的一次性 replay adapter 把该模型已经选择的目标转换为生产 Router 的 `wake_agent` FC，不进行第二次外部模型调用。成功结果必须来自 `RouterCommand.target`；拒绝结果不得转发 `RouterAgent.dead_letters`。测试边界止于 `RouterAgent → RouterCommand`，不要把它描述为 Orchestrator 投递或 Agent 唤醒完成。
+
 ### CLI
 
 ```powershell
-# 单 Suite：为每个场景打开独立 World/Memory session
+# 单 Suite：为每个场景打开独立 World/Memory/Router session
 python -m multiagent_framework.trajectory_evaluation `
   tests/evals/daming_live_trajectory_scenarios.json `
   --mode live `
@@ -4084,7 +4113,7 @@ python -m multiagent_framework.trajectory_matrix `
 3. 每次 evaluator 执行必须打开新 session。不要缓存 `_TrajectoryRuntimeSession`、`WorldState`、Memory Store 或临时数据库，也不要在矩阵 repetition 之间复用 executor。
 4. World 变更必须走原子 `WorldCommandBus`，并用经济不变量验证统一价值锚；不要直接改 SQLite 或伪造 `_evaluation_evidence`。
 5. 终局 receipt 必须核验当前会话中的先前结果。新增工具时同时补充白名单、参数边界、脱敏失败、真实执行测试和 session 隔离测试。
-6. Router 当前只是受控 receipt。接入生产 Router executor 前，测试和文档必须明确该边界。
+6. Router receipt 必须来自生产 `RouterCommand`；replay adapter 不得触发第二次 Provider 调用。测试和文档必须明确当前只覆盖 `RouterAgent → RouterCommand`，不覆盖 Orchestrator 投递和后续世界副作用。
 
 ### 回归命令
 
@@ -4093,6 +4122,7 @@ python -m pytest -q -p no:cacheprovider `
   tests/unit/test_trajectory_runtime.py `
   tests/unit/test_trajectory_evaluation.py `
   tests/unit/test_trajectory_matrix.py `
+  tests/unit/test_router.py `
   tests/unit/test_economic_invariants.py
 python -m pytest -q -p no:cacheprovider tests/unit
 python -m pytest -q -p no:cacheprovider tests/integration

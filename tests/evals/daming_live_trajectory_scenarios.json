@@ -253,7 +253,108 @@
         },
         "temperature": 0,
         "runtime_fixture": {
-          "schema_version": "1.0"
+          "schema_version": "1.0",
+          "router": {
+            "agents": [
+              {
+                "id": "central_router",
+                "name": "Central Router",
+                "rank": 15,
+                "location_id": "capital",
+                "role": "coordinator",
+                "agent_type": "institution",
+                "superior_id": null,
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "petition_intake",
+                "name": "Petition Intake",
+                "rank": 1,
+                "location_id": "capital",
+                "role": "intake",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "hubu",
+                "name": "Finance Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "finance",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "libu_personnel",
+                "name": "Personnel Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "personnel",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "libu_rites",
+                "name": "Rites Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "rites",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "bingbu",
+                "name": "Military Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "military",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "xingbu",
+                "name": "Justice Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "justice",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              },
+              {
+                "id": "gongbu",
+                "name": "Works Office",
+                "rank": 10,
+                "location_id": "capital",
+                "role": "public_works",
+                "agent_type": "institution",
+                "superior_id": "central_router",
+                "personality_seed": "steady",
+                "enabled": true
+              }
+            ],
+            "request": {
+              "source_agent_id": "petition_intake",
+              "action": "route_petition",
+              "content": "Verify treasury grain reserve accounts before relief allocation.",
+              "original_intent": "Route petition by institutional responsibility.",
+              "urgency": "normal",
+              "intent_id": "router-eval-intent",
+              "chain_id": "router-eval-chain"
+            }
+          }
         }
       },
       "cohorts": [
