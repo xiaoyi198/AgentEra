@@ -1,0 +1,2776 @@
+{
+  "schema_version": "1.0",
+  "resources": [
+    {
+      "name": "维护配额",
+      "unit": "点",
+      "kind": "asset",
+      "default_quantity": 0,
+      "min_quantity": 0,
+      "max_quantity": null,
+      "anchor_rate": 0.5,
+      "metadata": {}
+    },
+    {
+      "name": "压力壳完整度",
+      "unit": "%",
+      "kind": "metric",
+      "default_quantity": 50,
+      "min_quantity": 0,
+      "max_quantity": 100,
+      "anchor_rate": null,
+      "metadata": {}
+    }
+  ],
+  "entities": [
+    {
+      "id": "沧渊深海栖站",
+      "type": "location",
+      "name": "沧渊深海栖站",
+      "description": "一座位于海沟边缘、依靠压力壳与声学中继维持生存的独立深海栖站。",
+      "current_status": "耐压戒备",
+      "metadata": {
+        "x": 1200,
+        "y": 200,
+        "tags": [
+          "abyssal",
+          "defense-hub"
+        ]
+      }
+    },
+    {
+      "id": "abyssal_garrison",
+      "type": "organization",
+      "name": "深海维护队",
+      "description": "负责栖站巡检、补给与深海预警的组织实体。",
+      "current_status": "深潜值守",
+      "metadata": {
+        "x": 1140,
+        "y": 250
+      }
+    },
+    {
+      "id": "abyssal_watchtower",
+      "type": "location",
+      "name": "海沟声呐阵列",
+      "description": "负责深海观测、声学通信与先期预警的前沿地点。",
+      "current_status": "持续监听",
+      "metadata": {
+        "x": 1320,
+        "y": 120
+      }
+    },
+    {
+      "id": "abyssal_caravan",
+      "type": "organization",
+      "name": "潜航补给队",
+      "description": "往来栖站与海面母港的潜航贸易与补给组织。",
+      "current_status": "等待通行",
+      "metadata": {
+        "x": 1050,
+        "y": 340
+      }
+    }
+  ],
+  "inventory": [
+    {
+      "entity_id": "沧渊深海栖站",
+      "category": "维护配额",
+      "item_name": "维护配额",
+      "quantity": 200,
+      "description": "栖站流通券"
+    }
+  ],
+  "entity_values": [
+    {
+      "entity_id": "沧渊深海栖站",
+      "name": "压力壳完整度",
+      "kind": "metric",
+      "value": 65,
+      "description": "当前生存保障"
+    }
+  ],
+  "relationship_types": [
+    {
+      "relationship_type_id": "abyssal_command",
+      "display_name": "指挥关系",
+      "description": "组织或指挥节点对下属单位的有向调度与责任关系。",
+      "direction": "directed",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 80,
+      "default_visibility": "public",
+      "allow_expiry": false,
+      "dimensions": [],
+      "style": {
+        "label": "令",
+        "color": "#b65a4a",
+        "dashed": false,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "authority"
+      }
+    },
+    {
+      "relationship_type_id": "abyssal_trust",
+      "display_name": "信任",
+      "description": "双方对等的信誉与合作预期，可随时间到期或重新评估。",
+      "direction": "undirected",
+      "minimum_strength": -100,
+      "maximum_strength": 100,
+      "default_strength": 0,
+      "default_visibility": "limited",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "personal",
+          "display_name": "人际信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对具体成员与行动者的信任。"
+        },
+        {
+          "dimension_id": "institutional",
+          "display_name": "制度信任",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "对组织承诺和规则的信任。"
+        }
+      ],
+      "style": {
+        "label": "信",
+        "color": "#4f9d83",
+        "dashed": false,
+        "marker": "arrow"
+      },
+      "metadata": {
+        "category": "social"
+      }
+    },
+    {
+      "relationship_type_id": "abyssal_rivalry",
+      "display_name": "竞争",
+      "description": "两个实体围绕资源、权力或目标形成的对等竞争关系。",
+      "direction": "undirected",
+      "minimum_strength": 0,
+      "maximum_strength": 100,
+      "default_strength": 40,
+      "default_visibility": "public",
+      "allow_expiry": true,
+      "dimensions": [
+        {
+          "dimension_id": "intensity",
+          "display_name": "竞争强度",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 40,
+          "description": "冲突与资源争夺的综合程度。"
+        }
+      ],
+      "style": {
+        "label": "竞",
+        "color": "#d17a45",
+        "dashed": true,
+        "marker": "closed"
+      },
+      "metadata": {
+        "category": "conflict"
+      }
+    }
+  ],
+  "relations": [
+    {
+      "parent_id": "abyssal_garrison",
+      "child_id": "abyssal_watchtower",
+      "rel_type": "abyssal_command",
+      "strength": 92,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": null,
+      "values": {},
+      "note": "守军直接指挥瞭望塔的轮值与预警。",
+      "metadata": {
+        "source": "example_abyssal"
+      },
+      "relation_type": null
+    },
+    {
+      "parent_id": "abyssal_garrison",
+      "child_id": "abyssal_caravan",
+      "rel_type": "abyssal_trust",
+      "strength": 36,
+      "visibility": "limited",
+      "starts_at": 0,
+      "expires_at": 15552000,
+      "values": {
+        "personal": 28,
+        "institutional": 44
+      },
+      "note": "一个交易周期内的有限合作信任。",
+      "metadata": {
+        "review_after_days": 180
+      },
+      "relation_type": null
+    },
+    {
+      "parent_id": "abyssal_garrison",
+      "child_id": "abyssal_caravan",
+      "rel_type": "abyssal_rivalry",
+      "strength": 58,
+      "visibility": "public",
+      "starts_at": 0,
+      "expires_at": 7776000,
+      "values": {
+        "intensity": 58
+      },
+      "note": "双方对稀缺运力和通行配额存在阶段性竞争。",
+      "metadata": {
+        "review_after_days": 90
+      },
+      "relation_type": null
+    }
+  ],
+  "agents": [
+    {
+      "id": "栖站指挥官",
+      "name": "栖站指挥官",
+      "rank": 10,
+      "location_id": "沧渊深海栖站",
+      "role": "player",
+      "agent_type": "official",
+      "superior_id": null,
+      "personality_seed": "沉着",
+      "enabled": true,
+      "actor_id": "abyssal_commander"
+    },
+    {
+      "id": "潜航工程师",
+      "name": "潜航工程官",
+      "rank": 2,
+      "location_id": "沧渊深海栖站",
+      "role": "official",
+      "agent_type": "official",
+      "superior_id": "栖站指挥官",
+      "personality_seed": "沉着",
+      "enabled": true,
+      "actor_id": "abyssal_guard"
+    }
+  ],
+  "initial_events": [
+    {
+      "event_id": "abyssal_opening_breach",
+      "event_type": "abyssal_security_report",
+      "severity": 7,
+      "target_agents": [
+        "栖站指挥官"
+      ],
+      "initial_payload": {
+        "issue_type_id": "abyssal_security_report",
+        "type": "abyssal_security_report",
+        "source_kind": "agent",
+        "source_id": "潜航工程师",
+        "from": "潜航工程师",
+        "title": "压力平衡环破损报告",
+        "summary": "潜航工程师报告海沟外壁压载管线泄漏，现有读数仍有盲区，需要指挥官决定是否立即深潜修复巡检。",
+        "evidence": [
+          {
+            "kind": "patrol_report",
+            "summary": "外壁压力下降，但裂口位置尚未完全确认。"
+          }
+        ],
+        "urgency": "high",
+        "deadline_days": 3
+      }
+    }
+  ],
+  "ongoing_events": [],
+  "personas": {
+    "沉着": "你沉着谨慎，先核实情报，再采取可执行的生存保障行动。"
+  },
+  "prompts": {
+    "official_template": "你是{name}，驻守{location}。{personality}\nActor={actor_id}，需求={actor_needs}，目标={actor_goals}，状态={actor_states}。\n你的直属上级是{superior}。先查询世界状态，再提交明确行动。"
+  },
+  "random_events": [],
+  "time_rules": [
+    {
+      "rule_id": "abyssal_default",
+      "action_types": [
+        "*"
+      ],
+      "base_days": 0.25,
+      "min_days": 0.25,
+      "max_days": 90,
+      "severity_factor": 2,
+      "workload_factor": 1,
+      "resource_factor": 0.01,
+      "distance_factor": 1,
+      "success_factor": 0.8,
+      "priority": 0,
+      "enabled": true
+    }
+  ],
+  "gameplay": {
+    "player": {
+      "identity_id": "abyssal_commander",
+      "display_name": "栖站指挥官",
+      "actor_id": "abyssal_commander",
+      "controlled_objects": [
+        {
+          "kind": "entity",
+          "id": "沧渊深海栖站",
+          "mode": "direct",
+          "display_name": "沧渊深海栖站"
+        },
+        {
+          "kind": "agent",
+          "id": "栖站指挥官",
+          "mode": "direct",
+          "display_name": "栖站指挥官"
+        },
+        {
+          "kind": "agent",
+          "id": "潜航工程师",
+          "mode": "command",
+          "display_name": "潜航工程官"
+        }
+      ]
+    }
+  },
+  "actions": [
+    {
+      "action_id": "abyssal_patrol",
+      "display_name": "组织深潜修复巡检",
+      "description": "由玩家控制栖站发起深潜修复巡检，消耗按统一价值锚计算的维护配额并提高压力壳完整度。",
+      "enabled": true,
+      "parameters": [
+        {
+          "name": "alert_gain",
+          "type": "number",
+          "display_name": "安全系数提升",
+          "required": false,
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20
+        }
+      ],
+      "target": {
+        "kind": "entity",
+        "required": true,
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ],
+        "entity_types": [
+          "location"
+        ],
+        "controlled_only": true
+      },
+      "permissions": {
+        "control_modes": [
+          "direct"
+        ],
+        "control_kinds": [
+          "entity"
+        ],
+        "control_ids": [
+          "沧渊深海栖站"
+        ],
+        "actor_ids": [
+          "abyssal_commander"
+        ]
+      },
+      "preconditions": [
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "维护配额",
+          "operator": "gte",
+          "base_value": 10
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "压力壳完整度",
+          "operator": "lte",
+          "value": 95
+        }
+      ],
+      "costs": [
+        {
+          "entity_id": "$control",
+          "resource_name": "维护配额",
+          "base_value": 10,
+          "reason": "组织深潜修复巡检"
+        }
+      ],
+      "duration": {
+        "action_type": "abyssal_patrol",
+        "proposed_days": 1,
+        "severity": 4,
+        "resource_value": 10,
+        "distance_days": 0
+      },
+      "cooldown": {
+        "days": 3,
+        "scope": "control_target"
+      },
+      "result": {
+        "mode": "composite",
+        "results": [
+          {
+            "mode": "world_commands",
+            "effects": [
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "压力壳完整度",
+                "quantity_delta": "$param.alert_gain",
+                "reason": "深潜修复巡检提升警戒"
+              }
+            ]
+          },
+          {
+            "mode": "ongoing_event",
+            "effect": {
+              "effect_type": "create_ongoing_event",
+              "entity_id": "$target",
+              "event_type": "patrol",
+              "description": "深潜修复巡检队正在检查深海对接潜航通道与哨点",
+              "duration_days": "$duration_days",
+              "expected_result": {
+                "new_status": "深潜修复巡检完成，深海警戒稳定"
+              }
+            }
+          },
+          {
+            "mode": "wake_agent",
+            "agent_id": "潜航工程师",
+            "payload": {
+              "description": "执行玩家下达的深潜修复巡检任务",
+              "alert_gain": "$param.alert_gain",
+              "target_id": "$target"
+            }
+          },
+          {
+            "mode": "emit_event",
+            "event": {
+              "event_type": "abyssal_patrol_started",
+              "severity": 4,
+              "target_agents": [
+                "潜航工程师"
+              ],
+              "initial_payload": {
+                "target_id": "$target",
+                "action_id": "abyssal_patrol"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "issue_types": [
+    {
+      "issue_type_id": "abyssal_security_report",
+      "display_name": "深海安全报告",
+      "description": "潜航工程师上报的深海风险事项，可由玩家选择立即巡查或持续监控。",
+      "category": "security",
+      "default_urgency": "high",
+      "default_deadline_days": 3,
+      "source": {
+        "allowed_kinds": [
+          "agent"
+        ],
+        "allowed_ids": [
+          "潜航工程师"
+        ]
+      },
+      "match": {
+        "payload_types": [
+          "abyssal_security_report"
+        ],
+        "source_ids": [
+          "潜航工程师"
+        ],
+        "default_for_player_reports": false
+      },
+      "evidence": [
+        {
+          "kind": "patrol_report",
+          "display_name": "巡查报告",
+          "required": true
+        }
+      ],
+      "decision_requests": [
+        {
+          "request_id": "security_response",
+          "title": "决定深海应对方式",
+          "prompt": "请选择立即巡查或持续监控。",
+          "deadline_days": 2,
+          "options": [
+            {
+              "option_id": "patrol",
+              "display_name": "立即巡查",
+              "action_id": "abyssal_patrol",
+              "control_object_id": "沧渊深海栖站",
+              "target_id": "沧渊深海栖站",
+              "parameters": {
+                "alert_gain": 8
+              },
+              "resolution": {
+                "issue_status": "resolved",
+                "case_status": "resolved",
+                "summary": "已启动深海巡查"
+              }
+            },
+            {
+              "option_id": "monitor",
+              "display_name": "持续监控",
+              "resolution": {
+                "issue_status": "monitoring",
+                "case_status": "monitoring",
+                "summary": "暂不行动，继续收集情报"
+              }
+            }
+          ]
+        }
+      ],
+      "enabled": true
+    }
+  ],
+  "derived_metrics": [
+    {
+      "metric_id": "abyssal_readiness",
+      "display_name": "深海综合战备度",
+      "description": "将栖站压力壳完整度、维护 Actor 警觉属性与统一锚定库存价值组合为 0~100 的确定性战备指标。",
+      "unit": "%",
+      "precision": 1,
+      "minimum": 0,
+      "maximum": 100,
+      "audiences": [
+        "player",
+        "ui",
+        "agent",
+        "rule",
+        "objective"
+      ],
+      "missing_policy": "fail",
+      "formula": {
+        "op": "round",
+        "precision": 1,
+        "value": {
+          "op": "clamp",
+          "min": 0,
+          "max": 100,
+          "value": {
+            "op": "weighted_sum",
+            "terms": [
+              {
+                "weight": 0.55,
+                "value": {
+                  "source": "metric",
+                  "entity_id": "沧渊深海栖站",
+                  "name": "压力壳完整度"
+                }
+              },
+              {
+                "weight": 0.25,
+                "value": {
+                  "source": "actor_attribute",
+                  "entity_id": "abyssal_guard",
+                  "name": "vigilance"
+                }
+              },
+              {
+                "weight": 0.2,
+                "value": {
+                  "op": "clamp",
+                  "min": 0,
+                  "max": 100,
+                  "value": {
+                    "source": "anchored_inventory",
+                    "entity_id": "沧渊深海栖站",
+                    "name": "维护配额"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "enabled": true,
+      "metadata": {
+        "example": "P1.6",
+        "formula_role": "readiness_projection"
+      }
+    }
+  ],
+  "objectives": [
+    {
+      "objective_id": "secure_abyssal",
+      "display_name": "稳固深海防线",
+      "description": "保留足够的统一锚定资产，持续组织深潜修复巡检，并在期限前将深海综合战备度提升到安全线。",
+      "category": "primary",
+      "required": true,
+      "milestone_mode": "ordered",
+      "milestones": [
+        {
+          "milestone_id": "fund_patrols",
+          "display_name": "准备深潜修复巡检经费",
+          "description": "维护配额的锚定总价值至少达到 50。",
+          "condition": {
+            "kind": "anchored_inventory",
+            "label": "可用深潜修复巡检经费",
+            "entity_id": "沧渊深海栖站",
+            "name": "维护配额",
+            "operator": "gte",
+            "value": 50
+          }
+        },
+        {
+          "milestone_id": "complete_patrols",
+          "display_name": "完成两次深潜修复巡检",
+          "description": "通过通用行动回执确认至少两次深潜修复巡检成功执行。",
+          "condition": {
+            "kind": "action_count",
+            "label": "深潜修复巡检成功次数",
+            "action_id": "abyssal_patrol",
+            "control_object_id": "沧渊深海栖站",
+            "target_id": "沧渊深海栖站",
+            "operator": "gte",
+            "value": 1
+          }
+        }
+      ],
+      "completion": {
+        "kind": "derived_metric",
+        "label": "综合战备度达到安全线",
+        "name": "abyssal_readiness",
+        "operator": "gte",
+        "value": 55
+      },
+      "enabled": true,
+      "order": 0
+    },
+    {
+      "objective_id": "abyssal_deadline_failed",
+      "display_name": "深海防线逾期失守",
+      "description": "第 15 天到来时综合战备度仍低于安全线，将触发失败结局。",
+      "category": "failure",
+      "required": false,
+      "milestone_mode": "independent",
+      "milestones": [],
+      "completion": {
+        "op": "all",
+        "label": "期限已到且警戒不足",
+        "conditions": [
+          {
+            "kind": "sim_day",
+            "label": "到达生存保障期限",
+            "operator": "gte",
+            "value": 15
+          },
+          {
+            "kind": "derived_metric",
+            "label": "综合战备度低于安全线",
+            "name": "abyssal_readiness",
+            "operator": "lt",
+            "value": 85
+          }
+        ]
+      },
+      "enabled": true,
+      "order": 100
+    }
+  ],
+  "endings": [
+    {
+      "ending_id": "abyssal_safe",
+      "display_name": "深海安定",
+      "description": "深潜修复巡检体系已经稳定运转，栖站具备足够警戒能力，深海进入可持续生存保障状态。",
+      "outcome": "victory",
+      "trigger": {
+        "objective_ids": [
+          "secure_abyssal"
+        ],
+        "operator": "all"
+      },
+      "priority": 50,
+      "enabled": true
+    },
+    {
+      "ending_id": "abyssal_overrun",
+      "display_name": "防线失守",
+      "description": "生存保障期限耗尽而警戒仍然不足，栖站失去了主动控制深海局势的机会。",
+      "outcome": "defeat",
+      "trigger": {
+        "objective_ids": [
+          "abyssal_deadline_failed"
+        ],
+        "operator": "all"
+      },
+      "priority": 100,
+      "enabled": true
+    }
+  ],
+  "ui_manifest": {
+    "title": "沧渊深海栖站指挥台",
+    "subtitle": "守住对接潜航通道、调度深潜修复巡检并处理深海态势",
+    "brand": {
+      "short_mark": "渊"
+    },
+    "terminology": {
+      "player": "栖站指挥官",
+      "issue": "深海事项",
+      "issue_plural": "深海事项列表",
+      "case": "处置档案",
+      "decision": "处置决定",
+      "evidence": "态势证据",
+      "source": "报告来源",
+      "deadline": "处置期限",
+      "message": "深海消息",
+      "in_transit": "传递途中",
+      "world": "深海世界",
+      "entity": "实体",
+      "entities": "实体列表",
+      "relations": "关系网络",
+      "objective": "战略目标",
+      "objectives": "战略目标列表",
+      "dashboard": "指挥台",
+      "debug": "运行诊断",
+      "status": "当前状态",
+      "content": "详细内容",
+      "urgency": "紧急程度",
+      "created_at": "创建时间",
+      "issue_type": "事项类型",
+      "inventory": "库存与价值",
+      "metrics": "状态指标",
+      "parameters": "行动参数",
+      "ongoing_events": "进行中事件",
+      "location": "所在地点",
+      "search": "搜索深海信息",
+      "publish_message": "发布深海消息"
+    },
+    "navigation": [
+      {
+        "nav_id": "abyssal_dashboard",
+        "surface": "main",
+        "view": "dashboard",
+        "label": "指挥台",
+        "icon": "⌂",
+        "order": 0,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_world",
+        "surface": "main",
+        "view": "world",
+        "label": "深海世界",
+        "icon": "◎",
+        "order": 10,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_relations",
+        "surface": "main",
+        "view": "relations",
+        "label": "关系网络",
+        "icon": "◇",
+        "order": 20,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_debug",
+        "surface": "main",
+        "view": "debug",
+        "label": "运行诊断",
+        "icon": "⚙",
+        "order": 30,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_gameplay",
+        "surface": "shell",
+        "view": "gameplay",
+        "label": "进入模拟",
+        "icon": "▶",
+        "order": 0,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_editor",
+        "surface": "shell",
+        "view": "editor",
+        "label": "世界编辑器",
+        "icon": "✎",
+        "order": 10,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_dlc",
+        "surface": "shell",
+        "view": "dlc_studio",
+        "label": "DLC 工作室",
+        "icon": "▦",
+        "order": 20,
+        "visible": true
+      },
+      {
+        "nav_id": "abyssal_assistant",
+        "surface": "shell",
+        "view": "assistant",
+        "label": "天机助手",
+        "icon": "✦",
+        "order": 30,
+        "visible": true
+      }
+    ],
+    "dashboard": {
+      "layout": "three_column",
+      "widgets": [
+        {
+          "widget_id": "abyssal_objectives",
+          "kind": "objectives",
+          "region": "top",
+          "order": 0,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_readiness",
+          "kind": "derived_metrics",
+          "region": "top",
+          "order": 5,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_issues",
+          "kind": "issue_list",
+          "region": "left",
+          "order": 10,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_issue_detail",
+          "kind": "issue_detail",
+          "region": "main",
+          "order": 20,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_command",
+          "kind": "player_message",
+          "region": "main",
+          "order": 30,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_outcome_feedback",
+          "kind": "outcome_feedback",
+          "region": "right",
+          "order": 35,
+          "visible": true
+        },
+        {
+          "widget_id": "abyssal_transit",
+          "kind": "in_transit",
+          "region": "right",
+          "order": 40,
+          "visible": true
+        }
+      ]
+    },
+    "issue_page": {
+      "list_fields": [
+        "title",
+        "source",
+        "urgency",
+        "created_at",
+        "status",
+        "issue_type"
+      ],
+      "detail_fields": [
+        "source",
+        "summary",
+        "status",
+        "deadline",
+        "evidence",
+        "decisions",
+        "urgency"
+      ],
+      "show_resolved": false
+    },
+    "entity_detail": {
+      "visible_fields": [
+        "name",
+        "type",
+        "description",
+        "current_status",
+        "updated_at"
+      ],
+      "sections": [
+        "summary",
+        "ongoing_events",
+        "location",
+        "inventory",
+        "metrics"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "capability_id": "abyssal_wait",
+      "display_name": "等待并观察",
+      "description": "结束当前意图而不修改世界状态，适合暂无可靠行动时保持观察。",
+      "handler": "noop",
+      "audiences": [
+        "player",
+        "agent",
+        "router"
+      ],
+      "aliases": [
+        "wait_abyssal"
+      ],
+      "target": {
+        "kind": "none",
+        "mode": "none",
+        "allowed_ids": []
+      },
+      "parameters": [],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": false,
+        "content_label": "观察备注",
+        "content_placeholder": "可选：记录本轮暂不行动的原因。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "abyssal_report",
+      "display_name": "发送深海报告",
+      "description": "玩家向潜航工程官发送一条经过目标校验的单点报告。",
+      "handler": "message",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "report_abyssal"
+      ],
+      "target": {
+        "kind": "agent",
+        "mode": "required",
+        "allowed_ids": [
+          "潜航工程师"
+        ]
+      },
+      "parameters": [],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": true,
+        "content_label": "报告内容",
+        "content_placeholder": "说明需要潜航工程官关注的深海情况。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "abyssal_command",
+      "display_name": "广播深海命令",
+      "description": "向一个或多个已注册维护 Agent 广播命令；示例包当前仅开放潜航工程官。",
+      "handler": "broadcast",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "command_abyssal"
+      ],
+      "target": {
+        "kind": "agent",
+        "mode": "multiple",
+        "allowed_ids": [
+          "潜航工程师"
+        ]
+      },
+      "parameters": [],
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": true,
+        "content_label": "命令内容",
+        "content_placeholder": "输入需要立即传达的深海命令。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "abyssal_operation",
+      "display_name": "执行深海行动",
+      "description": "由当前 Agent 或玩家指定沧渊深海栖站，交给世界行动执行链处理。",
+      "handler": "world_action",
+      "audiences": [
+        "player",
+        "agent",
+        "router"
+      ],
+      "aliases": [
+        "operate_abyssal"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "operation_type",
+          "type": "string",
+          "display_name": "行动类型",
+          "description": "用于审计和提示世界模拟器的行动分类。",
+          "required": false,
+          "default": "inspection",
+          "options": [
+            "inspection",
+            "repair",
+            "supply"
+          ]
+        }
+      ],
+      "default_urgency": "normal",
+      "input": {
+        "content_required": true,
+        "content_label": "行动说明",
+        "content_placeholder": "详细描述要在沧渊深海栖站执行的行动。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "launch_abyssal_patrol",
+      "display_name": "发起深潜修复巡检",
+      "description": "调用 abyssal_patrol 契约 Action，统一执行权限、价值锚成本、冷却、结果和事件。",
+      "handler": "contract_action",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "patrol_abyssal"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "alert_gain",
+          "type": "number",
+          "display_name": "警戒提升",
+          "description": "深潜修复巡检完成后计划提升的压力壳完整度，范围 1 到 20。",
+          "required": false,
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20
+        }
+      ],
+      "action_id": "abyssal_patrol",
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": false,
+        "content_label": "深潜修复巡检备注",
+        "content_placeholder": "可选：补充本次深潜修复巡检重点。"
+      },
+      "enabled": true
+    }
+  ],
+  "actors": [
+    {
+      "actor_id": "abyssal_commander",
+      "display_name": "栖站指挥官",
+      "description": "玩家控制的深海生存保障总负责人。",
+      "actor_type": "person",
+      "entity_id": "沧渊深海栖站",
+      "enabled": true,
+      "attributes": {
+        "rank": 10,
+        "command": 90,
+        "resilience": 80
+      },
+      "traits": [
+        {
+          "trait_id": "calm_commander",
+          "display_name": "沉着指挥",
+          "description": "优先核实情报并分配可执行任务。",
+          "intensity": 0.9,
+          "tags": [
+            "abyssal_command",
+            "defense"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "situational_awareness",
+          "display_name": "态势掌握",
+          "description": "维持对深海威胁和补给状况的认知。",
+          "current": 70,
+          "target": 95,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 95
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "secure_abyssal",
+          "display_name": "稳定深海",
+          "description": "保持栖站安全并避免补给崩溃。",
+          "status": "active",
+          "priority": 100,
+          "progress": 15,
+          "target": 100
+        }
+      ],
+      "capability_ids": [
+        "abyssal_report",
+        "abyssal_command",
+        "abyssal_operation",
+        "launch_abyssal_patrol"
+      ],
+      "identities": [
+        {
+          "identity_id": "abyssal_commander",
+          "display_name": "栖站指挥官",
+          "kind": "role",
+          "public": true,
+          "description": "沧渊深海栖站最高生存保障负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "abyssal_garrison",
+          "role": "commander",
+          "status": "active",
+          "rank": 10,
+          "primary": true,
+          "description": "统领深海维护队。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "duty_phase": "abyssal_command"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "abyssal_guard",
+      "display_name": "潜航工程师",
+      "description": "执行深潜修复巡检、核验警情并向指挥官汇报。",
+      "actor_type": "person",
+      "entity_id": "沧渊深海栖站",
+      "enabled": true,
+      "attributes": {
+        "rank": 2,
+        "vigilance": 85,
+        "stamina": 75
+      },
+      "traits": [
+        {
+          "trait_id": "vigilant_guard",
+          "display_name": "谨慎维护",
+          "description": "面对模糊威胁时先侦察再处置。",
+          "intensity": 0.85,
+          "tags": [
+            "patrol",
+            "report"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "supply",
+          "display_name": "巡检补给",
+          "description": "深潜修复巡检和警戒所需的补给充足度。",
+          "current": 60,
+          "target": 85,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 80
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "inspect_north",
+          "display_name": "核查北侧踪迹",
+          "description": "完成北侧巡查并提交可信报告。",
+          "status": "active",
+          "priority": 90,
+          "progress": 0,
+          "target": 10
+        }
+      ],
+      "capability_ids": [
+        "abyssal_operation"
+      ],
+      "identities": [
+        {
+          "identity_id": "outpost_guard",
+          "display_name": "潜航工程师",
+          "kind": "role",
+          "public": true,
+          "description": "深海维护队一线维护负责人。"
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "abyssal_garrison",
+          "role": "guard_officer",
+          "status": "active",
+          "rank": 2,
+          "primary": true,
+          "description": "负责栖站巡检。"
+        }
+      ],
+      "states": {
+        "alert": true,
+        "patrol_status": "ready"
+      },
+      "metadata": {
+        "example_component_coverage": true
+      }
+    },
+    {
+      "actor_id": "abyssal_quartermaster",
+      "display_name": "军需记录官",
+      "description": "Actor-only 示例：参与世界模拟但暂不创建自主 LLM Agent。",
+      "actor_type": "person",
+      "entity_id": "沧渊深海栖站",
+      "enabled": true,
+      "attributes": {
+        "rank": 1,
+        "logistics": 88
+      },
+      "traits": [
+        {
+          "trait_id": "methodical",
+          "display_name": "条理严谨",
+          "description": "重视库存账目和价值锚一致性。",
+          "intensity": 0.8,
+          "tags": [
+            "logistics"
+          ]
+        }
+      ],
+      "needs": [
+        {
+          "need_id": "inventory_accuracy",
+          "display_name": "账实一致",
+          "current": 75,
+          "target": 100,
+          "minimum": 0,
+          "maximum": 100,
+          "priority": 90
+        }
+      ],
+      "goals": [
+        {
+          "goal_id": "reconcile_assets",
+          "display_name": "核对锚定资产",
+          "status": "active",
+          "priority": 80,
+          "progress": 20,
+          "target": 100
+        }
+      ],
+      "capability_ids": [],
+      "identities": [
+        {
+          "identity_id": "quartermaster",
+          "display_name": "军需记录官",
+          "kind": "role",
+          "public": true
+        }
+      ],
+      "memberships": [
+        {
+          "organization_id": "abyssal_garrison",
+          "role": "quartermaster",
+          "status": "active",
+          "rank": 1,
+          "primary": true
+        }
+      ],
+      "states": {
+        "ledger_open": true
+      },
+      "metadata": {
+        "actor_only": true
+      }
+    }
+  ],
+  "causal_condition_groups": [
+    {
+      "group_id": "abyssal_response_readiness",
+      "name": "深海应急响应就绪条件",
+      "description": "演示派生指标、实体标签/字段、Actor 属性/状态/特质/组织成员关系、无向关系反向匹配和有界历史事件。",
+      "conditions": [
+        {
+          "kind": "derived_metric",
+          "name": "abyssal_readiness",
+          "operator": "gte",
+          "value": 70
+        },
+        {
+          "kind": "entity_tag",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "entity_field",
+          "entity_id": "沧渊深海栖站",
+          "field": "metadata.x",
+          "operator": "gte",
+          "value": 1000
+        },
+        {
+          "kind": "actor_attribute",
+          "entity_id": "abyssal_guard",
+          "name": "vigilance",
+          "operator": "gte",
+          "value": 80
+        },
+        {
+          "kind": "actor_state",
+          "entity_id": "abyssal_guard",
+          "name": "patrol_status",
+          "operator": "eq",
+          "value": "ready"
+        },
+        {
+          "kind": "actor_trait",
+          "entity_id": "abyssal_guard",
+          "name": "vigilant_guard",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "actor_membership",
+          "entity_id": "abyssal_guard",
+          "name": "abyssal_garrison",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "relationship",
+          "entity_id": "abyssal_caravan",
+          "target_entity_id": "abyssal_garrison",
+          "name": "abyssal_trust",
+          "field": "strength",
+          "operator": "gte",
+          "value": 30
+        },
+        {
+          "kind": "event_history",
+          "entity_id": "潜航工程师",
+          "name": "patrol_report",
+          "field": "count",
+          "window_days": 30,
+          "operator": "gte",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "group_id": "abyssal_stabilization_ready",
+      "name": "深海稳定化条件",
+      "description": "演示前序世界效果可被实体状态、持续事件、阶段、目标公开状态和锚定库存聚合条件观察。",
+      "conditions": [
+        {
+          "kind": "entity_state",
+          "entity_id": "沧渊深海栖站",
+          "operator": "eq",
+          "value": "应急动员"
+        },
+        {
+          "kind": "ongoing_event",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_relief_operation",
+          "field": "exists",
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "kind": "phase",
+          "field": "phase_id",
+          "operator": "eq",
+          "value": "abyssal_response"
+        },
+        {
+          "kind": "objective_progress",
+          "entity_id": "secure_abyssal",
+          "field": "progress",
+          "operator": "exists"
+        },
+        {
+          "kind": "aggregate_metric",
+          "entity_id": "沧渊深海栖站",
+          "name": "维护配额",
+          "field": "anchored_inventory",
+          "aggregate": "sum",
+          "filters": {
+            "tag": "abyssal"
+          },
+          "operator": "gte",
+          "value": 50
+        }
+      ]
+    },
+    {
+      "group_id": "abyssal_intelligence_confirmed",
+      "name": "深海情报核验完成条件",
+      "description": "演示隐藏世界真相、Actor 主观认知、玩家知识元数据、新鲜度、保密级别与调查状态的组合判断。",
+      "conditions": [
+        {
+          "kind": "world_truth",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "actor_belief",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "target_entity_id": "abyssal_guard",
+          "field": "confidence",
+          "operator": "gte",
+          "value": 0.5
+        },
+        {
+          "kind": "player_knowledge",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "active"
+        },
+        {
+          "kind": "knowledge_confidence",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "target_entity_id": "player",
+          "operator": "gte",
+          "value": 0.8,
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_freshness",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "fresh",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "knowledge_secrecy",
+          "entity_id": "沧渊深海栖站",
+          "name": "abyssal_route_status",
+          "target_entity_id": "player",
+          "operator": "eq",
+          "value": "restricted",
+          "filters": {
+            "layer": "player_knowledge"
+          }
+        },
+        {
+          "kind": "investigation",
+          "entity_id": "verify_abyssal_route",
+          "target_entity_id": "player",
+          "field": "status",
+          "operator": "eq",
+          "value": "completed"
+        }
+      ]
+    }
+  ],
+  "causal_rule_templates": [
+    {
+      "template_id": "abyssal_deterministic_follow_up",
+      "name": "深海确定性后续模板",
+      "description": "统一设置一天延迟、确定触发和安全链深度，并要求模拟时间已开始。",
+      "rule": {
+        "delay_days": 1,
+        "probability": 1,
+        "severity_delta": 0,
+        "max_depth": 4,
+        "max_fires_per_chain": 1,
+        "priority": 20,
+        "enabled": true,
+        "conditions": [
+          {
+            "kind": "time",
+            "name": "sim_day",
+            "operator": "gte",
+            "value": 0
+          }
+        ]
+      }
+    }
+  ],
+  "causal_event_rules": [
+    {
+      "rule_id": "abyssal_action_to_response",
+      "source_event_types": [
+        "abyssal_patrol_started"
+      ],
+      "child_event_type": "abyssal_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "深潜修复巡检开始推动栖站应急响应"
+      },
+      "inherit_payload_keys": [
+        "target_id",
+        "action_id"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "adjust_resource",
+          "entity_id": "沧渊深海栖站",
+          "resource_name": "压力壳完整度",
+          "quantity_delta": 5,
+          "reason": "深潜修复巡检开始推动栖站应急响应"
+        }
+      ],
+      "delay_days": 1,
+      "probability": 1,
+      "max_depth": 4,
+      "max_fires_per_chain": 1,
+      "severity_delta": 1,
+      "enabled": true,
+      "priority": 120
+    },
+    {
+      "rule_id": "patrol_report_to_abyssal_response",
+      "template_id": "abyssal_deterministic_follow_up",
+      "condition_group_ids": [
+        "abyssal_response_readiness"
+      ],
+      "source_event_types": [
+        "patrol_report"
+      ],
+      "child_event_type": "abyssal_response_started",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "response",
+        "summary": "深潜修复巡检报告触发深海应急响应。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "update_status",
+          "entity_id": "沧渊深海栖站",
+          "new_status": "应急动员",
+          "reason": "深潜修复巡检报告确认需要启动深海应急响应"
+        },
+        {
+          "effect_type": "create_ongoing_event",
+          "entity_id": "沧渊深海栖站",
+          "event_type": "abyssal_relief_operation",
+          "description": "守军与补给官协同执行深海支援。",
+          "duration_days": 3,
+          "expected_result": {
+            "new_status": "持续巡检"
+          },
+          "reason": "记录跨回合持续的支援行动"
+        },
+        {
+          "effect_type": "create_entity",
+          "entity_id": "abyssal_relief_command",
+          "entity_type": "organization",
+          "name": "深海支援指挥组",
+          "description": "应急响应期间临时成立的支援组织。",
+          "current_status": "active",
+          "metadata": {
+            "tags": [
+              "abyssal",
+              "temporary-command"
+            ]
+          },
+          "resources": {
+            "维护配额": 10
+          },
+          "reason": "为应急响应建立可继续引用的临时组织实体"
+        },
+        {
+          "effect_type": "modify_relationship",
+          "operation": "upsert",
+          "parent_id": "abyssal_garrison",
+          "child_id": "abyssal_relief_command",
+          "rel_type": "abyssal_command",
+          "strength": 85,
+          "visibility": "public",
+          "starts_in_days": 0,
+          "values": {},
+          "note": "守军统一指挥临时支援组织。",
+          "metadata": {
+            "source": "causal_effect"
+          },
+          "reason": "建立守军与临时支援组织的指挥关系"
+        },
+        {
+          "effect_type": "modify_membership",
+          "operation": "upsert",
+          "actor_id": "abyssal_quartermaster",
+          "organization_id": "abyssal_relief_command",
+          "role": "quartermaster",
+          "status": "active",
+          "metadata": {
+            "temporary": true
+          },
+          "reason": "将补给官编入临时支援组织"
+        },
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "abyssal_security_report",
+          "source": {
+            "kind": "agent",
+            "id": "潜航工程师",
+            "entity_id": "沧渊深海栖站"
+          },
+          "title": "深海应急响应待决",
+          "summary": "潜航工程官请求确认深潜修复巡检与支援方案。",
+          "details": {
+            "phase": "response",
+            "organization_id": "abyssal_relief_command"
+          },
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "潜航工程师"
+            }
+          ],
+          "urgency": "high",
+          "deadline_days": 2,
+          "metadata": {
+            "generated_by": "causal_effect"
+          },
+          "reason": "把深潜修复巡检警情投影为玩家可处理的 Issue"
+        },
+        {
+          "effect_type": "declare_world_truth",
+          "entity_id": "沧渊深海栖站",
+          "knowledge_id": "abyssal_route_status",
+          "value": {
+            "open": false,
+            "risk": "blocked",
+            "cause": "landslide"
+          },
+          "source": "abyssal_sensor",
+          "confidence": 1,
+          "stale_after_days": 7,
+          "expires_in_days": 30,
+          "secrecy_level": "restricted",
+          "visibility_scopes": [],
+          "distortion": {},
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "authoritative"
+          },
+          "reason": "记录仅供权威规则使用的真实通路状态"
+        },
+        {
+          "effect_type": "set_actor_belief",
+          "entity_id": "沧渊深海栖站",
+          "knowledge_id": "abyssal_route_status",
+          "holder_id": "abyssal_guard",
+          "value": {
+            "open": "uncertain",
+            "risk": "moderate"
+          },
+          "source": "distant_observation",
+          "confidence": 0.65,
+          "stale_after_days": 3,
+          "expires_in_days": 10,
+          "secrecy_level": "confidential",
+          "visibility_scopes": [
+            "abyssal_guard"
+          ],
+          "distortion": {
+            "omitted": [
+              "cause"
+            ],
+            "bias": "underestimate"
+          },
+          "status": "active",
+          "metadata": {
+            "category": "route_intelligence",
+            "verification": "unverified"
+          },
+          "reason": "记录维护 Actor 可能失真的主观判断"
+        },
+        {
+          "effect_type": "start_investigation",
+          "investigation_id": "verify_abyssal_route",
+          "entity_id": "沧渊深海栖站",
+          "knowledge_id": "abyssal_route_status",
+          "investigator_layer": "player_knowledge",
+          "investigator_id": "player",
+          "required_progress": 2,
+          "evidence": [
+            {
+              "kind": "patrol_report",
+              "source": "潜航工程师"
+            }
+          ],
+          "result_policy": {
+            "source_layer": "world_truth",
+            "target_layer": "player_knowledge",
+            "source_holder_id": "",
+            "target_holder_id": "player",
+            "confidence_multiplier": 0.9,
+            "source": "investigation:verify_abyssal_route",
+            "secrecy_level": "restricted",
+            "distortion": {},
+            "metadata": {
+              "method": "field_verification"
+            }
+          },
+          "metadata": {
+            "category": "route_verification"
+          },
+          "reason": "启动跨事件的玩家核验流程"
+        },
+        {
+          "effect_type": "reveal_information",
+          "entity_id": "沧渊深海栖站",
+          "knowledge_id": "abyssal_relief_authorized",
+          "value": {
+            "authorized": true,
+            "organization_id": "abyssal_relief_command"
+          },
+          "source": "潜航工程师",
+          "confidence": 0.95,
+          "metadata": {
+            "phase": "response"
+          },
+          "reason": "向玩家知识状态公开支援授权结果"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "abyssal_response",
+          "metadata": {
+            "chapter": 1,
+            "label": "深海应急响应"
+          },
+          "reason": "深潜修复巡检报告已进入应急响应流程"
+        }
+      ]
+    },
+    {
+      "rule_id": "abyssal_response_to_stabilization",
+      "template_id": "abyssal_deterministic_follow_up",
+      "condition_group_ids": [
+        "abyssal_stabilization_ready"
+      ],
+      "source_event_types": [
+        "abyssal_response_started"
+      ],
+      "child_event_type": "abyssal_stabilization",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "stabilization",
+        "summary": "应急响应进入稳定化阶段。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "propagate_knowledge",
+          "source_layer": "actor_belief",
+          "target_layer": "player_knowledge",
+          "entity_id": "沧渊深海栖站",
+          "knowledge_id": "abyssal_route_status",
+          "source_holder_id": "abyssal_guard",
+          "target_holder_id": "player",
+          "confidence_multiplier": 0.6,
+          "source": "field_report",
+          "secrecy_level": "restricted",
+          "distortion": {
+            "label": "unverified"
+          },
+          "metadata": {
+            "verification": "pending"
+          },
+          "reason": "先把维护 Actor 的未核验判断传播给玩家"
+        },
+        {
+          "effect_type": "advance_investigation",
+          "investigation_id": "verify_abyssal_route",
+          "mode": "adjust",
+          "amount": 2,
+          "status": "completed",
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "reason": "现场勘察完成并触发权威结果投影"
+        },
+        {
+          "effect_type": "update_status",
+          "entity_id": "沧渊深海栖站",
+          "new_status": "持续巡检",
+          "reason": "应急响应已进入稳定化"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_abyssal",
+          "mode": "adjust",
+          "amount": 20,
+          "status": "active",
+          "reason": "应急响应进入稳定化并推进深海目标"
+        },
+        {
+          "effect_type": "unlock_action",
+          "action_id": "abyssal_patrol",
+          "scope_id": "沧渊深海栖站",
+          "reason": "稳定化阶段开放强化深潜修复巡检"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "abyssal_stabilization",
+          "metadata": {
+            "chapter": 2,
+            "label": "深海稳定化"
+          },
+          "reason": "响应链完成并进入稳定化阶段"
+        }
+      ]
+    },
+    {
+      "rule_id": "abyssal_stabilization_to_intelligence_confirmation",
+      "template_id": "abyssal_deterministic_follow_up",
+      "condition_group_ids": [
+        "abyssal_intelligence_confirmed"
+      ],
+      "source_event_types": [
+        "abyssal_stabilization"
+      ],
+      "child_event_type": "abyssal_intelligence_confirmed",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "intelligence_confirmed",
+        "summary": "调查完成，玩家获得经核验的深海补给航线情报。"
+      },
+      "inherit_payload_keys": [
+        "description"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "abyssal_security_report",
+          "source": {
+            "kind": "system",
+            "id": "causal_event",
+            "entity_id": "沧渊深海栖站"
+          },
+          "title": "深海补给航线核验完成",
+          "summary": "现场调查确认航线受阻，需要重新规划支援路径。",
+          "details": {
+            "investigation_id": "verify_abyssal_route",
+            "knowledge_id": "abyssal_route_status"
+          },
+          "evidence": [
+            {
+              "kind": "terrain_survey",
+              "result": "route_blocked"
+            }
+          ],
+          "urgency": "normal",
+          "metadata": {
+            "generated_by": "knowledge_investigation"
+          },
+          "reason": "把已核验知识转化为玩家可处理事务"
+        },
+        {
+          "effect_type": "advance_objective",
+          "objective_id": "secure_abyssal",
+          "mode": "adjust",
+          "amount": 10,
+          "status": "active",
+          "reason": "完成情报核验并推进深海目标"
+        },
+        {
+          "effect_type": "switch_phase",
+          "phase_id": "abyssal_intelligence_confirmed",
+          "metadata": {
+            "chapter": 3,
+            "label": "深海情报核验"
+          },
+          "reason": "三层知识与调查链已完成"
+        }
+      ]
+    }
+  ],
+  "time_system": {
+    "enabled": true,
+    "calendar": {
+      "calendar_id": "abyssal_garrison_calendar",
+      "display_name": "深海驻防历",
+      "epoch_label": "驻防纪元",
+      "start_year": 1,
+      "start_month_id": "snowmelt",
+      "start_day": 1,
+      "weekdays": [
+        "巡一日",
+        "巡二日",
+        "巡三日",
+        "巡四日",
+        "巡五日",
+        "整备日",
+        "议事日"
+      ],
+      "start_weekday": "巡一日",
+      "months": [
+        {
+          "month_id": "snowmelt",
+          "display_name": "融雪月",
+          "days": 30
+        },
+        {
+          "month_id": "sprouting",
+          "display_name": "萌芽月",
+          "days": 30
+        },
+        {
+          "month_id": "springwatch",
+          "display_name": "春巡月",
+          "days": 30
+        },
+        {
+          "month_id": "longlight",
+          "display_name": "长昼月",
+          "days": 30
+        },
+        {
+          "month_id": "highsun",
+          "display_name": "烈阳月",
+          "days": 30
+        },
+        {
+          "month_id": "thunder",
+          "display_name": "雷雨月",
+          "days": 30
+        },
+        {
+          "month_id": "harvest",
+          "display_name": "收获月",
+          "days": 30
+        },
+        {
+          "month_id": "windwatch",
+          "display_name": "风巡月",
+          "days": 30
+        },
+        {
+          "month_id": "frost",
+          "display_name": "霜降月",
+          "days": 30
+        },
+        {
+          "month_id": "firstsnow",
+          "display_name": "初雪月",
+          "days": 30
+        },
+        {
+          "month_id": "longnight",
+          "display_name": "长夜月",
+          "days": 30
+        },
+        {
+          "month_id": "yearguard",
+          "display_name": "岁守月",
+          "days": 30
+        }
+      ]
+    },
+    "seasons": [
+      {
+        "season_id": "thaw",
+        "display_name": "融雪季",
+        "start_day": 1,
+        "end_day": 90,
+        "description": "冰雪消退，商路与巡检线逐步恢复。",
+        "color": "#78a98b"
+      },
+      {
+        "season_id": "high_sun",
+        "display_name": "盛阳季",
+        "start_day": 91,
+        "end_day": 180,
+        "description": "长昼利于远程深潜修复巡检，但补给消耗上升。",
+        "color": "#d5a24a"
+      },
+      {
+        "season_id": "harvest_watch",
+        "display_name": "秋防季",
+        "start_day": 181,
+        "end_day": 270,
+        "description": "边贸与收获并行，栖站进入重点警戒期。",
+        "color": "#b47a45"
+      },
+      {
+        "season_id": "frozen_watch",
+        "display_name": "封冻季",
+        "start_day": 271,
+        "end_day": 360,
+        "description": "对接潜航通道封冻，守军依靠库存与固定哨线过冬。",
+        "color": "#668fa8"
+      }
+    ],
+    "cycles": [
+      {
+        "cycle_id": "abyssal_command_turn",
+        "display_name": "深海指挥回合",
+        "kind": "turn",
+        "period_days": 7,
+        "duration_days": 7,
+        "offset_days": 0,
+        "description": "每七天汇总战备、边情与补给，形成一轮指挥决策。",
+        "color": "#c9a84c",
+        "enabled": true
+      },
+      {
+        "cycle_id": "abyssal_joint_meeting",
+        "display_name": "深海联席会议",
+        "kind": "meeting",
+        "period_days": 30,
+        "duration_days": 2,
+        "offset_days": 6,
+        "description": "每三十天召开一次、持续两天的指挥与维护联席会议。",
+        "color": "#b57373",
+        "enabled": true
+      },
+      {
+        "cycle_id": "abyssal_patrol_task",
+        "display_name": "双周巡检任务",
+        "kind": "task",
+        "period_days": 14,
+        "duration_days": 14,
+        "offset_days": 0,
+        "description": "以十四天为周期滚动安排瞭望、深潜修复巡检与补给检查。",
+        "color": "#6693a2",
+        "enabled": true
+      }
+    ],
+    "boundary_events": [],
+    "auto_pause_conditions": []
+  },
+  "lifecycle": {
+    "enabled": true,
+    "recent_feedback_limit": 50,
+    "actor_templates": [
+      {
+        "template_id": "abyssal_patrol_deputy",
+        "display_name": "动态巡检副官",
+        "actor": {
+          "display_name": "新任巡检副官",
+          "description": "由生命周期规则生成，负责一线巡检、警情复核与交接。",
+          "actor_type": "person",
+          "enabled": true,
+          "attributes": {
+            "rank": 2,
+            "vigilance": 78,
+            "stamina": 72,
+            "merit": 50
+          },
+          "traits": [
+            {
+              "trait_id": "adaptive_patroller",
+              "display_name": "机动巡检",
+              "description": "能根据季节、压力壳完整度与任务周期调整巡检重点。",
+              "intensity": 0.75,
+              "tags": [
+                "patrol",
+                "adaptive"
+              ]
+            }
+          ],
+          "memberships": [
+            {
+              "organization_id": "abyssal_garrison",
+              "role": "patrol_deputy",
+              "status": "active",
+              "rank": 2,
+              "primary": true,
+              "description": "加入深海维护队巡检序列。"
+            }
+          ],
+          "states": {
+            "alive": true,
+            "duty_status": "ready",
+            "patrol_status": "awaiting_assignment"
+          },
+          "metadata": {
+            "lifecycle_template": "abyssal_patrol_deputy"
+          }
+        },
+        "entity": {
+          "entity_type": "person",
+          "name": "巡检副官",
+          "description": "可在世界地图与事件中被引用的动态人物实体。",
+          "current_status": "在岗",
+          "location_id": "abyssal_watchtower",
+          "metadata": {
+            "tags": [
+              "dynamic_actor",
+              "abyssal_patrol"
+            ]
+          }
+        },
+        "agent": {
+          "source_agent_id": "潜航工程师",
+          "display_name": "巡检副官 Agent",
+          "system_prompt": "你是动态生成的深海巡检副官。继承潜航工程官的模型路由、工具权限、多轮预算和记忆策略，先核验世界状态，再提交可执行的巡检与交接方案。",
+          "enabled": true,
+          "metadata": {
+            "inherit_source_profile": true,
+            "memory_migration": "copy_then_diverge"
+          }
+        },
+        "metadata": {
+          "example": true,
+          "dlc_owned": true
+        }
+      }
+    ],
+    "positions": [
+      {
+        "position_id": "abyssal_patrol_captain",
+        "display_name": "深海巡检队长",
+        "organization_id": "abyssal_garrison",
+        "role": "patrol_captain",
+        "rank": 3,
+        "capacity": 1,
+        "incumbent_actor_ids": [
+          "abyssal_guard"
+        ],
+        "candidate_actor_ids": [
+          "abyssal_guard",
+          "abyssal_quartermaster"
+        ],
+        "scores": [
+          {
+            "source": "attribute",
+            "name": "vigilance",
+            "weight": 2,
+            "direction": "desc"
+          },
+          {
+            "source": "membership_rank",
+            "name": "",
+            "weight": 1,
+            "direction": "desc"
+          },
+          {
+            "source": "actor_id",
+            "name": "",
+            "weight": 0,
+            "direction": "asc"
+          }
+        ],
+        "metadata": {
+          "succession": "score_then_actor_id",
+          "example": true
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "abyssal_patrol_recruitment",
+        "display_name": "双周补充巡检副官",
+        "kind": "birth",
+        "trigger": "cycle_start",
+        "cycle_id": "abyssal_patrol_task",
+        "mode": "all",
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "abyssal_readiness",
+            "operator": "gte",
+            "value": 30
+          },
+          {
+            "kind": "anchored_inventory",
+            "entity_id": "沧渊深海栖站",
+            "name": "维护配额",
+            "operator": "gte",
+            "value": 20
+          }
+        ],
+        "once": false,
+        "cooldown_days": 14,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "spawn_actor",
+            "template_id": "abyssal_patrol_deputy",
+            "actor_id_pattern": "abyssal_patrol_deputy_{sequence}",
+            "entity_id_pattern": "abyssal_patrol_entity_{sequence}",
+            "agent_id_pattern": "abyssal_patrol_agent_{sequence}",
+            "actor_patch": {
+              "states": {
+                "patrol_status": "newly_assigned"
+              }
+            },
+            "entity_patch": {},
+            "agent_patch": {}
+          }
+        ],
+        "feedback": {
+          "message": "深海维护队补充了一名动态巡检副官。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "abyssal_patrol_succession",
+        "display_name": "巡检队长继任",
+        "kind": "succession",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "vacate_position",
+            "position_id": "abyssal_patrol_captain"
+          },
+          {
+            "operation": "appoint_position",
+            "position_id": "abyssal_patrol_captain",
+            "replace": true
+          }
+        ],
+        "feedback": {
+          "message": "系统已按候选评分与 Actor ID 稳定顺序完成巡检队长交接。",
+          "level": "success",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "abyssal_patrol_retirement",
+        "display_name": "巡检队长退役",
+        "kind": "death",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "retire_actor",
+            "position_id": "abyssal_patrol_captain",
+            "reason": "完成深海轮换并交接",
+            "remove_entity": true
+          }
+        ],
+        "feedback": {
+          "message": "现任巡检队长已退役，其动态 Agent 被停用并自动腾出职位。",
+          "level": "warning",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "abyssal_watchtower_winterization",
+        "display_name": "瞭望塔封冻改造",
+        "kind": "entity_transform",
+        "trigger": "season_start",
+        "season_id": "frozen_watch",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 300,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "transform_entity",
+            "entity_id": "abyssal_watchtower",
+            "new_status": "封冻季强化值守",
+            "metadata_patch": {
+              "winterized": true,
+              "lifecycle_transform": "frozen_watch"
+            }
+          }
+        ],
+        "feedback": {
+          "message": "海沟声呐阵列已切换为封冻季强化值守状态。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "abyssal_garrison_split_drill",
+        "display_name": "守军分区演练",
+        "kind": "organization_split",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "split_organization",
+            "source_organization_id": "abyssal_garrison",
+            "destinations": [
+              {
+                "organization_id": "abyssal_east_patrol",
+                "name": "东线巡检队",
+                "actor_ids": [
+                  "abyssal_guard"
+                ],
+                "role": "captain",
+                "rank": 3,
+                "metadata": {
+                  "drill": true
+                }
+              },
+              {
+                "organization_id": "abyssal_west_patrol",
+                "name": "西线巡检队",
+                "actor_ids": [
+                  "abyssal_quartermaster"
+                ],
+                "role": "quartermaster",
+                "rank": 2,
+                "metadata": {
+                  "drill": true
+                }
+              }
+            ],
+            "remove_source": false
+          }
+        ],
+        "feedback": {
+          "message": "深海维护队已分为东、西两支演练队，成员关系迁移通过原子命令批次完成。",
+          "level": "info",
+          "category": "lifecycle"
+        }
+      },
+      {
+        "transition_id": "abyssal_joint_command_merge",
+        "display_name": "守军与商队合署指挥",
+        "kind": "organization_merge",
+        "trigger": "manual",
+        "mode": "all",
+        "conditions": [],
+        "once": false,
+        "cooldown_days": 0,
+        "edge_triggered": false,
+        "enabled": true,
+        "operations": [
+          {
+            "operation": "merge_organizations",
+            "source_organization_ids": [
+              "abyssal_garrison",
+              "abyssal_caravan"
+            ],
+            "target_organization_id": "abyssal_joint_command",
+            "target": {
+              "name": "深海联合指挥部",
+              "description": "由守军与商队临时合署形成的动态组织。",
+              "current_status": "联合值守",
+              "metadata": {
+                "lifecycle_created": true
+              }
+            },
+            "actor_ids": [
+              "abyssal_guard",
+              "abyssal_quartermaster"
+            ],
+            "role": "member",
+            "rank": 2,
+            "remove_sources": false
+          }
+        ],
+        "feedback": {
+          "message": "深海维护队与商队已合并为联合指挥部，来源组织保留并标记为已合并。",
+          "level": "success",
+          "category": "lifecycle"
+        }
+      }
+    ]
+  },
+  "rhythm": {
+    "enabled": false,
+    "max_active_issues": 4,
+    "attention_budget": 10,
+    "attention_recovery_per_day": 3,
+    "queue_limit": 64,
+    "recent_feedback_limit": 48,
+    "quiet_period_days": 1,
+    "critical_bypasses_quiet": true,
+    "urgency_costs": {
+      "low": 1,
+      "normal": 2,
+      "high": 3.5,
+      "critical": 5
+    },
+    "rules": [
+      {
+        "rule_id": "abyssal_security_crisis",
+        "display_name": "深海安全危机升级链",
+        "enabled": true,
+        "issue_type_ids": [
+          "abyssal_security_report"
+        ],
+        "event_types": [
+          "abyssal_response_started"
+        ],
+        "priority": 100,
+        "attention_cost": 3.5,
+        "max_active": 1,
+        "cooldown_days": 0.5,
+        "mutual_exclusion_group": "abyssal_crisis",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0.5,
+        "escalation": {
+          "enabled": true,
+          "after_days": 1,
+          "interval_days": 1,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": [
+            "深海安全报告仍未处理，风险已进入高优先级队列。",
+            "深海风险持续累积，请立即调配巡检与补给资源。",
+            "深海安全事项已达到危急等级，即将进入高潮收束阶段。"
+          ]
+        },
+        "deescalation": {
+          "enabled": true,
+          "interval_days": 0.5,
+          "target_level": 1,
+          "issue_status": "monitoring",
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "abyssal_readiness",
+              "value": 65
+            }
+          ],
+          "feedback": "深海综合战备度回升，安全危机降为持续观察。"
+        },
+        "climax": {
+          "enabled": true,
+          "level": 3,
+          "after_days": 0.5,
+          "conditions": [
+            {
+              "kind": "derived_metric",
+              "operator": "gte",
+              "name": "abyssal_readiness",
+              "value": 75
+            }
+          ],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": "深海危机已经完成收束，相关决策请求关闭，世界进入三天恢复期。"
+        }
+      },
+      {
+        "rule_id": "abyssal_stabilization",
+        "display_name": "稳定化与情报确认",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "abyssal_stabilization",
+          "abyssal_intelligence_confirmed"
+        ],
+        "priority": 80,
+        "attention_cost": 1,
+        "max_active": 2,
+        "cooldown_days": 0,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 1,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "abyssal_routine_reports",
+        "display_name": "常规边疆报告",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "patrol_report",
+          "abyssal_command_turn_started"
+        ],
+        "priority": 20,
+        "attention_cost": 1.5,
+        "max_active": 2,
+        "cooldown_days": 0.25,
+        "mutual_exclusion_group": "",
+        "allow_during_quiet": true,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "normal",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      },
+      {
+        "rule_id": "abyssal_rumor_noise",
+        "display_name": "低优先级深海流言",
+        "enabled": true,
+        "issue_type_ids": [],
+        "event_types": [
+          "abyssal_rumor"
+        ],
+        "priority": -50,
+        "attention_cost": 1,
+        "max_active": 1,
+        "cooldown_days": 3,
+        "mutual_exclusion_group": "abyssal_noise",
+        "allow_during_quiet": false,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": false,
+          "after_days": 3,
+          "interval_days": 2,
+          "max_level": 3,
+          "urgency_by_level": [
+            "low",
+            "normal",
+            "high",
+            "critical"
+          ],
+          "feedback_by_level": []
+        },
+        "deescalation": {
+          "enabled": false,
+          "interval_days": 1,
+          "target_level": 0,
+          "issue_status": "monitoring",
+          "conditions": [],
+          "feedback": ""
+        },
+        "climax": {
+          "enabled": false,
+          "level": 3,
+          "after_days": 0,
+          "conditions": [],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 3,
+          "feedback": ""
+        }
+      }
+    ]
+  },
+  "outcome_feedback": {
+    "enabled": true,
+    "recent_limit": 128,
+    "pending_limit": 256,
+    "receipt_limit": 2048,
+    "metric_delta_epsilon": 0.1,
+    "immediate": {
+      "enabled": true,
+      "include_command_changes": true,
+      "include_metric_changes": true,
+      "max_changes": 12,
+      "max_metric_changes": 8
+    },
+    "case_summaries": {
+      "enabled": true,
+      "include_decisions": true,
+      "include_changes": true,
+      "include_metric_changes": true
+    },
+    "rules": [
+      {
+        "rule_id": "abyssal_patrol_immediate_result",
+        "display_name": "深潜修复巡检行动即时结果",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": [
+          "action"
+        ],
+        "delivery": "immediate",
+        "action_ids": [
+          "abyssal_patrol"
+        ],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": [
+          "abyssal_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "深潜修复巡检命令已执行",
+        "summary": "深潜修复巡检行动已转化为可见的深海状态、库存与战备度变化。",
+        "reason": "变化来自玩家已执行的深潜修复巡检行动。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": false
+      },
+      {
+        "rule_id": "abyssal_decision_followup_report",
+        "display_name": "深海决策后续报告",
+        "enabled": true,
+        "priority": 80,
+        "source_kinds": [
+          "decision"
+        ],
+        "delivery": "delayed",
+        "action_ids": [],
+        "issue_type_ids": [
+          "abyssal_security_report"
+        ],
+        "event_types": [],
+        "metric_ids": [
+          "abyssal_readiness"
+        ],
+        "delay_days": 2,
+        "conditions": [],
+        "title": "深海处置后续报告",
+        "summary": "两个模拟日后回报处置方案的实际执行结果。",
+        "reason": "该报告是对玩家深海决策的延迟效果追踪。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      },
+      {
+        "rule_id": "abyssal_stabilization_causal_reveal",
+        "display_name": "稳定化因果揭示",
+        "enabled": true,
+        "priority": 60,
+        "source_kinds": [
+          "causal_event"
+        ],
+        "delivery": "causal_reveal",
+        "action_ids": [],
+        "issue_type_ids": [
+          "abyssal_security_report"
+        ],
+        "event_types": [
+          "abyssal_stabilization"
+        ],
+        "metric_ids": [
+          "abyssal_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [
+          {
+            "kind": "derived_metric",
+            "name": "abyssal_readiness",
+            "operator": "gte",
+            "value": 55
+          }
+        ],
+        "title": "深海稳定化原因已查明",
+        "summary": "深海战备度达到可持续水平后，系统交付事后因果说明。",
+        "reason": "揭示只在玩家可见的战备度达标后交付。",
+        "reveal_text": "事后核验表明，早期深潜修复巡检、支援组织与航线核验共同推动了深海稳定。",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      }
+    ]
+  }
+}

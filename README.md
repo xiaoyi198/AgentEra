@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.42.0**
+> 当前版本：**v0.43.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -459,6 +459,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+## v0.43.0 发布说明
+
+v0.43.0 新增第三种 JSON-only 跨题材参考 DLC“沧渊深海栖站”，用真实运行时 playthrough 证明现有通用玩法契约可以在不修改 Python/React 核心代码的情况下复用到深海生存题材。
+
+- 新增 `dlcs/example_abyssal/`，包含玩家身份、直接/命令控制对象、Actor/Agent、统一价值锚定维护配额、有限证据 Issue、耗时行动、Agent 唤醒、因果链、三层知识、调查、生命周期、节奏、结果反馈、目标与胜负结局。
+- 深潜修复巡检消耗 `维护配额` 的统一基础价值，提高 `压力壳完整度`，唤醒“潜航工程师”并发布 `abyssal_patrol_started`；推进一游戏日后由通用因果引擎生成响应、应用世界效果、投递反馈并完成 `secure_abyssal` / `abyssal_safe`。
+- 新增 `tests/integration/test_abyssal_dlc_playthrough.py`，独立临时加载该包并真实执行七步循环；frontier、orbital、abyssal 三个参考包均为 Registry 0 error、静态审计 7/7。
+- 版本同步更新到 `0.43.0`。完整发布门禁继续如实保留并行 LLM HTTP timeout 浮点边界这一项外部失败，未越界修改对应文件。
+
+当前验证：深海与轨道真实 playthrough **2 passed**；三个参考包 Registry 校验均为 **0 error**、可玩性审计均为 **7/7**；完整单元集 **820 passed, 1 failed**（唯一失败仍为并行 LLM HTTP timeout 浮点边界 `0.2000000000007276 <= 0.2`）；集成测试 **12 passed, 2 skipped**；前端测试 **97 passed**，ESLint、Vite build、Python compileall 与版本一致性测试通过。
+
 ## v0.42.0 发布说明
 
 v0.42.0 将 Agent 唤醒从进程内临时列表升级为持久 Wakeup Outbox，并统一自动存档与手工存档的运行时快照字段。该版本承诺 **at-least-once**（至少一次）投递，不宣称 exactly-once；下游 World Command、Issue external ID 与 Lifecycle Receipt 继续承担幂等边界。
@@ -732,3 +743,5 @@ Agent 报告 → Issue / DecisionRequest → 锚定成本行动
 ```
 
 `example_frontier` v1.15.0 同步补齐 `frontier_patrol_started` 到后续响应事件的 Action→Causal 桥接；它与 `example_orbital` 均通过 Registry 校验和七项可玩性审计。
+
+新增第三题材参考包 `dlcs/example_abyssal`：玩家担任“栖站指挥官”，根据潜航工程师提交的有限证据决定是否消耗统一价值锚定的维护配额，组织一日深潜修复巡检，并通过 Agent 唤醒、延迟因果世界效果、结果反馈、目标与胜利结局完成同一七步闭环。该包同样默认禁用，不需要任何题材专属 Python/React 代码。

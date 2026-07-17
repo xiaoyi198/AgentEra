@@ -2391,6 +2391,12 @@ flowchart LR
 
 `example_frontier` v1.15.0 新增等价的 Action→Causal 桥接规则。两个参考包 Registry 校验均为 0 error，七项审计均为 7/7。`tests/integration/test_cross_genre_dlc_playthrough.py` 使用临时 Registry 加载轨道包并执行完整运行时链路，证明新题材无需添加专属 Python/React 逻辑。
 
+### 第三题材参考包（v0.43.0）
+
+`dlcs/example_abyssal/` 是默认禁用、已发布的深海生存参考 DLC。玩家是“栖站指挥官”，命令控制“潜航工程师”，使用按资源目录 `anchor_rate` 计价的“维护配额”发起一游戏日深潜修复巡检，提高“压力壳完整度”并发布 `abyssal_patrol_started`。后续通用因果规则生成 `abyssal_response_started`，应用世界效果、投递结果反馈、完成 `secure_abyssal` 并锁定 `abyssal_safe` 胜利结局。
+
+该包完整声明 `abyssal_*` 命名空间的关系、能力、事件、目标、结局、时间、生命周期、节奏、三层知识和调查规则，不引入题材专属 Python/React 分支。`tests/integration/test_abyssal_dlc_playthrough.py` 在临时 Registry、WorldState、TimerSystem 与 Orchestrator 上执行真实七步链路。frontier、orbital、abyssal 三个参考包均为 Registry 0 error、静态审计 7/7。
+
 ## DLC Studio 快速创作架构（v0.37.0）
 
 ### 快速创建模块与原子写入边界
@@ -2521,4 +2527,4 @@ Temporal/Random polling plus `enqueue_many()` is treated as one publication tran
 
 Crash-point tests now cover two durable-side-effect windows: a World Command committed before Causal queue acknowledgement, and a Lifecycle Receipt committed before lifecycle cursor acknowledgement. Restarting from the pre-ack runtime snapshot must replay the durable ledger result without applying inventory changes or dynamic Actor creation twice. Command normalization therefore preserves an explicitly present empty `reason` field; removing it would change the canonical payload and incorrectly produce `idempotency_conflict`.
 
-Agent wakeup delivery remains outside this transaction boundary: `_pending_wakeups` is not persisted and injected chain IDs are not yet receipt-backed. The gameplay framework goal therefore remains active until delivery semantics are explicitly designed as at-least-once with durable deduplication or as another transactional outbox.
+Agent wakeup delivery now uses the persisted `WakeupOutboxRuntime` at-least-once contract. Timer/Event/Chain deliveries have stable IDs, persisted `inflight` entries replay as `pending`, and Timer SQLite rows survive until terminal wakeup completion. Exactly-once is still not claimed because a crash after a downstream side effect but before Outbox ACK may replay; receipt-backed World Command, Issue, Lifecycle, and Action boundaries remain responsible for idempotency.

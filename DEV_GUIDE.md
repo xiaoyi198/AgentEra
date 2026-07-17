@@ -3416,7 +3416,7 @@ initial/random/time/Agent report
   → objective/ending or sandbox cycle
 ```
 
-Use namespaced package-local IDs for relationship types and other globally merged catalogs. The `example_orbital` package uses `orbital_command`, `orbital_trust`, and `orbital_rivalry`; do not copy generic IDs from another enabled package.
+Use namespaced package-local IDs for relationship types and other globally merged catalogs. The `example_orbital` package uses `orbital_command`, `orbital_trust`, and `orbital_rivalry`; do not copy generic IDs from another enabled package. The deep-sea reference follows the same rule with `abyssal_command`, `abyssal_trust`, and `abyssal_rivalry`.
 
 ### Studio and API
 
@@ -3427,14 +3427,14 @@ When extending the panel, keep all gaps and explanations in Chinese, preserve ac
 ### Regression commands
 
 ```powershell
-python -m pytest tests/unit/test_dlc_playability.py tests/unit/test_dlc_playability_api.py tests/integration/test_cross_genre_dlc_playthrough.py -q
+python -m pytest tests/unit/test_dlc_playability.py tests/unit/test_dlc_playability_api.py tests/integration/test_cross_genre_dlc_playthrough.py tests/integration/test_abyssal_dlc_playthrough.py -q
 node --test frontend/src/PlayabilityAuditTools.test.js
 npm test --prefix frontend
 npm run lint --prefix frontend
 npm run build --prefix frontend
 ```
 
-Before publishing, validate both `example_frontier` and `example_orbital`, require 7/7 from `audit_playability()`, run `git diff --check`, scan edited UTF-8 files for the replacement character, and stage only the milestone files. Never stage local API keys, `config/models.json`, runtime databases, `.codex-local` helper scripts, or concurrent Settings/API work.
+Before publishing, validate `example_frontier`, `example_orbital`, and `example_abyssal`, require 7/7 from `audit_playability()`, run `git diff --check`, scan edited UTF-8 files for the replacement character, and stage only the milestone files. Never stage local API keys, `config/models.json`, runtime databases, `.codex-local` helper scripts, or concurrent Settings/API work.
 
 ## 开发 DLC Studio 快速创作流程（v0.37.0）
 
@@ -3673,3 +3673,19 @@ npm run build
 ```
 
 Required recovery coverage includes: inflight snapshot restart to pending, Router failure retry, request_action completion before ACK, Timer claimed before crash, Timer + persisted Outbox replay deduplication, malformed and aggregate-oversized snapshot rejection, automatic state.json parity, startup Outbox restore, and secret-free aggregate metrics.
+
+## 第三题材 JSON-only 参考包（v0.43.0）
+
+- `dlcs/example_abyssal/dlc.json`：默认禁用的已发布 manifest，题材标记为 `deepsea-survival`。
+- `dlcs/example_abyssal/content.json`：完整声明深海栖站玩家身份、Actor/Agent、维护配额价值锚、压力壳指标、有限证据 Issue、深潜修复巡检、Agent 唤醒、延迟因果链、反馈、目标与结局。
+- `tests/integration/test_abyssal_dlc_playthrough.py`：不得 mock 掉 Registry/WorldState/Orchestrator 的玩法执行；只允许使用确定性 LLM stub 隔离外部网络。验收必须真实扣除维护配额、进入 Wakeup Outbox、推进一游戏日、应用 causal world effect、生成反馈并锁定胜利结局。
+
+新增题材参考包时，优先复用 bundle-v1 声明能力，不得因为题材术语新增核心分支。每个包必须使用独立命名空间，默认 `enabled=false`，通过 Registry 0 error、七步静态审计 7/7 和独立真实 playthrough。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/integration/test_cross_genre_dlc_playthrough.py tests/integration/test_abyssal_dlc_playthrough.py -q
+python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; r=DLCRegistry(Path('.')); assert all(not r.validate(i) and r.audit_playability(i).playable for i in ('example_frontier','example_orbital','example_abyssal'))"
+python -m pytest tests/unit/test_version_consistency.py -q
+```
