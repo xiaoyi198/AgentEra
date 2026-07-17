@@ -2423,6 +2423,14 @@ class Orchestrator:
                 if outcome.error:
                     self._record_operational_metric("agent_turn_errors")
                     turn_error_recorded = True
+                    # A model/deadline failure means the Agent turn did not
+                    # complete. Keep the durable delivery pending for an
+                    # at-least-once retry instead of acknowledging fallback
+                    # output as if the turn had succeeded.
+                    wakeup["_delivery_failed"] = True
+                    if self.persistor:
+                        self.persistor.mark_agent_dirty(agent.agent_id)
+                    return []
                 else:
                     self._record_operational_metric("agent_turn_completed")
             else:

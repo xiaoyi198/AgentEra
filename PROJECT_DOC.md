@@ -2845,3 +2845,57 @@ v0.51.0 可证明的生产边界止于 `Wakeup Outbox pending` 或 `Timer schedu
 - Python 单元：**855 passed, 1 failed**；唯一失败仍为既有 LLM deadline 浮点表示边界 `0.2000000000007276 <= 0.2`，未修改 deadline 语义、断言或异常处理。
 - Integration：**13 passed, 2 skipped**；Frontend：**102 passed**，ESLint 与 Vite production build 通过。
 - 本轮未调用外部 Provider；以上证据只证明离线 replay 到生产耐久投递边界，不代表真实 API、Agent ACK、世界副作用或人工晋级已经完成。
+
+## 生产 Agent 唤醒执行轨迹（v0.52.0）
+
+### 从耐久投递到 Agent turn
+
+v0.52.0 在 v0.51.0 的 `RouterAgent → RouterCommand → Orchestrator → Wakeup Outbox pending` 之后继续使用生产执行链。立即投递由 `Orchestrator._tick()` 从 `WakeupOutboxRuntime` claim 为 `inflight`，按目标 Agent 合并为 inbox wakeup，再由 `_process_agents_background()` 调用 `_call_agent_safe()`，最终进入真实 `BaseAgent.process()` 与 `TurnEngine.run()`。
+
+```text
+route_intent
+→ RouterAgent.process_batch
+→ RouterCommand(WAKE_AGENT)
+→ Orchestrator._execute_commands
+→ WakeupOutboxRuntime.enqueue(pending)
+→ Orchestrator._tick / claim(inflight)
+→ BaseAgent.process
+→ TurnEngine.run
+→ ACK
+  或 Agent turn error → retry(pending)
+```
+
+`runtime_fixture.router.delivery` 是封闭的离线评测契约，只允许：
+
+```json
+{
+  "mode": "enqueue_only | agent_turn",
+  "failure_targets": []
+}
+```
+
+`enqueue_only` 保持 v0.51.0 的 pending 与 snapshot/restore 证据；`agent_turn` 为 fixture 中启用的机构和官员注册生产 `InstitutionAgent` / `OfficialAgent`。内部确定性 replay LLM 只负责提供两轮固定 Function Call：第一轮调用生产 `list_agents`，第二轮调用 `finish_turn`。Agent 仍受生产 `AgentConfig` 的两轮、两个工具调用、128 token 与 5 秒上限约束，并明确禁止提交或请求世界变更行动。
+
+### ACK、重试与持久化语义
+
+成功 ACK 不能根据模型参数或 fixture 推断。隔离运行时要求目标 Agent 的 `last_turn_outcome` 相对投递前已更新、`completed=true`、inbox sequence 已推进，并且对应 Outbox entry 已被生产 `_ack_wakeup_deliveries()` 删除，才返回 `delivery_status=acked` 和 `agent_delivery_status=acked`。receipt 同时记录真实 `rounds`、`tool_calls` 与 `stop_reason`。
+
+`_call_agent_safe()` 现在把新的 `last_turn_outcome.error` 视为未完成投递：记录 `agent_turn_errors`，标记 delivery failed，并在存在 persistor 时将 Agent 标记为 dirty。后台批处理随后调用 `_retry_wakeup_deliveries()`，使同一 delivery 从 `inflight` 回到 `pending`，保留 delivery ID 并递增 attempts。普通成功但无世界行动的 turn 仍可 ACK；只有明确的 turn error 才触发 retry，避免把 fallback output 错误确认成成功。
+
+失败轨迹 receipt 只暴露固定 `agent_turn_error_code=agent_turn_failed`，不会包含 replay/Provider 原始异常。回归还会再次执行生产 tick，证明同一 pending delivery 可重新 claim 且 attempts 继续增加。
+
+### 隔离、安全与范围边界
+
+`delivery` 只允许 `mode` 和 `failure_targets`；failure target 必须是当前启用 Agent，且只能用于 `agent_turn`。未知模式、未知/禁用目标、自定义 handler、Prompt、Provider URL、API Key、配置或数据库路径、import path 和可执行代码都在 fixture 解析阶段拒绝。每个场景及矩阵 repetition 仍创建独立 World、Memory、Router、Orchestrator、Agent、Outbox 与临时数据库。
+
+延迟通信继续进入真实 `TimerSystem`。Timer 未到期时 receipt 只能声明 `delivery_status=scheduled` 和 `agent_delivery_status=not_due`，不得伪装已 claim 或已执行 Agent。
+
+v0.52.0 可证明的边界止于成功 Agent turn 的 ACK，或失败 Agent turn 的 retry pending。固定两轮只读取 Agent 目录并结束，不产生世界副作用；本版本也不证明 `request_action` / ActionAgent 全链、真实 Provider 多轮调用、人工模型晋级或长期压力恢复已经完成。
+
+### v0.52.0 验证证据
+
+- Router/Orchestrator/Wakeup 聚焦回归：**105 passed**。
+- Python 单元：**857 passed, 1 failed**；唯一失败仍为既有 LLM deadline 浮点表示边界 `0.2000000000007276 <= 0.2`，未修改 deadline 语义、断言或异常处理。
+- Integration：**13 passed, 2 skipped**；Frontend：**102 passed**，ESLint 与 Vite production build 通过。
+- Python compileall、版本一致性（**2 passed**）与 Git diff 检查通过。
+- 本轮未调用外部 Provider；以上证据不代表真实 API、世界副作用或人工模型晋级已经完成。

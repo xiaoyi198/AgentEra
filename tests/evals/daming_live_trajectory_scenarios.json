@@ -369,7 +369,11 @@
                 "y": 0,
                 "region": "remote"
               }
-            ]
+            ],
+            "delivery": {
+              "mode": "agent_turn",
+              "failure_targets": []
+            }
           }
         }
       },

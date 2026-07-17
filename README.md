@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.51.0**
+> 当前版本：**v0.52.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -461,6 +461,18 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+
+## v0.52.0 发布说明
+
+v0.52.0 将隔离 Router 轨迹从耐久 Outbox 入队继续推进到生产 Agent 唤醒执行与确认边界。外层评测模型仍只调用一次 `route_intent`；生产 Router 与 Orchestrator 创建立即投递后，隔离运行时通过生产 `_tick()` claim delivery、合并 inbox、后台调用真实 `BaseAgent.process()`，并依据 Agent turn 结果执行 ACK 或返回 `pending` 重试。
+
+- `runtime_fixture.router.delivery` 新增受限模式：`enqueue_only` 保留 v0.51.0 的 pending/snapshot/restore 检查；`agent_turn` 注册生产 `OfficialAgent` / `InstitutionAgent`，驱动 `TurnEngine` 执行固定两轮 `list_agents → finish_turn`，验证真实多轮 Agent 调用、工具预算和终止原因。
+- 成功 receipt 必须同时证明 Agent `last_turn_outcome` 已更新且完成、inbox sequence 已推进、原 Outbox entry 已由生产路径 ACK 删除；此时返回 `delivery_status=acked`、`agent_delivery_status=acked` 及真实轮次、工具调用和终止原因。
+- `BaseAgent.process()` 产生模型、deadline 或其他 turn error 时，Orchestrator 不再把 fallback output 误判为成功。该 delivery 会通过生产 retry 路径恢复为 `pending` 并保留递增 attempts；评测只返回固定 `agent_turn_failed`，不泄露原始异常。
+- `delivery.failure_targets` 仅允许引用当前启用 Agent，用于离线、确定性的失败注入；fixture 仍拒绝 Provider URL、API Key、路径、import、handler、Prompt 和任意可执行扩展。延迟 Timer 在未到期时只标记 `not_due`，不会宣称 Agent 已被调用。
+- 当前可证明边界是 **`RouterAgent → RouterCommand → Orchestrator → Wakeup Outbox claim → BaseAgent.process → two-round Agent turn → ACK / retry pending`**。本版本不宣称 Agent 已产生世界副作用、`request_action` / ActionAgent 完整链已在该轨迹执行、真实 Provider 已验证或人工模型晋级已完成。
+- AgentEra 四处产品版本统一升级到 `0.52.0`。
+- 发布门禁（2026-07-17）：Router/Orchestrator/Wakeup 聚焦回归 **105 passed**；完整 Python 单元 **857 passed, 1 failed**，唯一失败仍为既有 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`；Integration **13 passed, 2 skipped**；Frontend **102 passed**，ESLint、Vite production build、Python compileall、版本一致性与 Git diff 检查通过。本轮未调用外部 Provider。
 
 ## v0.51.0 发布说明
 

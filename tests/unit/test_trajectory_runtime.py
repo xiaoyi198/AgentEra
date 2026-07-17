@@ -241,6 +241,14 @@ def test_router_tool_executes_production_router_and_resets_idempotency_per_sessi
     assert accepted["route_strategy"] == "llm"
     assert accepted["intent_id"] == "router-eval-intent"
     assert accepted["chain_id"] == "router-eval-chain"
+    assert accepted["delivery_status"] == "acked"
+    assert accepted["delivery_attempts"] == 1
+    assert accepted["agent_delivery_status"] == "acked"
+    assert accepted["agent_turn_rounds"] == 2
+    assert accepted["agent_turn_tool_calls"] == 2
+    assert accepted["agent_turn_stop_reason"] == "terminal_tool"
+    assert accepted["agent_inbox_sequence"] == 1
+    assert accepted["agent_turn_error_code"] == ""
     for rejected in (duplicate, outside, self_route, unreachable):
         assert rejected == {
             "ok": False,
@@ -255,6 +263,10 @@ def test_router_tool_executes_production_router_and_resets_idempotency_per_sessi
 def test_router_delivery_receipt_comes_from_real_outbox_and_restore_replays_pending(tmp_path):
     scenario = _scenario("live-router-ambiguous-intent")
     fixture = scenario["live"]["runtime_fixture"]
+    fixture["router"]["delivery"] = {
+        "mode": "enqueue_only",
+        "failure_targets": [],
+    }
     session = _TrajectoryRuntimeSession.open(
         fixture, database_path=tmp_path / "first-world.sqlite3",
     )
@@ -309,6 +321,49 @@ def test_router_delivery_receipt_comes_from_real_outbox_and_restore_replays_pend
     assert restored_entry["attempts"] == 1
     assert restored_outbox.pending_count == 1
     assert restored_outbox.inflight_count == 0
+
+
+def test_router_agent_turn_failure_retries_without_ack_or_error_leak(tmp_path):
+    scenario = _scenario("live-router-ambiguous-intent")
+    fixture = scenario["live"]["runtime_fixture"]
+    fixture["router"]["delivery"]["failure_targets"] = ["hubu"]
+    session = _TrajectoryRuntimeSession.open(
+        fixture, database_path=tmp_path / "world.sqlite3",
+    )
+
+    async def run():
+        result = await session.execute(scenario, "route_intent", {
+            "target": "hubu",
+            "reason_code": "fiscal_reserve",
+        }, {})
+        runtime = session.router_runtime
+        assert runtime is not None
+        await runtime.orchestrator._tick()
+        await runtime.orchestrator.drain_agent_tasks(timeout=5.0)
+        return result
+
+    result = asyncio.run(run())
+    runtime = session.router_runtime
+    assert runtime is not None
+    outbox = runtime.orchestrator._pending_wakeups
+    entry = outbox.get(result["delivery_id"])
+
+    assert result["accepted"] is True
+    assert result["delivery_status"] == "pending"
+    assert result["delivery_attempts"] == 1
+    assert result["agent_delivery_status"] == "retry_pending"
+    assert result["agent_turn_rounds"] == 0
+    assert result["agent_turn_tool_calls"] == 0
+    assert result["agent_turn_stop_reason"] == "llm_error"
+    assert result["agent_inbox_sequence"] == 1
+    assert result["agent_turn_error_code"] == "agent_turn_failed"
+    assert "trajectory agent delivery replay failed" not in json.dumps(result)
+    assert entry is not None
+    assert entry["status"] == "pending"
+    assert entry["attempts"] == 2
+    assert outbox.pending_count == 1
+    assert outbox.inflight_count == 0
+    assert runtime.orchestrator.operational_metrics_snapshot()["agent_turn_errors"] == 2
 
 
 def test_router_delivery_uses_real_timer_for_remote_reachable_target(tmp_path):
@@ -418,6 +473,18 @@ def test_router_fixture_rejects_invalid_graphs_sources_and_fields():
     unsafe_location = deepcopy(base)
     unsafe_location["router"]["locations"][0]["database_path"] = "C:/private/world.sqlite3"
     invalid_fixtures.append(unsafe_location)
+
+    invalid_delivery_mode = deepcopy(base)
+    invalid_delivery_mode["router"]["delivery"]["mode"] = "import_handler"
+    invalid_fixtures.append(invalid_delivery_mode)
+
+    unknown_failure_target = deepcopy(base)
+    unknown_failure_target["router"]["delivery"]["failure_targets"] = ["missing_agent"]
+    invalid_fixtures.append(unknown_failure_target)
+
+    unsafe_delivery = deepcopy(base)
+    unsafe_delivery["router"]["delivery"]["provider_url"] = "https://invalid.example"
+    invalid_fixtures.append(unsafe_delivery)
 
     async def open_fixture(fixture):
         async with IsolatedTrajectoryRuntimeFactory()({}, {"runtime_fixture": fixture}):

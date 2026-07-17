@@ -17,9 +17,10 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any, AsyncIterator, Mapping
 
+from .agent_runtime import AgentConfig, InstitutionAgent, OfficialAgent
 from .chain_log import ChainLog
 from .court_graph import CourtGraph, Official
-from .llm_client import LLMResponse
+from .llm_client import LLMResponse, TokenCounter
 from .memory_store import StructuredMemoryStore
 from .orchestrator import Orchestrator
 from .router import RouterAgent
@@ -84,6 +85,7 @@ class _RouterReplayLLM:
 
     def __init__(self) -> None:
         self._decision: dict[str, str] | None = None
+        self.token_counter = TokenCounter()
 
     def prepare(self, *, target: str, request: _RouterRequest) -> None:
         self._decision = {
@@ -111,12 +113,46 @@ class _RouterReplayLLM:
         }])
 
 
+class _AgentDeliveryReplayLLM:
+    """Drive one production Agent through a bounded read-then-finish turn."""
+
+    def __init__(self, *, agent_id: str, fail: bool = False) -> None:
+        self.agent_id = agent_id
+        self.fail = fail
+        self.calls = 0
+
+    async def chat(self, **_kwargs: Any) -> LLMResponse:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("trajectory agent delivery replay failed")
+        if self.calls == 1:
+            name = "list_agents"
+            arguments: dict[str, Any] = {}
+        elif self.calls == 2:
+            name = "finish_turn"
+            arguments = {"summary": "Inspected the available Agents and completed delivery."}
+        else:
+            raise TrajectoryRuntimeError("Agent delivery replay exceeded its bounded rounds")
+        return LLMResponse(
+            tool_calls=[{
+                "id": f"trajectory-agent-{self.agent_id}-{self.calls}",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }],
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+
 @dataclass
 class _RouterRuntime:
     router: RouterAgent
     replay_llm: _RouterReplayLLM
     request: _RouterRequest
     orchestrator: Orchestrator
+    delivery_mode: str
 
 
 class IsolatedTrajectoryRuntimeFactory:
@@ -181,7 +217,11 @@ class _TrajectoryRuntimeSession:
             "runtime_fixture.world",
         )
         _allow_keys(memory_fixture, {"records", "retrieval"}, "runtime_fixture.memory")
-        _allow_keys(router_fixture, {"agents", "locations", "request"}, "runtime_fixture.router")
+        _allow_keys(
+            router_fixture,
+            {"agents", "locations", "request", "delivery"},
+            "runtime_fixture.router",
+        )
 
         world = WorldState(str(database_path))
         resources = _bounded_list(world_fixture.get("resources", []), "world.resources")
@@ -641,6 +681,47 @@ class _TrajectoryRuntimeSession:
         else:
             return _rejected("orchestrator_delivery_rejected")
 
+        agent_delivery_status = "not_started"
+        agent_turn_rounds = 0
+        agent_turn_tool_calls = 0
+        agent_turn_stop_reason = ""
+        agent_inbox_sequence = 0
+        agent_turn_error_code = ""
+        if delivery_channel == "timer":
+            agent_delivery_status = "not_due"
+        elif runtime.delivery_mode == "agent_turn":
+            agent = runtime.orchestrator.get_agent(command.target)
+            if agent is None:
+                return _rejected("orchestrator_delivery_rejected")
+            previous_outcome = agent.last_turn_outcome
+            await runtime.orchestrator._tick()
+            await runtime.orchestrator.drain_agent_tasks(timeout=5.0)
+            outcome = agent.last_turn_outcome
+            if outcome is None or outcome is previous_outcome:
+                return _rejected("orchestrator_delivery_rejected")
+            agent_turn_rounds = int(outcome.rounds)
+            agent_turn_tool_calls = int(outcome.tool_calls)
+            agent_turn_stop_reason = str(outcome.stop_reason)
+            agent_inbox_sequence = int(agent.inbox_sequence)
+            current_delivery = outbox.get(delivery_id)
+            if outcome.error:
+                if (
+                    current_delivery is None
+                    or current_delivery.get("status") != "pending"
+                    or int(current_delivery.get("attempts", 0)) < 1
+                ):
+                    return _rejected("orchestrator_delivery_rejected")
+                delivery_status = str(current_delivery["status"])
+                delivery_attempts = int(current_delivery["attempts"])
+                agent_delivery_status = "retry_pending"
+                agent_turn_error_code = "agent_turn_failed"
+            else:
+                if not outcome.completed or current_delivery is not None:
+                    return _rejected("orchestrator_delivery_rejected")
+                delivery_status = "acked"
+                delivery_attempts = 1
+                agent_delivery_status = "acked"
+
         return {
             "ok": True,
             "accepted": True,
@@ -654,12 +735,21 @@ class _TrajectoryRuntimeSession:
             "delivery_id": delivery_id,
             "delivery_status": delivery_status,
             "delivery_attempts": delivery_attempts,
+            "agent_delivery_status": agent_delivery_status,
+            "agent_turn_rounds": agent_turn_rounds,
+            "agent_turn_tool_calls": agent_turn_tool_calls,
+            "agent_turn_stop_reason": agent_turn_stop_reason,
+            "agent_inbox_sequence": agent_inbox_sequence,
+            "agent_turn_error_code": agent_turn_error_code,
             "_evaluation_evidence": {
                 "route_target": command.target,
                 "router_command_type": command.command_type.value,
                 "router_route_strategy": str(command.metadata.get("route_strategy", "")),
                 "orchestrator_delivery_channel": delivery_channel,
                 "orchestrator_delivery_status": delivery_status,
+                "agent_delivery_status": agent_delivery_status,
+                "agent_turn_rounds": agent_turn_rounds,
+                "agent_turn_tool_calls": agent_turn_tool_calls,
             },
         }
 
@@ -786,6 +876,31 @@ def _build_router_runtime(
             visited.add(current)
             current = parent_ids.get(current)
 
+    delivery_raw = _mapping(fixture.get("delivery", {}), "router.delivery")
+    _allow_keys(
+        delivery_raw,
+        {"mode", "failure_targets"},
+        "router.delivery",
+    )
+    delivery_mode = _text(
+        delivery_raw.get("mode", "enqueue_only"),
+        "router.delivery.mode",
+        maximum=32,
+    )
+    if delivery_mode not in {"enqueue_only", "agent_turn"}:
+        raise TrajectoryRuntimeError("router delivery mode is invalid")
+    failure_targets = {
+        _identifier(item, "router.delivery.failure_targets")
+        for item in _bounded_list(
+            delivery_raw.get("failure_targets", []),
+            "router.delivery.failure_targets",
+        )
+    }
+    if failure_targets - enabled_ids:
+        raise TrajectoryRuntimeError("router delivery failure target must be enabled")
+    if delivery_mode != "agent_turn" and failure_targets:
+        raise TrajectoryRuntimeError("router delivery failure targets require agent_turn mode")
+
     request_raw = _mapping(fixture.get("request", {}), "router.request")
     _allow_keys(
         request_raw,
@@ -833,11 +948,40 @@ def _build_router_runtime(
         chain_log=ChainLog(str(database_path.with_name("chain_log.jsonl"))),
         router=router,
     )
+    if delivery_mode == "agent_turn":
+        for official in agents:
+            if not official.enabled:
+                continue
+            agent_class = (
+                OfficialAgent if official.agent_type == "official" else InstitutionAgent
+            )
+            orchestrator.register_agent(agent_class(
+                AgentConfig(
+                    agent_id=official.id,
+                    agent_type=official.agent_type,
+                    display_name=official.name,
+                    system_prompt=(
+                        "Inspect the declared Agent directory, then call finish_turn. "
+                        "Do not submit or request any world-changing action."
+                    ),
+                    personality_seed=official.personality_seed,
+                    max_rounds=2,
+                    max_tool_calls=2,
+                    max_turn_tokens=128,
+                    max_turn_seconds=5.0,
+                    no_progress_rounds=2,
+                ),
+                _AgentDeliveryReplayLLM(
+                    agent_id=official.id,
+                    fail=official.id in failure_targets,
+                ),
+            ))
     return _RouterRuntime(
         router=router,
         replay_llm=replay_llm,
         request=request,
         orchestrator=orchestrator,
+        delivery_mode=delivery_mode,
     )
 
 

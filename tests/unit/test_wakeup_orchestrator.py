@@ -103,6 +103,33 @@ def test_unexpected_agent_failure_returns_delivery_to_pending():
     assert orch._pending_wakeups[0]["attempts"] == 1
 
 
+def test_agent_turn_outcome_error_returns_delivery_to_pending():
+    orch = make_orchestrator()
+    wakeup = claim_one(orch)
+
+    class OutcomeErrorAgent(FakeAgent):
+        async def process(self, _payload):
+            self.last_turn_outcome = SimpleNamespace(
+                rounds=0,
+                tool_calls=0,
+                input_tokens=0,
+                output_tokens=0,
+                error="transient model failure",
+            )
+            return AgentAction(
+                agent_id=self.agent_id,
+                action="do_nothing",
+                content="fallback must not be acknowledged",
+            )
+
+    asyncio.run(orch._process_agents_background([(OutcomeErrorAgent(), wakeup)]))
+
+    assert orch._pending_wakeups.pending_count == 1
+    assert orch._pending_wakeups.inflight_count == 0
+    assert orch._pending_wakeups[0]["attempts"] == 1
+    assert orch.operational_metrics_snapshot()["agent_turn_errors"] == 1
+
+
 def test_timer_row_is_acked_only_after_agent_delivery(tmp_path):
     db_path = tmp_path / "timers.db"
     timers = TimerSystem(str(db_path))

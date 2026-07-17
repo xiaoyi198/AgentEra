@@ -4147,3 +4147,71 @@ git diff --check
 已知 LLM deadline 浮点边界若仍是唯一失败，应如实记录；不得修改 deadline 语义、扩大断言或吞掉异常来制造全绿。
 
 v0.51.0 本地证据：Router/Orchestrator/Wakeup 聚焦回归 **103 passed**；完整 Python 单元 **855 passed, 1 failed**（仅上述既有 deadline 浮点边界）；Integration **13 passed, 2 skipped**；Frontend **102 passed**，lint/build 通过。本轮未调用外部 Provider，因此不得据此声明真实 API、Agent ACK 或人工模型晋级完成。
+
+## 生产 Agent 唤醒轨迹开发指南（v0.52.0）
+
+### Delivery Fixture
+
+需要只验证耐久入队和恢复时，显式使用：
+
+```json
+{
+  "delivery": {
+    "mode": "enqueue_only",
+    "failure_targets": []
+  }
+}
+```
+
+需要覆盖生产 Agent claim、执行与确认时使用：
+
+```json
+{
+  "delivery": {
+    "mode": "agent_turn",
+    "failure_targets": []
+  }
+}
+```
+
+`agent_turn` 会为所有启用 Router Agent 注册生产 `OfficialAgent` / `InstitutionAgent`，并使用内部确定性 replay 完成 `list_agents → finish_turn` 两轮调用。不要在 fixture 中加入自定义 Agent 类、handler、Prompt、Provider URL、API Key、模型配置、路径、import 或可执行代码；Schema 只允许 `mode` 与 `failure_targets`。`failure_targets` 只能引用当前启用 Agent，且只用于离线验证 retry。
+
+### 生产 ACK / retry 判据
+
+成功测试必须同时断言：
+
+1. 目标 Agent 的 `last_turn_outcome` 是本次投递产生的新对象且 `completed=true`；
+2. `rounds=2`、`tool_calls=2`、`stop_reason=terminal_tool`；
+3. `inbox_sequence` 已推进；
+4. 原 delivery 已从真实 Outbox 删除；
+5. receipt 为 `delivery_status=acked`、`agent_delivery_status=acked`、attempts 为 1。
+
+失败测试通过 `failure_targets` 让内部 replay 在 Agent LLM 调用时抛错。生产 `TurnEngine` 会生成带 `error` 的 outcome，`Orchestrator._call_agent_safe()` 必须把 delivery 标记为失败，后台处理必须调用 Outbox retry 而不是 ACK fallback。断言 entry 回到 `pending`、`inflight_count=0`、attempts 保留并在下一次 tick 后递增；receipt 只能返回固定 `agent_turn_failed`，不得匹配或泄露原始异常文本。
+
+普通成功但没有路由行动的 Agent turn 可以 ACK。不要把“无行动”统一当成失败；retry 的判据是新的 `last_turn_outcome.error`。若修改 Agent outcome、fallback 或持久化语义，必须同时运行 wakeup 与 trajectory 回归。
+
+Timer delivery 未到期时不得调用 Agent，receipt 必须保持 `agent_delivery_status=not_due`。世界副作用、`request_action` / ActionAgent 轨迹和真实 Provider 多轮验证属于后续阶段，不要用两轮只读 replay 的 ACK 代替这些证据。
+
+### 回归命令
+
+```powershell
+python -m pytest -q -p no:cacheprovider `
+  tests/unit/test_trajectory_runtime.py `
+  tests/unit/test_trajectory_evaluation.py `
+  tests/unit/test_trajectory_matrix.py `
+  tests/unit/test_router.py `
+  tests/unit/test_wakeup_runtime.py `
+  tests/unit/test_wakeup_orchestrator.py
+python -m pytest -q -p no:cacheprovider tests/unit
+python -m pytest -q -p no:cacheprovider tests/integration
+python -m compileall -q multiagent_framework routers tests
+python -m pytest -q -p no:cacheprovider tests/unit/test_version_consistency.py
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+cd ..
+git diff --check
+```
+
+已知 LLM deadline 浮点边界若仍是唯一失败，应如实记录，不得改变 deadline 语义、扩大断言或吞异常。v0.52.0 于 2026-07-17 的本地门禁结果：聚焦回归 **105 passed**；完整 Python 单元 **857 passed, 1 failed**（仅既有 `0.2000000000007276 <= 0.2` 浮点边界）；Integration **13 passed, 2 skipped**；Frontend **102 passed**，lint/build 通过；compileall、版本一致性（**2 passed**）与 Git diff 检查通过。本轮未调用外部 Provider。
