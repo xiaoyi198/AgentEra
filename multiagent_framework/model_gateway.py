@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 from urllib.parse import urlsplit
 
+from .api_request_queue import APIRequestQueue
 from .llm_client import LLMClient, LLMConfig, LLMResponse
 from .model_generation_archive import ModelGenerationArchiveStore
 
@@ -39,11 +41,18 @@ class ModelGatewayError(RuntimeError):
 class ProviderConfig:
     name: str
     base_url: str = "https://api.openai.com/v1"
-    api_key_env: str = ""
+    api_key: str = ""
+    api_key_env: str = ""  # Legacy migration only; new saves use api_key.
     timeout_s: int = 30
+    retry_delay_s: float = 5.0
+    max_concurrent: int = 2
+    queue_interval_s: float = 1.0
 
     def __post_init__(self) -> None:
         self.timeout_s = max(1, int(self.timeout_s))
+        self.retry_delay_s = max(0.0, float(self.retry_delay_s))
+        self.max_concurrent = max(1, int(self.max_concurrent))
+        self.queue_interval_s = max(0.0, float(self.queue_interval_s))
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"Provider {self.name!r} has an invalid HTTP(S) base_url")
@@ -97,20 +106,25 @@ class GatewayConfig:
         source_path: str = "config/models.json",
     ) -> "GatewayConfig":
         raw_providers = dict(data.get("providers", {}))
-        plaintext = [name for name, raw in raw_providers.items() if raw.get("api_key")]
-        if plaintext:
-            raise ValueError(
-                f"Plaintext api_key is forbidden for providers: {plaintext}; use api_key_env"
-            )
-        providers = {
-            name: ProviderConfig(
+        providers: dict[str, ProviderConfig] = {}
+        for name, raw in raw_providers.items():
+            raw_api_key = str(raw.get("api_key", "") or "")
+            api_key_env = str(raw.get("api_key_env", "") or "")
+            if raw_api_key.startswith("${") and raw_api_key.endswith("}"):
+                api_key_env = raw_api_key[2:-1].strip()
+                raw_api_key = ""
+            if not raw_api_key and api_key_env:
+                raw_api_key = os.environ.get(api_key_env, "")
+            providers[name] = ProviderConfig(
                 name=name,
                 base_url=str(raw.get("base_url", ProviderConfig.base_url)),
-                api_key_env=str(raw.get("api_key_env", "") or ""),
+                api_key=raw_api_key,
+                api_key_env=api_key_env,
                 timeout_s=raw.get("timeout_s", 30),
+                retry_delay_s=raw.get("retry_delay_s", 5.0),
+                max_concurrent=raw.get("max_concurrent", 2),
+                queue_interval_s=raw.get("queue_interval_s", 1.0),
             )
-            for name, raw in raw_providers.items()
-        }
         models = {
             name: ModelProfile(
                 name=name,
@@ -224,8 +238,12 @@ class GatewayConfig:
         provider = ProviderConfig(
             name="legacy",
             base_url=config.base_url,
+            api_key=config.api_key,
             api_key_env=config.api_key_env,
             timeout_s=config.timeout_s,
+            retry_delay_s=config.retry_delay_s,
+            max_concurrent=config.max_concurrent,
+            queue_interval_s=config.queue_interval_s,
         )
         profile = ModelProfile(
             name="default",
@@ -295,8 +313,10 @@ class GatewayConfig:
             "providers": {
                 name: {
                     "base_url": provider.base_url,
-                    "api_key_env": provider.api_key_env,
                     "timeout_s": provider.timeout_s,
+                    "retry_delay_s": provider.retry_delay_s,
+                    "max_concurrent": provider.max_concurrent,
+                    "queue_interval_s": provider.queue_interval_s,
                 }
                 for name, provider in self.providers.items()
             },
@@ -315,11 +335,28 @@ class GatewayConfig:
             "agent_task_policies": self.agent_task_policies,
         }
 
+    def to_persisted_dict(self) -> dict[str, Any]:
+        data = self.to_dict()
+        data["providers"] = {
+            name: {
+                "base_url": provider.base_url,
+                "api_key": provider.api_key or (
+                    os.environ.get(provider.api_key_env, "") if provider.api_key_env else ""
+                ),
+                "timeout_s": provider.timeout_s,
+                "retry_delay_s": provider.retry_delay_s,
+                "max_concurrent": provider.max_concurrent,
+                "queue_interval_s": provider.queue_interval_s,
+            }
+            for name, provider in self.providers.items()
+        }
+        return data
+
     def save_to_file(self, path: str | None = None) -> None:
         target = Path(path or self.source_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(self.to_persisted_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     def to_display_dict(self) -> dict[str, Any]:
@@ -329,11 +366,17 @@ class GatewayConfig:
             "providers": {
                 name: {
                     "base_url": provider.base_url,
-                    "api_key_env": provider.api_key_env,
+                    "api_key": provider.api_key or (
+                        os.environ.get(provider.api_key_env, "") if provider.api_key_env else ""
+                    ),
                     "api_key_configured": bool(
-                        provider.api_key_env and os.environ.get(provider.api_key_env)
+                        provider.api_key
+                        or (provider.api_key_env and os.environ.get(provider.api_key_env))
                     ),
                     "timeout_s": provider.timeout_s,
+                    "retry_delay_s": provider.retry_delay_s,
+                    "max_concurrent": provider.max_concurrent,
+                    "queue_interval_s": provider.queue_interval_s,
                 }
                 for name, provider in self.providers.items()
             },
@@ -521,9 +564,15 @@ class ModelGateway:
         self.metrics = GatewayMetrics()
         self._state_lock = threading.RLock()
         self._reload_lock = threading.Lock()
-        self._runtime_keys = dict(runtime_keys or {})
+        self._runtime_keys = {
+            name: provider.api_key
+            for name, provider in self.config.providers.items()
+            if provider.api_key
+        }
+        self._runtime_keys.update(dict(runtime_keys or {}))
         self._redaction_keys = {key for key in self._runtime_keys.values() if key}
         self._clients: dict[str, LLMClient] = {}
+        self._provider_queues: dict[str, APIRequestQueue] = {}
         self._generation_archive = generation_archive
         self._generation_history: dict[int, tuple[float, GatewayConfig]] = {}
         self._generation_archive_issues: list[dict[str, Any]] = []
@@ -642,9 +691,21 @@ class ModelGateway:
         self._trim_generation_history()
 
     @staticmethod
+    def _create_provider_queues(config: GatewayConfig) -> dict[str, APIRequestQueue]:
+        return {
+            name: APIRequestQueue(
+                name,
+                max_concurrent=provider.max_concurrent,
+                queue_interval_s=provider.queue_interval_s,
+            )
+            for name, provider in config.providers.items()
+        }
+
+    @staticmethod
     def _create_clients(
         config: GatewayConfig,
         runtime_keys: dict[str, str],
+        provider_queues: dict[str, APIRequestQueue],
         profile_names: Iterable[str] | None = None,
     ) -> dict[str, LLMClient]:
         clients: dict[str, LLMClient] = {}
@@ -652,7 +713,7 @@ class ModelGateway:
         for name in names:
             profile = config.models[name]
             provider = config.providers[profile.provider]
-            api_key = runtime_keys.get(provider.name, "")
+            api_key = runtime_keys.get(provider.name, "") or provider.api_key
             if not api_key and provider.api_key_env:
                 api_key = os.environ.get(provider.api_key_env, "")
             llm_config = LLMConfig(
@@ -661,15 +722,47 @@ class ModelGateway:
                 api_key_env=provider.api_key_env,
                 model=profile.model,
                 timeout_s=provider.timeout_s,
+                retry_delay_s=provider.retry_delay_s,
                 max_concurrent=profile.max_concurrent,
             )
-            clients[name] = LLMClient(llm_config, debug_log_path=None)
+            clients[name] = LLMClient(
+                llm_config,
+                debug_log_path=None,
+                request_queue=provider_queues[profile.provider],
+            )
         return clients
 
     def _build_clients(self, profile_names: Iterable[str] | None = None) -> None:
+        if not self._provider_queues:
+            self._provider_queues = self._create_provider_queues(self.config)
         self._clients.update(
-            self._create_clients(self.config, self._runtime_keys, profile_names)
+            self._create_clients(
+                self.config, self._runtime_keys, self._provider_queues, profile_names
+            )
         )
+
+    def _create_replacement_clients(
+        self,
+        config: GatewayConfig,
+        runtime_keys: dict[str, str],
+        provider_queues: dict[str, APIRequestQueue],
+    ) -> dict[str, LLMClient]:
+        """Build a reload generation while tolerating legacy test/custom factories."""
+        factory = self._create_clients
+        try:
+            parameters = inspect.signature(factory).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        supports_provider_queues = any(
+            parameter.name == "provider_queues"
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if supports_provider_queues or not parameters:
+            return factory(
+                config, runtime_keys, provider_queues=provider_queues
+            )
+        return factory(config, runtime_keys)
 
     @staticmethod
     def _candidate_names(
@@ -982,6 +1075,14 @@ class ModelGateway:
         dlc_id: str = "",
         strict_profile: bool = False,
     ) -> LLMResponse:
+        deadline_monotonic: float | None = None
+        if isinstance(trace_context, dict):
+            raw_deadline = trace_context.get("_llm_deadline_monotonic")
+            if raw_deadline is not None:
+                try:
+                    deadline_monotonic = float(raw_deadline)
+                except (TypeError, ValueError):
+                    deadline_monotonic = None
         context = self._prepare_context(trace_context, task_type, agent_id)
         failures: list[str] = []
         generation, config, clients, candidates = self._acquire_runtime(
@@ -1011,6 +1112,16 @@ class ModelGateway:
                         tools=tools,
                         temperature=temperature,
                         max_retries=profile.max_retries if max_retries is None else max_retries,
+                        deadline_monotonic=deadline_monotonic,
+                        queue_context={
+                            "task_type": task_type,
+                            "profile": profile_name,
+                            "model": profile.model,
+                            "agent_id": context.agent_id,
+                            "trace_id": context.trace_id,
+                            "turn_id": context.turn_id,
+                            "chain_id": context.chain_id,
+                        },
                     )
                 except Exception as exc:
                     latency_ms = (time.monotonic() - started) * 1000
@@ -1089,6 +1200,15 @@ class ModelGateway:
                         messages=messages,
                         tools=tools,
                         temperature=temperature,
+                        queue_context={
+                            "task_type": task_type,
+                            "profile": profile_name,
+                            "model": profile.model,
+                            "agent_id": context.agent_id,
+                            "trace_id": context.trace_id,
+                            "turn_id": context.turn_id,
+                            "chain_id": context.chain_id,
+                        },
                     ):
                         yielded = True
                         if chunk.get("type") == "done":
@@ -1148,8 +1268,10 @@ class ModelGateway:
         profile = candidate.models[profile_name]
         provider = candidate.providers[profile.provider]
         provider.base_url = new_config.base_url
+        provider.api_key = new_config.api_key
         provider.api_key_env = new_config.api_key_env
         provider.timeout_s = new_config.timeout_s
+        provider.retry_delay_s = new_config.retry_delay_s
         profile.model = new_config.model
         profile.max_concurrent = new_config.max_concurrent
         if new_config.api_key:
@@ -1216,6 +1338,7 @@ class ModelGateway:
                 name: {
                     "api_key_configured": bool(
                         runtime_keys.get(name)
+                        or provider.api_key
                         or (provider.api_key_env and os.environ.get(provider.api_key_env))
                     )
                 }
@@ -1245,12 +1368,21 @@ class ModelGateway:
                     raise ModelGatewayError("Model gateway generation is stale")
                 previous_keys = dict(self._runtime_keys)
             next_runtime_keys = dict(previous_keys if runtime_keys is None else runtime_keys)
+            if runtime_keys is None:
+                next_runtime_keys.update({
+                    name: provider.api_key
+                    for name, provider in candidate.providers.items()
+                    if provider.api_key
+                })
             next_runtime_keys = {
                 name: key
                 for name, key in next_runtime_keys.items()
                 if name in candidate.providers and key
             }
-            new_clients = self._create_clients(candidate, next_runtime_keys)
+            new_provider_queues = self._create_provider_queues(candidate)
+            new_clients = self._create_replacement_clients(
+                candidate, next_runtime_keys, new_provider_queues
+            )
             self._remember_client_secrets(new_clients)
             with self._state_lock:
                 if self._closed:
@@ -1260,6 +1392,7 @@ class ModelGateway:
                     old_clients = self._clients
                     self.config = candidate
                     self._clients = new_clients
+                    self._provider_queues = new_provider_queues
                     self._runtime_keys = next_runtime_keys
                     self._redaction_keys.update(next_runtime_keys.values())
                     self._generation = old_generation + 1
@@ -1308,8 +1441,15 @@ class ModelGateway:
         with self._state_lock:
             source_path = path or self.config.source_path
         candidate = GatewayConfig.from_file(source_path)
+        persisted_keys = {
+            name: provider.api_key
+            for name, provider in candidate.providers.items()
+            if provider.api_key
+        }
         return await self.replace_config(
-            candidate, expected_generation=expected_generation
+            candidate,
+            runtime_keys=persisted_keys,
+            expected_generation=expected_generation,
         )
 
     def save_configuration(self) -> None:
@@ -1326,9 +1466,14 @@ class ModelGateway:
                 api_key_env=provider.api_key_env,
                 model=profile.model,
                 timeout_s=provider.timeout_s,
+                retry_delay_s=provider.retry_delay_s,
                 max_concurrent=profile.max_concurrent,
+                queue_interval_s=provider.queue_interval_s,
             ).save_to_file(config.source_path)
         else:
+            for name, provider in config.providers.items():
+                provider.api_key = runtime_keys.get(name, provider.api_key)
+                provider.api_key_env = ""
             config.save_to_file()
 
     def display_config(self) -> dict[str, Any]:
@@ -1339,10 +1484,9 @@ class ModelGateway:
         display = config.to_display_dict()
         display["generation"] = generation
         for name, provider in display["providers"].items():
-            provider["api_key_configured"] = bool(
-                runtime_keys.get(name)
-                or (provider.get("api_key_env") and os.environ.get(provider["api_key_env"]))
-            )
+            provider["api_key"] = runtime_keys.get(name, provider.get("api_key", ""))
+            provider.pop("api_key_env", None)
+            provider["api_key_configured"] = bool(provider["api_key"])
         return display
 
     def public_config(self) -> dict[str, Any]:
@@ -1356,6 +1500,8 @@ class ModelGateway:
             "legacy_mode": config.legacy_mode,
             "providers": {
                 name: {
+                    "max_concurrent": config.providers[name].max_concurrent,
+                    "queue_interval_s": config.providers[name].queue_interval_s,
                     "api_key_configured": any(
                         bool(getattr(clients.get(profile_name), "config", None).api_key)
                         for profile_name, profile in config.models.items()
@@ -1380,7 +1526,13 @@ class ModelGateway:
         }
 
     def metrics_snapshot(self) -> dict[str, Any]:
-        return self.metrics.snapshot()
+        with self._state_lock:
+            queues = list(self._provider_queues.values())
+            generation = self._generation
+        snapshot = self.metrics.snapshot()
+        snapshot["generation"] = generation
+        snapshot["queues"] = [queue.snapshot() for queue in queues]
+        return snapshot
 
     def recent_traces(self, limit: int = 100, task_type: str = "") -> list[dict[str, Any]]:
         return self.trace_store.recent(limit=limit, task_type=task_type)

@@ -30,7 +30,7 @@
 │   ├── worldstate.py                # 世界状态（实体/库存/关系/事件 CRUD）
 │   └── debug.py                     # 调试接口（timeline/timers/router-log/action-log）
 ├── requirements.txt                 # Python 依赖（fastapi, uvicorn, httpx, websockets, pydantic）
-├── start.bat / start.sh             # 一键启动脚本
+├── start.bat / start.sh             # 一键启动脚本（Windows start.bat 的 Uvicorn 后端启用 --reload）
 ├── runtime/                         # 运行时状态（自动创建，gitignore）
 │   ├── world.db                     # SQLite 数据库（官员/地点/定时器/世界状态/关系/事件）
 │   ├── chain_log.jsonl              # 调用链日志
@@ -504,15 +504,17 @@ BaseAgent (抽象基类)
 ### 3.13 llm_client.py — LLM 客户端
 
 **核心类型**：
-- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent）
+- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent/retry_delay_s）
   - `from_file(path)` / `save_to_file(path)` / `to_display_dict()`
 - `LLMResponse` — LLM 响应数据类（content, tool_calls, input_tokens, output_tokens, latency_ms, raw）
 - `LLMClient` 方法：
-  - `chat()` — 异步调用（非流式）
+  - `chat()` — 异步调用（非流式）；按 Profile 的 `max_retries` 重试，每次失败后按 Provider 的 `retry_delay_s` 固定冷却（默认 5 秒）
   - `chat_stream()` — 流式调用
   - `close()` — 关闭 HTTP 客户端
   - `config` — 属性，当前配置
   - `async update_config(new_config)` — 热更新配置
+- 响应兼容：`message.tool_calls` 显式为 `null` 时归一化为 `[]`；缺失 tool call ID 时生成兼容 ID，`arguments: null` 归一化为 `{}` JSON 字符串。
+- Provider HTTP 错误：保留状态码和脱敏后的 Provider 错误摘要，并附加不含 Prompt/工具结果正文的请求结构诊断（消息角色、工具名称、请求大小、tool call/result ID 匹配情况）。
 - `TokenCounter` — 累计 token 统计
 
 ---
@@ -1074,10 +1076,10 @@ Agent 多轮调用、DLC Studio、Hybrid Router、世界事务/价值锚、Memor
 
 ## Phase 0: LLM configuration security (2026-07-10)
 
-- `LLMConfig` supports `${ENV_VAR}` references and the explicit `api_key_env` field.
-- `save_to_file()` never writes an in-memory plaintext API key; only the environment-variable reference is persisted.
-- `/api/settings` and the settings UI preserve and edit `api_key_env`. A key entered directly in the UI is session-only unless the process environment is configured.
-- Timeout and concurrency limits are clamped to at least `1`.
+- `LLMConfig` persists a plaintext local `api_key`; `${ENV_VAR}` and `api_key_env` remain read-only migration inputs for older configuration files.
+- `save_to_file()` 仅把明文 API Key 写入 Git 忽略的本机配置；提交模板、Trace 和公开诊断仍不得包含密钥。
+- `/api/settings` and the settings UI read and edit the plaintext Provider `api_key`. Saving atomically writes the ignored local configuration and immediately replaces live model clients.
+- Timeout and concurrency limits are clamped to at least `1`; `retry_delay_s` is clamped to at least `0` and defaults to `5.0` seconds.
 - Streaming fallback calls the unlocked request path while holding the shared semaphore, preventing a deadlock when `max_concurrent=1`.
 - Safe templates: `config/llm.example.json` and `.env.example`. The local `config/llm.json` remains ignored by Git.
 
@@ -1089,7 +1091,7 @@ Agent 多轮调用、DLC Studio、Hybrid Router、世界事务/价值锚、Memor
 - Task bindings: `router.ambiguous`, `agent.turn`, `action.simulation`, `memory.compress`, and `tianji.chat`. Ordinary DLC agents receive an agent-bound adapter so traces include their entity ID.
 - Multi-round ActionAgent and TianJi calls reuse one `trace_id` and `turn_id`; spans include chain, round, task, profile, provider, model, token, latency, fallback, and termination metadata. Prompt/response bodies and keys are excluded from gateway traces.
 - Debug APIs: `/api/debug/model-config`, `/api/debug/llm-metrics`, and `/api/debug/llm-traces`.
-- Provider endpoints and environment-variable names are local configuration only. The unauthenticated legacy settings API cannot forward an existing environment secret to a changed `base_url`, and cannot select a different environment variable remotely.
+- Provider endpoints, API keys, timeout and retry cooldown are local control-plane configuration. The settings UI may change `base_url`, plaintext key and `retry_delay_s` together and hot-reload the active clients.
 - Safe template: `config/models.example.json`. Local `config/models.json` is ignored by Git.
 
 ## Phase 2：通用 TurnEngine 与普通 Agent 多轮执行（2026-07-10）
@@ -2254,6 +2256,15 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 - The v0.31.0 release gate passed 665 Python tests with 2 external-API environment-gated tests skipped, 58 frontend tests, Python compile, ESLint, Vite production build, `git diff --check`, added/untracked-line credential and encoding scans, synchronized version checks, and zero-issue `example_frontier` Registry validation. No external API request was attempted.
 - P1.6 is complete while the persistent gameplay-framework goal remains **active**. P0 and P1.1-P1.6 are complete; the next phase is P2.1 DLC calendars, seasons, turn/meeting/task cycles and automatic pause conditions. P2 remains open.
 
+
+## Local plaintext Provider configuration and diagnostics (v0.31.1)
+
+- Provider entries now persist `base_url`, plaintext `api_key`, and `timeout_s` in the ignored local `config/models.json`. Legacy `api_key_env` and `${ENV_VAR}` values are resolved during loading and migrated to plaintext on the next save.
+- `GatewayConfig.to_persisted_dict()` is the only serialization path that includes API keys. `GatewayConfig.to_dict()` remains secret-free and continues to back configuration fingerprints, generation archives, promotion metadata, and other public/operational projections.
+- `GET /api/settings` is an explicitly local control-plane surface and returns editable plaintext Provider keys. `POST /api/settings` atomically writes models/runtime/time files, activates a new Gateway generation, and rolls files back if client activation fails. Passing a complete runtime-key map makes both key replacement and key clearing hot-effective.
+- `POST /api/settings/providers/test` probes `GET {base_url}/models` with the unsaved draft. It reports success, latency, model count, and requested-model availability, and classifies timeout, connect/DNS/TLS/refused connection, HTTP 401/403/404/429/5xx, unexpected status, and model-not-found failures. Response excerpts are bounded and redact the submitted key.
+- The plaintext-local choice does not expand other disclosure boundaries: `public_config()`, traces, logs, evaluation artifacts, DLC exports, model generation archives, promotion artifacts, and error telemetry remain key-free.
+
 ## Release architecture note: DLC temporal contracts and runtime cycles (v0.32.0)
 
 ### Contract and validation boundary
@@ -2273,6 +2284,31 @@ Browser verification used the running DLC data at a 1280 x 720 viewport: the reg
 - `TickResult.time_system` and `GET /api/time-system` expose only the current calendar date, current season, enabled cycle states, authored public pause descriptions and bounded receipts. Condition trees, threshold values and hidden fact references are excluded. `TickResult.auto_pause` carries only the fired public reason and safe marker summary.
 - The main React application normalizes that projection through `TemporalStateTools.js`, displays the DLC date/season and active cycle progress, and keeps an auto-pause notice separate from the resume action. `TemporalSystemEditor.jsx` provides the detailed Chinese Studio authoring surface and serializes through `TemporalSystemTools.js`.
 - `example_frontier` v1.11.0 is the reference package for calendars, four seasons, concurrent command/meeting/task cycles, boundary Issue projection and condition/boundary pauses. AgentEra v0.32.0 completes P2.1; the persistent gameplay-framework goal remains active for P2.2-P2.4.
+
+## Provider 共享 API 队列与运行指标（v0.32.0）
+
+### 两级并发控制
+
+- `multiagent_framework/api_request_queue.py` 为每个 Provider 建立一个共享 `APIRequestQueue`。同一 Provider 下的 `fast_tools`、`deep_sim` 等所有 Profile 共用该队列，不再各自把并发额度叠加到上游接口。
+- `ProviderConfig.max_concurrent` 是上游 HTTP 总闸门；`ModelProfile.max_concurrent` 是单个 Profile 的二级逻辑上限。实际并发同时受两者约束。
+- `ProviderConfig.queue_interval_s` 限制同一 Provider 相邻 HTTP 请求开始时间的最小间隔。每一次真实 HTTP 尝试都单独排队，失败重试也必须重新入队并遵守间隔。
+- 配置热更新会原子创建新一代 Provider 队列和客户端；旧一代正在执行的调用继续使用旧队列直到自然结束。
+
+### 可观测性与安全边界
+
+- `GET /api/debug/llm-metrics` 在原有 Token/调用统计之外返回 `queues`，包括活动数、等待数、间隔等待数、平均/最长等待、失败/取消累计，以及活动或等待请求的安全元数据。
+- 设置中心“配置总览”每 2 秒刷新一次，显示总/输入/输出 Token、调用/成功/错误数量和每个 Provider 的实时队列状态。
+- 队列快照只接受任务类型、Profile、模型、Agent/Trace/Turn/Chain ID 和尝试次数；不得写入 Prompt、工具结果、API Key 或 Provider URL。
+- “接口服务商”页直接解释共享并发、出队间隔、Profile 二级上限及建议值；前端内置字段元数据兜底，后端 schema 尚未热更新时也不会出现无标题数字输入框。
+
+## Deadline-aware action simulation and queue compatibility (v0.32.0)
+
+- `TurnEngine` now creates one monotonic deadline for the complete logical turn and reserves 10% of the turn budget, capped at 10 seconds, for cancellation, trace persistence, and result construction. The same model deadline is propagated through `TaskLLMClient`, `ModelGateway`, `LLMClient`, and every Provider queue attempt.
+- Profile semaphore waits, Provider queue waits, queue pacing, retry cooldowns, and individual HTTP attempts all honor the caller-owned deadline. The HTTP timeout for an attempt is capped to the remaining deadline, and another retry is not started when its cooldown would consume the remaining budget.
+- Model calls are supervised with an explicit task wait instead of treating every nested `TimeoutError` as a `TurnEngine` hard timeout. Empty `httpx` timeout messages are normalized to a safe diagnostic containing the timeout class and configured HTTP timeout.
+- A Provider queue snapshot now counts requests that expire before dispatch in `totals.expired`. Expired requests are removed from the visible waiting set and cannot leak semaphore capacity.
+- The Settings Center distinguishes a real empty `queues: []` payload from the legacy metrics payload that has no `queues` field. The latter displays a restart-required warning instead of claiming that no Provider queue exists.
+- Existing `config/models.json` files that omit queue fields load with `max_concurrent=2` and `queue_interval_s=1.0`; the local active configuration should persist these values explicitly. A running backend created before this feature must be restarted before queue metrics and shared throttling become active.
 
 ## Dynamic lifecycle architecture (v0.33.0)
 
@@ -2328,6 +2364,7 @@ The orchestrator installs the runtime as the Issue Manager rhythm controller and
 
 `example_frontier` v1.13.0 is the reference package. It demonstrates a three-level border-security crisis, readiness-driven de-escalation, climax settlement, stabilization/intelligence rules, low-cost routine reports, and low-priority rumor suppression. AgentEra v0.34.0 completes gameplay-framework phase P2.3; the next phase is P2.4 player-understandable outcome feedback.
 
+
 ## Outcome feedback architecture (v0.35.0)
 
 ### Contract, sources and deterministic evaluation
@@ -2350,7 +2387,6 @@ The orchestrator installs the runtime as the Issue Manager rhythm controller and
 - The `outcome_feedback` UI Manifest widget renders the main result panel. It presents immediate changes, delayed reports, case summaries, causal reveals, and deterministic metric reasons without a periodic live-region poll that would repeatedly announce the same message.
 - DLC Studio provides a detailed Chinese editor for global capacities, epsilon, automatic immediate feedback, case summaries, source kinds, delivery timing, cross-references, shared causal conditions, public copy, follow-up Issues, and evidence attachment. Editor-only stable card keys are stripped during serialization.
 - `example_frontier` v1.14.0 demonstrates an immediate patrol result, a delayed decision follow-up report, and a later causal reveal, and exposes the panel through its UI Manifest.
-
 ## DLC 七步可玩性审计与跨题材验收（v0.36.0）
 
 ### 模块与数据流
@@ -2480,6 +2516,8 @@ v0.39.0 在 `Orchestrator._tick()` 内引入统一的、仅存在于当前 tick 
 
 统一时间线本身不进入存档，持久状态仍由 Temporal cursor、Random generator snapshot、Causal pending、Lifecycle Receipt/latch 和世界命令账本承担。同刻来源优先级保持 v0.38.0 以前的来源顺序，因此普通短 tick 行为不变；变化只发生在长跳时不同来源拥有不同历史时间的场景。
 
+
+
 ## Persistent budget-deferred timeline architecture (v0.40.0)
 
 v0.40.0 replaces the v0.39.0 `_tick()`-local heap with `multiagent_framework.timeline_runtime.DeferredTimelineRuntime`. Once a producer materializes a temporal event, lifecycle marker, random event, or condition continuation, the JSON-safe item enters the persistent queue before execution. The stable key is:
@@ -2598,3 +2636,36 @@ buildGameplayBranchDraft() 先在内存中完成全部中文校验，再检查 r
 ### 验证
 
 frontend/src/GameplayBranchTools.test.js 覆盖默认参与者推导、完整引用闭环、同价值锚、Agent 唤醒、延迟 Issue、恢复路径、Actor Capability 合并、原子拒绝和整套覆盖。额外将生成结果叠加到 example_abyssal 后执行 Registry 验收，结果为 0 issues、七步可玩性审计 7/7。
+
+## 本地 Provider 设置与共享 API 请求队列架构（v0.46.0）
+
+### 本地明文配置与安全边界
+
+`GatewayConfig` 将 Provider 的 `base_url`、`api_key`、`timeout_s`、`retry_delay_s`、`max_concurrent` 和 `queue_interval_s` 作为同一份本地配置契约。`config/models.json` 被 Git 忽略，设置中心读取和保存其中的明文 Key，并通过 Generation 替换立即热激活；旧版 `api_key_env` 仍可迁移读取，但新保存结果只写本地 `api_key`。公共模型配置、运行指标、Trace、错误诊断和 Generation 归档均不得包含 Key。
+
+设置保存继续使用 `expected_generation` 乐观锁和文件快照回滚：模型配置或运行时配置任一步校验、落盘、激活失败时恢复全部文件和当前运行代次，避免磁盘配置与活跃客户端分叉。
+
+### Provider 连接诊断
+
+`POST /api/settings/providers/test` 接收设置页当前草稿，不要求先保存。后端以短生命周期 HTTP 客户端请求规范化后的 `/models`，结构化返回连接、认证、权限、限流、上游故障和模型存在性结果。诊断正文经过 Key 替换与长度限制，不回显 Authorization、Prompt、消息正文或工具结果。
+
+### Provider 级共享排队
+
+每个 Provider 对应一个 `APIRequestQueue`，该 Provider 下的所有模型 Profile 共享：
+
+1. `max_concurrent` 限制实际同时进行的 HTTP 请求总数；Profile 自身 `max_concurrent` 仍限制逻辑调用并发。
+2. `queue_interval_s` 约束相邻请求开始时间；失败重试必须重新进入队列，不能绕过节流。
+3. 调用 Deadline 同时覆盖排队等待、出队间隔和 HTTP 请求；过期或取消的等待者必须从快照中移除。
+4. 队列快照只公开 Provider、容量、等待/运行计数、累计派发和 allowlist 元数据，禁止携带请求正文与凭据。
+
+`GatewayMetrics.snapshot()` 将这些聚合队列信息合并到设置中心运行指标。热重载会构建新 Generation 的队列和客户端；已经捕获旧 Generation 的在途调用继续使用旧运行时直到引用释放，再统一关闭。
+
+### OpenAI 兼容与多轮 Deadline
+
+`LLMClient` 在协议边界将 `tool_calls: null` 归一化为空列表，为缺失 ID 和空 arguments 提供安全值，并在 Provider HTTP 错误中保留 `message/type/code/param` 与无正文请求结构摘要。`TurnEngine` 将扣除清理保留时间后的单调时钟 Deadline 传给模型网关，使排队、重试和回退不会突破 Agent 单轮总耗时预算。
+
+### v0.46.0 验证
+
+- Python：`833 passed, 2 skipped, 1 failed`；唯一失败为既有的 0.2 秒 deadline 浮点表示边界。
+- Frontend：`102 passed`，ESLint 与 Vite production build 通过。
+- `python -m compileall -q multiagent_framework routers tests` 通过。

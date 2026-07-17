@@ -24,8 +24,8 @@ cd /d %~dp0frontend
 call npm install --silent
 cd /d %~dp0
 
-echo [3/4] Starting backend on localhost:8000 ...
-start "Backend" python -m uvicorn main:app --host 0.0.0.0 --port 8000
+echo [3/4] Starting backend on localhost:8000 with auto-reload ...
+start "Backend" python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 timeout /t 3 /nobreak >nul
 

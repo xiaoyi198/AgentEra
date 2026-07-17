@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   createSettingsDraft, nextUniqueName, parseAdvancedModelJson, parseProfileList,
-  renameMappingKey, settingsFingerprint, summarizeSettingsPreview,
+  renameMappingKey, settingsFingerprint, summarizeSettingsPreview, supportsProviderQueueMetrics,
 } from './SettingsSchemaTools'
 import './SettingsCenter.css'
 
 const API_BASE = '/api'
 const TAB_ICONS = { overview: '总', providers: '接', models: '模', routing: '路', rounds: '轮', memory: '忆', simulation: '世', security: '安', advanced: '码' }
+const PROVIDER_FIELD_FALLBACKS = Object.freeze({
+  'providers.*.base_url': { path: 'providers.*.base_url', label: '接口地址（Base URL）', description: 'OpenAI 兼容 API 的根地址，必须使用 http 或 https。', hot_reload: true },
+  'providers.*.api_key': { path: 'providers.*.api_key', label: 'API Key', description: '以明文写入本机 config/models.json，保存后立即热更新模型客户端。', hot_reload: true },
+  'providers.*.timeout_s': { path: 'providers.*.timeout_s', label: '请求超时（秒）', description: '单次模型 HTTP 请求允许等待的最长时间。', minimum: 1, maximum: 3600, hot_reload: true },
+  'providers.*.retry_delay_s': { path: 'providers.*.retry_delay_s', label: '失败重试冷却（秒）', description: 'API 请求失败后，发起下一次重试前的等待时间；0 表示不额外冷却。', minimum: 0, maximum: 3600, hot_reload: true },
+  'providers.*.max_concurrent': { path: 'providers.*.max_concurrent', label: 'Provider 共享并发上限', description: '限制该服务商下所有 Profile 合计同时发出的 HTTP 请求数；不确定时建议 1–2。', minimum: 1, maximum: 128, hot_reload: true },
+  'providers.*.queue_interval_s': { path: 'providers.*.queue_interval_s', label: 'API 出队间隔（秒）', description: '同一 Provider 相邻 HTTP 请求开始之间的最小停顿，失败重试也会遵守；可先设 0.5–1 秒。', minimum: 0, maximum: 3600, hot_reload: true },
+})
+const providerFieldMeta = (fieldMap, path) => ({ ...(PROVIDER_FIELD_FALLBACKS[path] || { path }), ...(fieldMap[path] || {}) })
 const clone = value => JSON.parse(JSON.stringify(value))
 
 async function readResponse(response) {
@@ -16,6 +25,62 @@ async function readResponse(response) {
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2))
   }
   return data
+}
+
+const numberFormatter = new Intl.NumberFormat('zh-CN')
+const formatCount = value => numberFormatter.format(Number(value) || 0)
+const formatMs = value => {
+  const ms = Number(value) || 0
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)} 分钟`
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)} 秒`
+  return `${Math.round(ms)} ms`
+}
+const requestStateLabel = state => ({ active: '请求中', spacing: '间隔等待', queued: '排队中' }[state] || state || '未知')
+
+function QueueMetricsPanel({ metrics, error }) {
+  const totals = metrics?.totals || {}
+  const queueMetricsAvailable = supportsProviderQueueMetrics(metrics)
+  const queues = queueMetricsAvailable ? metrics.queues : []
+  const backendNeedsRestart = Boolean(metrics && !queueMetricsAvailable)
+  const warning = error || (backendNeedsRestart
+    ? '当前后端尚未加载 Provider 共享队列功能。请重启后端服务后再查看队列状态；仅刷新页面不会生效。'
+    : '')
+  return <section className="settings-card settings-operations-card">
+    <div className="settings-operations-title"><div><h4>API 队列与 Token</h4><p>每 2 秒刷新；失败重试也会重新进入 Provider 共享队列。</p></div>
+      <StatusPill tone={warning ? 'warn' : 'ok'}>{error ? '指标暂不可用' : backendNeedsRestart ? '队列功能未生效' : `实时 · 代次 ${metrics?.generation ?? '—'}`}</StatusPill></div>
+    {warning && <div className="settings-callout warning">{warning}</div>}
+    <div className="settings-token-grid">
+      <div><strong>{formatCount(totals.total_tokens)}</strong><span>总 Token</span></div>
+      <div><strong>{formatCount(totals.input_tokens)}</strong><span>输入 Token</span></div>
+      <div><strong>{formatCount(totals.output_tokens)}</strong><span>输出 Token</span></div>
+      <div><strong>{formatCount(totals.calls)}</strong><span>模型调用</span></div>
+      <div><strong>{formatCount(totals.successes)}</strong><span>成功</span></div>
+      <div><strong>{formatCount(totals.errors)}</strong><span>错误</span></div>
+    </div>
+    {!queues.length && !warning && metrics && <EmptyState>当前没有可显示的 Provider 队列。</EmptyState>}
+    <div className="settings-queue-grid">{queues.map(queue => {
+      const requests = queue.requests || []
+      const queueTotals = queue.totals || {}
+      const occupied = (queue.active || 0) + (queue.spacing || 0)
+      return <article className="settings-queue-card" key={queue.provider}>
+        <div className="settings-queue-header"><div><strong>{queue.provider}</strong><small>共享并发 {occupied}/{queue.max_concurrent} · 出队间隔 {queue.queue_interval_s}s</small></div>
+          <StatusPill tone={queue.waiting ? 'warn' : queue.active ? 'ok' : 'neutral'}>{queue.waiting ? `${queue.waiting} 个等待` : queue.active ? `${queue.active} 个请求中` : '空闲'}</StatusPill></div>
+        <div className="settings-queue-bar"><span style={{ width: `${Math.min(100, (occupied / Math.max(1, queue.max_concurrent)) * 100)}%` }} /></div>
+        <div className="settings-queue-summary">
+          <span>活动 <strong>{queue.active || 0}</strong></span><span>间隔等待 <strong>{queue.spacing || 0}</strong></span><span>排队 <strong>{Math.max(0, (queue.waiting || 0) - (queue.spacing || 0))}</strong></span>
+          <span>平均等待 <strong>{formatMs(queueTotals.avg_wait_ms)}</strong></span><span>最长等待 <strong>{formatMs(queueTotals.max_wait_ms)}</strong></span><span>失败/取消 <strong>{formatCount((queueTotals.failed || 0) + (queueTotals.cancelled || 0))}</strong></span>
+        </div>
+        <div className="settings-request-list">
+          {!requests.length && <span className="settings-request-empty">没有活动或等待请求</span>}
+          {requests.map(request => <div className={`settings-request-row ${request.state || ''}`} key={request.request_id}>
+            <StatusPill tone={request.state === 'active' ? 'ok' : 'warn'}>{requestStateLabel(request.state)}</StatusPill>
+            <div><strong>{request.task_type || '未标记任务'} · {request.profile || '未知 Profile'}</strong><small>{request.agent_id || request.model || '—'} · 第 {request.attempt || 1} 次尝试</small></div>
+            <span>{request.state === 'active' ? formatMs(request.active_ms) : `已等 ${formatMs(request.wait_ms)}`}</span>
+          </div>)}
+        </div>
+      </article>
+    })}</div>
+  </section>
 }
 
 function NameEditor({ value, label, onCommit }) {
@@ -93,11 +158,14 @@ function SettingsCenter({ open, onClose, onSaved }) {
   const [saveReady, setSaveReady] = useState(false)
   const [advancedJson, setAdvancedJson] = useState('')
   const [advancedError, setAdvancedError] = useState('')
+  const [providerTests, setProviderTests] = useState({})
+  const [visibleKeys, setVisibleKeys] = useState({})
+  const [llmOperations, setLlmOperations] = useState(null)
+  const [llmOperationsError, setLlmOperationsError] = useState('')
 
   useEffect(() => {
     if (!open) return undefined
     let cancelled = false
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening starts an external settings fetch.
     setPhase('loading'); setMessage('正在读取配置与中文说明……')
     Promise.all([
       fetch(`${API_BASE}/settings/schema`).then(readResponse),
@@ -108,9 +176,31 @@ function SettingsCenter({ open, onClose, onSaved }) {
       setSchema(nextSchema); setDocument(nextDocument); setDraft(nextDraft)
       setBaseline(settingsFingerprint(nextDraft)); setAdvancedJson(JSON.stringify(nextDraft.model_gateway, null, 2))
       setValidation(null); setValidationFingerprint(''); setSaveReady(false); setAdvancedError('')
-      setPhase('idle'); setMessage('配置已加载。敏感密钥不会由服务器回传。')
+      setProviderTests({}); setVisibleKeys({})
+      setPhase('idle'); setMessage('配置已加载。API Key 保存在本机配置文件中。')
     }).catch(error => { if (!cancelled) { setPhase('error'); setMessage(error.message) } })
     return () => { cancelled = true }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
+    let cancelled = false
+    let loading = false
+    setLlmOperations(null); setLlmOperationsError('')
+    const refresh = async () => {
+      if (loading) return
+      loading = true
+      try {
+        const data = await fetch(`${API_BASE}/debug/llm-metrics`).then(readResponse)
+        if (data.error) throw new Error(data.error)
+        if (!cancelled) { setLlmOperations(data); setLlmOperationsError('') }
+      } catch (error) {
+        if (!cancelled) setLlmOperationsError(error.message || '无法读取模型指标')
+      } finally { loading = false }
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 2000)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [open])
 
   const fieldMap = useMemo(() => Object.fromEntries((schema?.fields || []).map(item => [item.path, item])), [schema])
@@ -148,7 +238,7 @@ function SettingsCenter({ open, onClose, onSaved }) {
   const updateProvider = (name, patch) => setModelGateway(model => ({ ...model, providers: { ...model.providers, [name]: { ...model.providers[name], ...patch } } }))
   const addProvider = () => {
     const name = nextUniqueName('provider', providers)
-    setModelGateway(model => ({ ...model, providers: { ...model.providers, [name]: { base_url: 'https://api.openai.com/v1', api_key_env: '', timeout_s: 30 } } }))
+    setModelGateway(model => ({ ...model, providers: { ...model.providers, [name]: { base_url: 'https://api.openai.com/v1', api_key: '', timeout_s: 30, retry_delay_s: 5, max_concurrent: 2, queue_interval_s: 1 } } }))
   }
   const renameProvider = (oldName, nextName) => {
     renameMappingKey(providers, oldName, nextName)
@@ -157,20 +247,30 @@ function SettingsCenter({ open, onClose, onSaved }) {
       providers: renameMappingKey(model.providers, oldName, nextName),
       models: Object.fromEntries(Object.entries(model.models).map(([name, profile]) => [name, profile.provider === oldName ? { ...profile, provider: nextName } : profile])),
     }))
-    setDraft(current => ({ ...current,
-      runtime_keys: renameMappingKey(current.runtime_keys || {}, oldName, nextName),
-      clear_runtime_keys: (current.clear_runtime_keys || []).map(name => name === oldName ? nextName : name),
-    }))
+    setProviderTests(current => { const next = { ...current }; if (oldName in next) { next[nextName] = next[oldName]; delete next[oldName] } return next })
+    setVisibleKeys(current => { const next = { ...current }; if (oldName in next) { next[nextName] = next[oldName]; delete next[oldName] } return next })
   }
   const removeProvider = name => {
     const usedBy = Object.entries(models).filter(([, p]) => p.provider === name).map(([id]) => id)
     if (usedBy.length) { window.alert(`不能删除：Profile ${usedBy.join('、')} 仍引用此服务商。`); return }
     if (!window.confirm(`确定删除接口服务商“${name}”吗？`)) return
     setModelGateway(model => { const next = { ...model.providers }; delete next[name]; return { ...model, providers: next } })
-    setDraft(current => ({ ...current,
-      runtime_keys: Object.fromEntries(Object.entries(current.runtime_keys || {}).filter(([key]) => key !== name)),
-      clear_runtime_keys: [...new Set([...(current.clear_runtime_keys || []), name])],
-    }))
+    setProviderTests(current => { const next = { ...current }; delete next[name]; return next })
+    setVisibleKeys(current => { const next = { ...current }; delete next[name]; return next })
+  }
+  const testProvider = async (name, provider) => {
+    const model = Object.values(models).find(profile => profile.provider === name)?.model || ''
+    setProviderTests(current => ({ ...current, [name]: { loading: true, message: '正在请求 /models 并检查连接……' } }))
+    try {
+      const result = await fetch(`${API_BASE}/settings/providers/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, base_url: provider.base_url, api_key: provider.api_key || '', timeout_s: provider.timeout_s, model }),
+      }).then(readResponse)
+      setProviderTests(current => ({ ...current, [name]: { ...result, loading: false } }))
+    } catch (error) {
+      setProviderTests(current => ({ ...current, [name]: { ok: false, code: 'request_error', loading: false, message: error.message } }))
+    }
   }
 
   const updateProfile = (name, patch) => setModelGateway(model => ({ ...model, models: { ...model.models, [name]: { ...model.models[name], ...patch } } }))
@@ -217,7 +317,7 @@ function SettingsCenter({ open, onClose, onSaved }) {
       const nextDocument = result.settings; const nextDraft = createSettingsDraft(nextDocument); const nextFingerprint = settingsFingerprint(nextDraft)
       setDocument(nextDocument); setDraft(nextDraft); setBaseline(nextFingerprint); setAdvancedJson(JSON.stringify(nextDraft.model_gateway, null, 2))
       setValidation({ valid: true, preview: result.preview, warnings: result.warnings || [] }); setValidationFingerprint(nextFingerprint); setSaveReady(false)
-      setPhase('saved'); setMessage(`设置已保存并热更新。模型配置代次：${nextDocument.generation}。会话密钥输入已清空。`)
+      setPhase('saved'); setMessage(`已明文写入本地配置并热更新。模型配置代次：${nextDocument.generation}。后续模型调用立即使用新配置。`)
       onSaved?.(nextDocument)
     } catch (error) { setPhase('error'); setMessage(error.message) }
   }
@@ -235,6 +335,7 @@ function SettingsCenter({ open, onClose, onSaved }) {
         <div className="settings-stat"><strong>{state.agent_count ?? '—'}</strong><span>当前 Agent 数量</span></div>
         <div className="settings-stat"><strong>{Object.keys(models).length}</strong><span>模型 Profile</span></div>
       </div>
+      <QueueMetricsPanel metrics={llmOperations} error={llmOperationsError} />
       <div className="settings-card-grid">
         <section className="settings-card"><h4>运行状态</h4>
           <div className="settings-kv"><span>世界主循环</span><StatusPill tone={state.simulation_running ? 'ok' : 'warn'}>{state.simulation_running ? '正在运行' : '未运行'}</StatusPill></div>
@@ -242,10 +343,10 @@ function SettingsCenter({ open, onClose, onSaved }) {
           <div className="settings-kv"><span>配置文件</span><code>{document?.model_gateway?.source_path || 'config/models.json'}</code></div>
           <div className="settings-kv"><span>兼容模式</span><span>{document?.model_gateway?.legacy_mode ? '旧版 llm.json（保存后迁移）' : '多模型网关'}</span></div>
         </section>
-        <section className="settings-card"><h4>密钥安全原则</h4>
-          <p>API Key 明文不会通过设置 API 回传，也不会写入配置文件或浏览器存储。</p>
-          <p>“本次会话密钥”仅驻留服务进程内存；服务重启后需要重新输入。</p>
-          <p>长期密钥应使用 Provider 的环境变量名，由启动进程注入。</p>
+        <section className="settings-card"><h4>本地配置方式</h4>
+          <p>API Key 以明文保存在本机 <code>config/models.json</code>，设置 API 会回传给本地设置页面进行编辑。</p>
+          <p>该配置文件已被 Git 忽略，保存后模型客户端立即热更新，无需重启服务。</p>
+          <p>此方式适合本地单机使用；不要共享、上传或提交包含真实 Key 的配置文件。</p>
         </section>
       </div>
       <section className="settings-card"><h4>模型路由优先级</h4>
@@ -256,31 +357,33 @@ function SettingsCenter({ open, onClose, onSaved }) {
   }
 
   const renderProviders = () => <div className="settings-page">
-    <SectionHeader title="接口服务商" description="管理 OpenAI 兼容接口。密钥只在本次服务进程中生效，不落盘、不回显。" action={<button className="btn primary" type="button" onClick={addProvider}>＋ 新增服务商</button>} />
+    <SectionHeader title="接口服务商" description="直接管理 OpenAI 兼容接口地址和本地明文 API Key；保存后立即热生效。" action={<button className="btn primary" type="button" onClick={addProvider}>＋ 新增服务商</button>} />
+    <div className="settings-callout warning">API Key 会明文写入本机 config/models.json。该文件已被 Git 忽略，但请勿共享或上传。</div>
+    <div className="settings-provider-queue-help"><strong>这两个选项是 Provider 总闸门：</strong><span><b>Provider 共享并发上限</b>限制该服务商下所有 Profile 合计同时发出的 HTTP 请求数，防止 fast/deep 的并发相加。</span><span><b>API 出队间隔</b>是相邻请求开始时间的最小间隔，重试也受限。不确定上游限制时，建议先设为 <code>1–2 并发</code>、<code>0.5–1 秒</code>。Profile 页的“最大并发”仍是二级上限，实际请求同时受两者限制。</span></div>
     {!Object.keys(providers).length && <EmptyState>至少需要一个接口服务商才能调用模型。</EmptyState>}
     {Object.entries(providers).map(([name, provider]) => {
-      const configured = document?.model_gateway?.providers?.[name]?.api_key_configured
-      const sessionValue = draft.runtime_keys?.[name] || ''
-      const markedClear = draft.clear_runtime_keys?.includes(name)
+      const test = providerTests[name]
+      const keyVisible = Boolean(visibleKeys[name])
       return <section className="settings-card settings-entity-card" key={name}>
         <div className="settings-entity-title"><NameEditor value={name} label="Provider 名称" onCommit={next => renameProvider(name, next)} />
-          <div className="settings-inline-actions"><StatusPill tone={(sessionValue || (configured && !markedClear)) ? 'ok' : 'warn'}>{sessionValue ? '已输入会话密钥' : configured && !markedClear ? '密钥已配置' : '密钥未配置'}</StatusPill>
+          <div className="settings-inline-actions"><StatusPill tone={provider.api_key ? 'ok' : 'warn'}>{provider.api_key ? 'API Key 已填写' : 'API Key 未填写'}</StatusPill>
             <button className="settings-icon-btn danger" type="button" onClick={() => removeProvider(name)}>删除服务商</button></div>
         </div>
         <div className="settings-form-grid two">
-          <TextSetting label="接口地址（Base URL）" description="OpenAI 兼容 API 根地址。更换已配置密钥的主机需要安全确认。" value={provider.base_url} onChange={value => updateProvider(name, { base_url: value })} placeholder="https://api.openai.com/v1" />
-          <NumberSetting meta={fieldMap['providers.*.timeout_s']} value={provider.timeout_s} onChange={value => updateProvider(name, { timeout_s: value })} />
-          <TextSetting label="API Key 环境变量名" description="这里只保存变量名，不读取或展示变量值；修改环境变量通常需要重启服务。" value={provider.api_key_env} onChange={value => updateProvider(name, { api_key_env: value })} placeholder="WORLD_SIM_API_KEY" />
-          <TextSetting label="本次会话密钥" description="仅写入服务进程内存；输入框不会预填，保存成功后立即清空。" type="password" value={sessionValue} onChange={value => setDraft(current => ({ ...current, runtime_keys: { ...current.runtime_keys, [name]: value }, clear_runtime_keys: (current.clear_runtime_keys || []).filter(item => item !== name) }))} placeholder="输入新密钥" />
+          <TextSetting label="接口地址（Base URL）" description={providerFieldMeta(fieldMap, 'providers.*.base_url').description} value={provider.base_url} onChange={value => updateProvider(name, { base_url: value })} placeholder="https://api.openai.com/v1" />
+          <NumberSetting meta={providerFieldMeta(fieldMap, 'providers.*.timeout_s')} value={provider.timeout_s} onChange={value => updateProvider(name, { timeout_s: value })} />
+          <NumberSetting meta={providerFieldMeta(fieldMap, 'providers.*.retry_delay_s')} value={provider.retry_delay_s ?? 5} onChange={value => updateProvider(name, { retry_delay_s: value })} />
+          <NumberSetting meta={providerFieldMeta(fieldMap, 'providers.*.max_concurrent')} value={provider.max_concurrent ?? 2} onChange={value => updateProvider(name, { max_concurrent: value })} />
+          <NumberSetting meta={providerFieldMeta(fieldMap, 'providers.*.queue_interval_s')} value={provider.queue_interval_s ?? 1} step={0.1} onChange={value => updateProvider(name, { queue_interval_s: value })} />
+          <label className="settings-field settings-key-field"><span className="settings-field-title">API Key</span>
+            <div className="settings-input-action"><input type={keyVisible ? 'text' : 'password'} autoComplete="off" value={provider.api_key || ''} onChange={e => updateProvider(name, { api_key: e.target.value })} placeholder="sk-..." /><button className="btn ghost" type="button" onClick={() => setVisibleKeys(current => ({ ...current, [name]: !current[name] }))}>{keyVisible ? '隐藏' : '显示'}</button></div>
+            <MetaNote meta={providerFieldMeta(fieldMap, 'providers.*.api_key')} />
+          </label>
         </div>
-        <label className="settings-checkbox danger-zone"><input type="checkbox" checked={markedClear} onChange={e => setDraft(current => ({ ...current,
-          runtime_keys: { ...current.runtime_keys, [name]: '' },
-          clear_runtime_keys: e.target.checked ? [...new Set([...(current.clear_runtime_keys || []), name])] : (current.clear_runtime_keys || []).filter(item => item !== name),
-        }))} /><span><strong>保存时清除内存中的会话密钥</strong><small>不会删除操作系统环境变量中的密钥。</small></span></label>
+        <div className="settings-provider-actions"><button className="btn secondary" type="button" disabled={test?.loading || !provider.base_url} onClick={() => testProvider(name, provider)}>{test?.loading ? '测试中……' : '测试连接'}</button><small>使用当前草稿请求 <code>/models</code>，并检查此 Provider 关联的第一个模型 ID。</small></div>
+        {test && <div className={`settings-provider-test ${test.loading ? 'loading' : test.ok ? 'ok' : 'error'}`}><strong>{test.loading ? '正在诊断' : test.ok ? '连接正常' : '连接失败'}</strong><span>{test.message}</span><div>{test.status_code && <StatusPill>HTTP {test.status_code}</StatusPill>}{test.latency_ms !== undefined && <StatusPill>{test.latency_ms} ms</StatusPill>}{test.model_count !== undefined && <StatusPill>{test.model_count} 个模型</StatusPill>}<StatusPill>{test.code || 'testing'}</StatusPill></div>{test.detail && <code>{test.detail}</code>}</div>}
       </section>
     })}
-    <label className="settings-checkbox security-confirm"><input type="checkbox" checked={Boolean(draft.allow_secret_host_change)} onChange={e => setDraft(current => ({ ...current, allow_secret_host_change: e.target.checked }))} />
-      <span><strong>我已核对并允许“已配置密钥的 Provider”更换接口主机</strong><small>错误地址可能把密钥发送给非预期服务器。仅在确认新主机可信时勾选。</small></span></label>
   </div>
 
   const renderModels = () => <div className="settings-page">
@@ -390,8 +493,8 @@ function SettingsCenter({ open, onClose, onSaved }) {
     </div>
   }
 
-  const renderAdvanced = () => <div className="settings-page settings-advanced-page"><SectionHeader title="高级 JSON" description="只编辑模型网关五个公开配置段。运行时密钥、环境变量和敏感值不会出现。" />
-    <div className="settings-callout warning">适合批量调整和复制路由。点击“应用到表单”后仍需后端校验并确认保存。</div>
+  const renderAdvanced = () => <div className="settings-page settings-advanced-page"><SectionHeader title="高级 JSON" description="直接编辑模型网关五个本地配置段，其中包含 Provider 明文 API Key。" />
+    <div className="settings-callout warning">适合批量调整和复制路由。JSON 中可能包含明文 API Key，请勿复制到公开位置。</div>
     <textarea className="settings-json-editor" spellCheck="false" value={advancedJson} onChange={e => { setAdvancedJson(e.target.value); setAdvancedError('') }} />
     {advancedError && <div className="settings-error-box">{advancedError}</div>}
     <div className="settings-inline-actions"><button className="btn secondary" type="button" onClick={() => { setAdvancedJson(JSON.stringify(draft.model_gateway, null, 2)); setAdvancedError('') }}>从表单重新生成</button><button className="btn primary" type="button" onClick={applyAdvancedJson}>应用到表单草稿</button></div>

@@ -1,4 +1,4 @@
-﻿"""全局运行时设置加载、校验与中文字段说明。"""
+"""全局运行时设置加载、校验与中文字段说明。"""
 
 from __future__ import annotations
 
@@ -241,7 +241,7 @@ def merge_known_model_config(
     for section in ("task_policies", "dlc_task_policies", "agent_task_policies"):
         result[section] = deepcopy(known.get(section, {}))
     for section, known_fields in (
-        ("providers", {"base_url", "api_key_env", "timeout_s"}),
+        ("providers", {"base_url", "api_key", "api_key_env", "timeout_s", "retry_delay_s", "max_concurrent", "queue_interval_s"}),
         ("models", {"provider", "model", "capabilities", "max_concurrent", "max_retries"}),
     ):
         output: dict[str, Any] = {}
@@ -268,7 +268,7 @@ def settings_schema() -> dict[str, Any]:
         "schema_version": "1.0",
         "categories": [
             {"id": "overview", "label": "配置总览", "description": "查看配置来源、热重载代次和安全状态。"},
-            {"id": "providers", "label": "接口服务商", "description": "管理 OpenAI 兼容接口地址、密钥环境变量和超时。"},
+            {"id": "providers", "label": "接口服务商", "description": "管理 OpenAI 兼容接口地址、本地明文 API Key 和超时。"},
             {"id": "models", "label": "模型 Profile", "description": "为速度、推理、工具能力等任务建立可复用模型档案。"},
             {"id": "routing", "label": "任务模型路由", "description": "配置全局、DLC 和 Agent 三级候选模型及故障回退顺序。"},
             {"id": "turns", "label": "Agent 多轮调用", "description": "控制普通 Agent 与世界执行 Agent 的轮次、工具、Token 和时间预算。"},
@@ -278,14 +278,16 @@ def settings_schema() -> dict[str, Any]:
             {"id": "advanced", "label": "高级 JSON", "description": "直接编辑模型网关 JSON，并在保存前执行同一套后端校验。"},
         ],
         "fields": [
-            field_meta("providers.*.base_url", "接口地址", "OpenAI 兼容 API 的根地址，必须使用 http 或 https。修改主机时需明确确认密钥发送风险。", "url", required=True, hot_reload=True),
-            field_meta("providers.*.api_key_env", "密钥环境变量", "只保存环境变量名称，不保存密钥明文。服务启动时从该变量读取密钥。", "env", hot_reload=True, secret_reference=True),
-            field_meta("providers.*.runtime_key", "本次会话密钥", "仅进入服务进程内存，不写入 models.json，也不会从 API 回传。", "secret", persist=False, hot_reload=True),
+            field_meta("providers.*.base_url", "接口地址", "OpenAI 兼容 API 的根地址，必须使用 http 或 https。", "url", required=True, hot_reload=True),
+            field_meta("providers.*.api_key", "API Key", "以明文写入本机 config/models.json，保存后立即热更新模型客户端。", "secret", persist=True, hot_reload=True),
             field_meta("providers.*.timeout_s", "请求超时（秒）", "单次模型 HTTP 请求允许等待的最长时间。", minimum=1, maximum=3600, hot_reload=True),
+            field_meta("providers.*.retry_delay_s", "失败重试冷却（秒）", "API 请求或上游响应失败后，发起下一次重试前固定等待的时间；设为 0 可关闭等待。", minimum=0, maximum=3600, step=0.5, hot_reload=True),
+            field_meta("providers.*.max_concurrent", "Provider 共享并发上限", "该 Provider 下所有模型 Profile 合计最多同时发出的 HTTP 请求数，避免各 Profile 的并发数叠加压垮上游。不确定时建议设为 1–2。", minimum=1, maximum=128, hot_reload=True),
+            field_meta("providers.*.queue_interval_s", "API 出队间隔（秒）", "同一 Provider 相邻 HTTP 请求开始之间的最小停顿；失败重试也会重新排队并遵守此间隔。0 表示不主动停顿，第三方接口可先设 0.5–1 秒。", minimum=0, maximum=3600, step=0.1, hot_reload=True),
             field_meta("models.*.provider", "接口服务商", "该 Profile 使用哪个接口服务商。", "select", required=True, hot_reload=True),
             field_meta("models.*.model", "模型标识", "发送给兼容 API 的实际模型 ID。", "string", required=True, hot_reload=True),
             field_meta("models.*.capabilities", "能力标签", "用于声明工具调用、JSON、流式输出、长上下文等能力；工具任务会优先要求 tools/function_calling。", "multiselect", hot_reload=True),
-            field_meta("models.*.max_concurrent", "最大并发", "该 Profile 同时允许执行的模型请求数。", minimum=1, maximum=256, hot_reload=True),
+            field_meta("models.*.max_concurrent", "Profile 最大并发", "只限制该 Profile 的逻辑调用并发；实际 HTTP 请求还会受 Provider 共享并发上限和出队间隔约束。", minimum=1, maximum=256, hot_reload=True),
             field_meta("models.*.max_retries", "失败重试次数", "网络或服务错误后在切换到下一候选模型前的重试次数。", minimum=0, maximum=20, hot_reload=True),
             field_meta("task_policies", "全局任务路由", "候选 Profile 按从左到右顺序尝试；未命中更精确规则时使用。", "policy", hot_reload=True),
             field_meta("dlc_task_policies", "DLC 任务路由", "仅对指定 DLC 生效，优先级高于全局任务路由。", "scoped_policy", hot_reload=True),

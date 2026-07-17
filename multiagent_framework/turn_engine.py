@@ -87,6 +87,10 @@ class TurnEngine:
         outcome = TurnOutcome(messages=conversation)
         started = time.monotonic()
         deadline = started + budget.max_seconds
+        llm_reserve_s = min(
+            10.0, max(0.05, budget.max_seconds * 0.1), budget.max_seconds * 0.5
+        )
+        llm_deadline = deadline - llm_reserve_s
         previous_signature = ""
         stagnant_rounds = 0
 
@@ -98,25 +102,47 @@ class TurnEngine:
 
             round_context = dict(trace_context or {})
             round_context["round"] = round_idx
+            round_context["_llm_deadline_monotonic"] = llm_deadline
+            round_context["_turn_deadline_monotonic"] = deadline
+            round_context["_turn_reserve_s"] = llm_reserve_s
+
+            if llm_deadline - time.monotonic() <= 0:
+                outcome.stop_reason = "time_budget"
+                outcome.error = (
+                    "turn deadline reserve reached before the next model round "
+                    f"({llm_reserve_s:.1f}s preserved for cleanup)"
+                )
+                break
 
             try:
-                response = await asyncio.wait_for(
+                llm_task = asyncio.create_task(
                     llm.chat(
                         messages=conversation,
                         tools=tools,
                         temperature=temperature,
                         trace_context=round_context,
-                    ),
-                    timeout=remaining,
+                    )
                 )
-            except asyncio.TimeoutError:
-                outcome.stop_reason = "time_budget"
-                outcome.error = "turn exceeded time budget"
-                break
+                done, _pending = await asyncio.wait({llm_task}, timeout=remaining)
+                if not done:
+                    llm_task.cancel()
+                    try:
+                        await llm_task
+                    except asyncio.CancelledError:
+                        pass
+                    outcome.stop_reason = "time_budget"
+                    outcome.error = (
+                        "turn exceeded its hard time budget while waiting for the model"
+                    )
+                    break
+                response = llm_task.result()
             except Exception as exc:
-                logger.error("TurnEngine LLM call failed at round %d: %s", round_idx, exc)
+                error_text = str(exc).strip() or type(exc).__name__
+                logger.error(
+                    "TurnEngine LLM call failed at round %d: %s", round_idx, error_text
+                )
                 outcome.stop_reason = "llm_error"
-                outcome.error = str(exc)
+                outcome.error = error_text
                 break
 
             outcome.last_response = response

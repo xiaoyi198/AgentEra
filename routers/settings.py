@@ -1,13 +1,15 @@
-﻿"""详细中文设置中心 API。"""
+"""详细中文设置中心 API。"""
 
 from __future__ import annotations
 
 import copy
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -28,10 +30,15 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 class SettingsDocumentRequest(BaseModel):
     model_gateway: dict[str, Any]
     runtime: dict[str, Any]
-    runtime_keys: dict[str, str] = Field(default_factory=dict)
-    clear_runtime_keys: list[str] = Field(default_factory=list)
     expected_generation: int | None = Field(default=None, ge=1)
-    allow_secret_host_change: bool = False
+
+
+class ProviderTestRequest(BaseModel):
+    name: str = "provider"
+    base_url: str
+    api_key: str = ""
+    timeout_s: int = Field(default=30, ge=1, le=3600)
+    model: str = ""
 
 
 def _orchestrator():
@@ -72,54 +79,14 @@ def _candidate(request: SettingsDocumentRequest) -> tuple[GatewayConfig, Runtime
     return model, runtime
 
 
-def _configured_provider_names(gateway, candidate: GatewayConfig, request: SettingsDocumentRequest) -> set[str]:
-    with gateway._state_lock:  # 内部事务读取；密钥永不离开本进程。
-        current_runtime_keys = dict(gateway._runtime_keys)
-    configured: set[str] = set()
-    clears = set(request.clear_runtime_keys)
-    for name, provider in candidate.providers.items():
-        submitted = str(request.runtime_keys.get(name, "") or "").strip()
-        if submitted or (name not in clears and current_runtime_keys.get(name)):
-            configured.add(name)
-        elif provider.api_key_env and os.environ.get(provider.api_key_env):
-            configured.add(name)
-    return configured
-
-
-def _validate_secret_host_changes(
-    gateway, candidate: GatewayConfig, request: SettingsDocumentRequest
-) -> None:
-    if request.allow_secret_host_change:
-        return
-    current = gateway.config
-    risky: list[str] = []
-    for name, provider in candidate.providers.items():
-        old = current.providers.get(name)
-        if old is None or old.base_url.rstrip("/") == provider.base_url.rstrip("/"):
-            continue
-        had_secret = bool(
-            gateway.display_config().get("providers", {}).get(name, {}).get("api_key_configured")
-            or old.api_key_env
-        )
-        if had_secret:
-            risky.append(name)
-    if risky:
-        raise RuntimeSettingsError(
-            "以下接口服务商修改了地址，可能把既有密钥发送到新主机："
-            + "、".join(risky)
-            + "。请在界面勾选安全确认后再次保存。"
-        )
-
-
-def _warnings(gateway, candidate: GatewayConfig, request: SettingsDocumentRequest) -> list[dict[str, str]]:
+def _warnings(candidate: GatewayConfig) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
-    configured = _configured_provider_names(gateway, candidate, request)
-    for name in candidate.providers:
-        if name not in configured:
+    for name, provider in candidate.providers.items():
+        if not provider.api_key:
             warnings.append({
                 "path": f"model_gateway.providers.{name}",
                 "code": "provider.api_key.missing",
-                "message": f"接口服务商“{name}”当前没有可用密钥；调用时会失败并尝试下一个候选模型。",
+                "message": f"接口服务商“{name}”当前没有 API Key；调用时会失败并尝试下一个候选模型。",
             })
     if "default" not in candidate.task_policies:
         warnings.append({
@@ -128,6 +95,121 @@ def _warnings(gateway, candidate: GatewayConfig, request: SettingsDocumentReques
             "message": "未配置 default 路由；未命中任务规则时将按模型 Profile 定义顺序尝试。",
         })
     return warnings
+
+
+def _redact_probe_text(value: str, api_key: str, *, limit: int = 500) -> str:
+    text = str(value or "")
+    if api_key:
+        text = text.replace(api_key, "[REDACTED]")
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _connect_error_message(exc: httpx.ConnectError, api_key: str) -> str:
+    detail = _redact_probe_text(str(exc), api_key)
+    lowered = detail.lower()
+    if any(token in lowered for token in ("name or service", "nodename", "getaddrinfo", "dns")):
+        reason = "DNS 解析失败，请检查域名和网络。"
+    elif any(token in lowered for token in ("ssl", "tls", "certificate", "cert")):
+        reason = "TLS/证书握手失败，请检查 HTTPS 地址、证书或代理。"
+    elif any(token in lowered for token in ("refused", "actively refused")):
+        reason = "目标主机拒绝连接，请检查端口和服务是否启动。"
+    else:
+        reason = "无法建立连接，可能是 DNS、网络、代理、端口或 TLS 问题。"
+    return f"{reason} 原始错误：{detail}" if detail else reason
+
+
+async def _probe_provider(
+    request: ProviderTestRequest,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    url = request.base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if request.api_key:
+        headers["Authorization"] = f"Bearer {request.api_key}"
+    client_kwargs: dict[str, Any] = {
+        "timeout": httpx.Timeout(float(request.timeout_s)),
+        "follow_redirects": True,
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.TimeoutException as exc:
+        return {
+            "ok": False,
+            "code": "timeout",
+            "message": f"连接超时（{request.timeout_s} 秒）。请检查地址、网络、代理或提高超时时间。",
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "detail": _redact_probe_text(str(exc), request.api_key),
+        }
+    except httpx.ConnectError as exc:
+        return {
+            "ok": False,
+            "code": "connect_error",
+            "message": _connect_error_message(exc, request.api_key),
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "code": "http_error",
+            "message": "HTTP 请求失败：" + _redact_probe_text(str(exc), request.api_key),
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    status = response.status_code
+    body = _redact_probe_text(response.text, request.api_key)
+    status_messages = {
+        401: ("unauthorized", "认证失败（HTTP 401）：API Key 无效、已过期或格式不正确。"),
+        403: ("forbidden", "访问被拒绝（HTTP 403）：API Key 没有权限，或账号/区域受到限制。"),
+        404: ("not_found", "接口不存在（HTTP 404）：Base URL 可能填写错误，或服务商不支持 /models。"),
+        429: ("rate_limited", "请求受限（HTTP 429）：可能触发限流、余额不足或配额耗尽。"),
+    }
+    if status in status_messages:
+        code, message = status_messages[status]
+        return {"ok": False, "code": code, "message": message, "status_code": status, "latency_ms": latency_ms, "detail": body}
+    if status >= 500:
+        return {"ok": False, "code": "provider_error", "message": f"服务商故障（HTTP {status}）：请稍后重试或联系服务商。", "status_code": status, "latency_ms": latency_ms, "detail": body}
+    if status < 200 or status >= 300:
+        return {"ok": False, "code": "unexpected_status", "message": f"服务商返回非预期状态（HTTP {status}）。", "status_code": status, "latency_ms": latency_ms, "detail": body}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    raw_models = payload.get("data", []) if isinstance(payload, Mapping) else []
+    model_ids = [str(item.get("id")) for item in raw_models if isinstance(item, Mapping) and item.get("id")]
+    requested_model = request.model.strip()
+    model_available = requested_model in model_ids if requested_model else None
+    if requested_model and model_ids and not model_available:
+        return {
+            "ok": False,
+            "code": "model_not_found",
+            "message": f"服务商连接成功，但模型“{requested_model}”不在 /models 返回的 {len(model_ids)} 个模型中。",
+            "status_code": status,
+            "latency_ms": latency_ms,
+            "model_count": len(model_ids),
+            "model_available": False,
+        }
+    message = f"连接成功，服务商返回 {len(model_ids)} 个模型。"
+    if requested_model and model_available:
+        message += f" 模型“{requested_model}”可用。"
+    elif requested_model and not model_ids:
+        message += " 响应未提供可识别的模型列表，无法确认指定模型是否存在。"
+    return {
+        "ok": True,
+        "code": "connected",
+        "message": message,
+        "status_code": status,
+        "latency_ms": latency_ms,
+        "model_count": len(model_ids),
+        "model_available": model_available,
+    }
 
 
 def _environment_status() -> dict[str, Any]:
@@ -204,18 +286,34 @@ async def get_settings():
     return _document()
 
 
+@router.post("/providers/test")
+async def test_provider_connection(request: ProviderTestRequest):
+    try:
+        GatewayConfig.from_dict({
+            "providers": {request.name: {
+                "base_url": request.base_url,
+                "api_key": request.api_key,
+                "timeout_s": request.timeout_s,
+            }},
+            "models": {"probe": {"provider": request.name, "model": request.model or "probe"}},
+            "task_policies": {"default": ["probe"]},
+        }).validate()
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return await _probe_provider(request)
+
+
 @router.post("/validate")
 async def validate_settings(request: SettingsDocumentRequest):
     try:
         gateway = _gateway()
         candidate, runtime = _candidate(request)
-        _validate_secret_host_changes(gateway, candidate, request)
         preview = gateway.preview_config(candidate)
         return {
             "valid": True,
             "preview": preview,
             "runtime": runtime.to_dict(),
-            "warnings": _warnings(gateway, candidate, request),
+            "warnings": _warnings(candidate),
         }
     except (RuntimeSettingsError, ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -263,20 +361,16 @@ async def save_settings(request: SettingsDocumentRequest):
     orch = _orchestrator()
     try:
         candidate, runtime = _candidate(request)
-        _validate_secret_host_changes(gateway, candidate, request)
         preview = gateway.preview_config(candidate)
-        warnings = _warnings(gateway, candidate, request)
+        warnings = _warnings(candidate)
     except (RuntimeSettingsError, ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
-    with gateway._state_lock:  # 复制后立即离开锁；不会写日志或返回。
-        runtime_keys = dict(gateway._runtime_keys)
-    for name in request.clear_runtime_keys:
-        runtime_keys.pop(name, None)
-    for name, secret in request.runtime_keys.items():
-        if name in candidate.providers and str(secret or "").strip():
-            runtime_keys[name] = str(secret).strip()
-    runtime_keys = {name: key for name, key in runtime_keys.items() if name in candidate.providers and key}
+    runtime_keys = {
+        name: provider.api_key
+        for name, provider in candidate.providers.items()
+        if provider.api_key
+    }
 
     model_path = Path(candidate.source_path)
     runtime_path = Path(runtime.source_path)
@@ -292,7 +386,7 @@ async def save_settings(request: SettingsDocumentRequest):
             loaded = json.loads(model_path.read_text(encoding="utf-8-sig"))
             if isinstance(loaded, Mapping):
                 old_raw = loaded
-        persisted_model = merge_known_model_config(old_raw, candidate.to_dict())
+        persisted_model = merge_known_model_config(old_raw, candidate.to_persisted_dict())
         atomic_write_json(model_path, persisted_model)
         runtime.save_to_file()
         atomic_write_json(legacy_time_path, runtime.simulation.__dict__)

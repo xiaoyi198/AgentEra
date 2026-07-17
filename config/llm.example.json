@@ -1,7 +1,9 @@
-﻿{
+{
   "base_url": "https://api.openai.com/v1",
-  "api_key": "${WORLD_SIM_API_KEY}",
+  "api_key": "在本地填写服务商 API Key",
   "model": "your-model-id",
   "timeout_s": 30,
-  "max_concurrent": 4
+  "max_concurrent": 4,
+  "retry_delay_s": 5,
+  "queue_interval_s": 1
 }

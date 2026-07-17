@@ -10,6 +10,7 @@ import {
   settingsFingerprint,
   stripModelMetadata,
   summarizeSettingsPreview,
+  supportsProviderQueueMetrics,
 } from './SettingsSchemaTools.js'
 
 const document = {
@@ -18,7 +19,7 @@ const document = {
     generation: 4,
     source_path: 'config/models.json',
     legacy_mode: false,
-    providers: { primary: { base_url: 'https://example.invalid/v1', timeout_s: 30, api_key_configured: true } },
+    providers: { primary: { base_url: 'https://example.invalid/v1', api_key: 'local-key', timeout_s: 30, api_key_configured: true } },
     models: { fast: { provider: 'primary', model: 'fast' } },
     task_policies: { default: ['fast'] },
     dlc_task_policies: {},
@@ -27,13 +28,13 @@ const document = {
   runtime: { simulation: { seconds_per_day: 120 } },
 }
 
-test('draft strips server metadata and never copies secret inputs', () => {
+test('draft strips server metadata and preserves editable local key', () => {
   const draft = createSettingsDraft(document)
   assert.equal(draft.expected_generation, 4)
   assert.equal(draft.model_gateway.generation, undefined)
   assert.equal(draft.model_gateway.source_path, undefined)
   assert.equal(draft.model_gateway.providers.primary.api_key_configured, undefined)
-  assert.deepEqual(draft.runtime_keys, {})
+  assert.equal(draft.model_gateway.providers.primary.api_key, 'local-key')
   assert.deepEqual(stripModelMetadata(document.model_gateway).task_policies, { default: ['fast'] })
 })
 
@@ -58,11 +59,12 @@ test('mapping helpers produce unique and collision-safe identifiers', () => {
   assert.throws(() => renameMappingKey({ old: {}, other: {} }, 'old', 'other'), /已存在/)
 })
 
-test('fingerprint tracks form changes without retaining actual runtime secrets', () => {
+test('fingerprint tracks plaintext key and runtime changes', () => {
   const first = createSettingsDraft(document)
   const second = createSettingsDraft(document)
-  first.runtime_keys.primary = 'secret-one'
-  second.runtime_keys.primary = 'secret-two'
+  second.model_gateway.providers.primary.api_key = 'changed-local-key'
+  assert.notEqual(settingsFingerprint(first), settingsFingerprint(second))
+  second.model_gateway.providers.primary.api_key = 'local-key'
   assert.equal(settingsFingerprint(first), settingsFingerprint(second))
   second.runtime.simulation.seconds_per_day = 90
   assert.notEqual(settingsFingerprint(first), settingsFingerprint(second))
@@ -73,4 +75,11 @@ test('preview summary uses chinese change counts', () => {
     profiles: { added: ['x'], removed: [], changed: ['fast'] },
     task_policies_changed: ['default'],
   }), '新增 1 个 Profile；修改 1 个 Profile；修改 1 条全局路由')
+})
+
+
+test('queue metrics capability distinguishes an old backend payload from an empty queue', () => {
+  assert.equal(supportsProviderQueueMetrics({ totals: {}, entries: [] }), false)
+  assert.equal(supportsProviderQueueMetrics({ totals: {}, queues: [] }), true)
+  assert.equal(supportsProviderQueueMetrics(null), false)
 })

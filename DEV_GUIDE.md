@@ -408,14 +408,16 @@ Agent 运行时：
 ### multiagent_framework/llm_client.py
 
 LLM 客户端：
-- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent）
+- `LLMConfig` — 配置（base_url/api_key/model/timeout_s/max_concurrent/retry_delay_s）
 ：
   - `LLMConfig.from_file(path)` — 从 JSON 文件加载配置
   - `LLMConfig.save_to_file(path)` — 保存配置到文件
   - `LLMConfig.to_display_dict()` — 返回脱敏字典（api_key 打码显示）
 - `LLMResponse` — LLM 响应数据类（content, tool_calls, input_tokens, output_tokens, latency_ms, raw）
-- `LLMClient.chat()` — 异步调用（非流式），自动重试，并发控制
+- `LLMClient.chat()` — 异步调用（非流式），自动重试，并发控制；每次失败到下一次重试之间按 `retry_delay_s` 固定等待（默认 5 秒，设为 0 关闭等待）
 - `LLMClient.chat_stream()` — 流式调用，yield delta/tool_call_delta/done 事件；出错时退化为非流式
+- OpenAI 兼容响应可返回 `tool_calls: null`，解析层必须将其视为无工具调用；不要直接遍历可空字段。缺失 ID 与 `arguments: null` 也应在协议边界归一化。
+- HTTP 错误必须通过脱敏诊断保留 Provider 的 `message/type/code/param` 以及请求结构摘要，但不得记录 Prompt、消息正文、工具结果正文或 API Key。
 - `LLMClient.close()` — 关闭 HTTP 客户端
 - `LLMClient.config` — 属性，当前配置
 - `TokenCounter` — 累计 token 统计
@@ -775,7 +777,9 @@ $env:WORLD_SIM_API_KEY = "your-api-key"
 python main.py
 ```
 
-Do not place a real secret in JSON, `.env.example`, logs, tests, or committed files. The settings page can accept a direct key for the current process, but persistence intentionally stores only `api_key_env`. Rotate any key that was previously exposed in plaintext.
+Do not place a real secret in committed files, examples, logs, tests, traces, or artifacts. Provider keys are intentionally stored in plaintext only in the Git-ignored local `config/models.json`; do not share or upload that file.
+
+Windows 开发环境可直接运行 `start.bat`。该脚本以 `python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload` 启动后端，因此 Python 源码修改会自动重载；修改启动脚本本身或更换依赖后仍需重新运行脚本。
 
 Validation commands:
 
@@ -787,12 +791,12 @@ cd frontend
 npm run build
 ```
 
-`tests/unit/test_llm_client.py` covers environment resolution, non-persistence of plaintext secrets, limit clamping, display redaction, and the `max_concurrent=1` stream-fallback regression.
+`tests/unit/test_llm_client.py` covers configuration loading, limit clamping, display redaction, the `max_concurrent=1` stream-fallback regression, `tool_calls: null` compatibility, Provider 400 diagnostics, and configurable retry cooldown.
 
 
 ## Task-aware model configuration (Phase 1)
 
-Copy `config/models.example.json` to ignored local `config/models.json`, then configure only environment-variable names in Provider entries. Never add `api_key` to a Provider; the loader rejects plaintext keys.
+Copy `config/models.example.json` to ignored local `config/models.json`, then set each Provider `base_url`, plaintext `api_key`, `timeout_s`, and optional `retry_delay_s` (default `5.0`). The loader still accepts legacy environment references for migration, but new saves remove `api_key_env`.
 
 Core task policy names:
 
@@ -805,7 +809,7 @@ Core task policy names:
 | `memory.compress` | long-memory summarization |
 | `tianji.chat` | TianJi interactive debugging |
 
-Each task maps to an ordered list of model profile names. The first compatible profile is tried first; Provider/model errors fall through to later profiles. Tool calls skip profiles that explicitly lack the `tools` or `function_calling` capability. Each profile owns an independent concurrency semaphore.
+Each task maps to an ordered list of model profile names. The first compatible profile is tried first; each profile performs `1 + max_retries` attempts, waiting for its Provider `retry_delay_s` between failed attempts, before Provider/model errors fall through to later profiles. Tool calls skip profiles that explicitly lack the `tools` or `function_calling` capability. Each profile owns an independent concurrency semaphore.
 
 Read-only diagnostics:
 
@@ -817,7 +821,7 @@ GET /api/debug/llm-traces?limit=100&task_type=action.simulation
 
 `GET /api/debug/model-config` is safe for DLC Studio profile dropdowns. It intentionally omits Provider URLs, environment-variable names, local source paths, credentials, and Authorization metadata.
 
-For security, change Provider `base_url` and `api_key_env` only in the ignored local configuration file. The settings page shows the active environment-variable name as read-only. A remote `base_url` change is accepted only together with a new session-only key, and the previous environment secret is never reused for the new host.
+Provider `base_url` and plaintext `api_key` may be changed directly in the local settings page. Saving uses atomic file replacement and immediately rebuilds live model clients; clearing the field clears the active key. Use “测试连接” before saving when diagnosing a new endpoint.
 
 To preflight and atomically activate edits to the existing local `config/models.json`, explicitly enable the administration boundary and provide a process-local token:
 
@@ -1843,7 +1847,7 @@ Scoped central model configuration uses:
 }
 ```
 
-Never place API keys in these files. Profiles reference `api_key_env`; the environment provides the secret. Promotion artifacts, mappings, previews, logs, and error responses must not contain Provider URLs, environment variable names, credentials, Prompt/message/memory text, filesystem paths, Agent/Trace/command/tool-call IDs, or raw exceptions.
+Never place API keys in promotion artifacts or other committed/generated review files. Local Provider configuration uses plaintext `api_key` only in ignored `config/models.json`; promotion artifacts, mappings, previews, logs, and error responses must not contain Provider URLs, credentials, Prompt/message/memory text, filesystem paths, Agent/Trace/command/tool-call IDs, or raw exceptions.
 
 ### Version synchronization
 
@@ -2426,9 +2430,9 @@ Development clients must call `POST /api/settings/validate` first, present its n
 
 Security rules are mandatory:
 
-- Never add a raw API key, admin token, archive key, or alert secret to a response model, Diff, log, exception detail, test fixture committed to Git, `models.json`, `runtime.json`, localStorage, or sessionStorage.
+- Provider API keys are allowed only in the local settings response and ignored local `config/models.json`. Never add them to public response models, Diffs, logs, exception details, committed fixtures, `runtime.json`, localStorage, sessionStorage, traces, evaluations, or archives.
 - `runtime_keys` are write-only request data held in backend process memory. A GET response may expose only whether a key is configured.
-- A long-lived credential must be referenced through `api_key_env`; environment status endpoints return booleans only.
+- New Provider saves use plaintext `api_key`; `api_key_env` is migration-only. Environment status endpoints for admin/metrics/archive secrets still return booleans only.
 - If a configured Provider's Base URL changes host, validation must warn and save must require `allow_secret_host_change=true`.
 - The Advanced JSON editor may edit only `providers`, `models`, `task_policies`, `dlc_task_policies`, and `agent_task_policies`; strip read-only metadata such as `api_key_configured` before serialization.
 - Preserve unknown model fields when applying known-section edits. Visual configuration must not become a lossy migration tool.
@@ -3115,6 +3119,18 @@ npm run build
 
 外部 API 连通测试继续只读取 `AGENTERA_TEST_BASE_URL`、`AGENTERA_TEST_API_KEY`、`AGENTERA_TEST_MODEL`、`AGENTERA_TEST_TIMEOUT_S` 与 `AGENTERA_TEST_MODEL_ATTEMPTS`；未注入 URL/Key 时必须 skip。不得把实际值、响应正文、Provider 原始异常或连接地址写入源码、配置、文档、命令记录、日志或 Git。
 
+
+## Developing local Provider settings and connection diagnostics (v0.31.1)
+
+1. Provider configuration fields are `base_url`, plaintext `api_key`, `timeout_s`, and `retry_delay_s`. Keep `api_key_env` support only in loaders that migrate older local files; do not emit it from new saves or the settings schema.
+2. Use `GatewayConfig.to_persisted_dict()` only for the ignored local models file. Use `to_dict()` for fingerprints, archives, previews that cross trust boundaries, and promotion/control metadata.
+3. Settings saves must pass the complete non-empty key map to `ModelGateway.replace_config()`. This is important: an omitted map means generation-control operations preserve current credentials, while an explicit empty map intentionally clears credentials. `reload_from_file()` derives an explicit map from disk so clearing a persisted key is honored.
+4. Keep save ordering transactional: snapshot files, atomically write models/runtime/time, replace Gateway clients, apply runtime values, and restore all files and runtime values if activation fails.
+5. Provider diagnostics probe `/models` with the unsaved draft. Add tests with `httpx.MockTransport`; never make unit tests depend on a real service or real key. Bound response excerpts and redact the submitted key before returning any detail.
+6. Regression tests must separately verify the intentional local disclosure and the still-secret public surfaces: settings GET returns the key, while `public_config()`, traces, logs, evaluations, model generation archives, and DLC exports do not.
+7. A Provider wrapper error such as HTTP 400 with `Console Go: Upstream request failed` is not, by itself, proof of an invalid request body. Preserve a bounded Provider error summary and inspect the content-free request diagnostics (`message_roles`, tool names/count, payload bytes, and tool-call/result ID mismatches) before changing schemas.
+8. Keep retry responsibilities separate: `ModelProfile.max_retries` controls how many additional attempts occur; `ProviderConfig.retry_delay_s` controls the fixed cooldown before each additional attempt. With defaults, one Profile can make three requests separated by two 5-second waits.
+
 ## DLC 时间系统开发指南 (v0.32.0)
 
 ### 最小配置
@@ -3167,6 +3183,93 @@ npm run build
 - Public UI code must use the safe projection and must not copy authored condition trees. Closing an auto-pause banner is not equivalent to calling `POST /api/resume`.
 - Add or update `TemporalSystemTools.test.js` for authoring behavior and `TemporalStateTools.test.js` for public formatting. Backend contract/runtime changes require `test_temporal_contract.py`, `test_temporal_runtime.py` and Generation integration coverage.
 - `frontend/dist/`, `runtime/` and `.pytest_cache/` are generated/runtime artifacts and must not be committed.
+
+## 开发 Provider 共享队列与 Token/队列面板（v0.32.0）
+
+### 配置字段
+
+Provider 配置新增并持久化以下字段：
+
+```json
+{
+  "max_concurrent": 2,
+  "queue_interval_s": 1.0
+}
+```
+
+- `max_concurrent`：该 Provider 下所有 Profile 合计允许同时进行的 HTTP 请求数，范围 `1..128`。第三方或限流不明确的接口建议从 `1–2` 开始。
+- `queue_interval_s`：同一 Provider 相邻 HTTP 请求开始之间的最小秒数，范围 `0..3600`；`0` 表示不主动停顿，保守起点为 `0.5–1` 秒。
+- `ModelProfile.max_concurrent` 仍然保留，但只作为单 Profile 二级上限。不要把它误认为 Provider 总并发。
+- `ModelProfile.max_retries` 决定额外尝试次数；每次重试都是新的 HTTP 尝试，必须重新加入 Provider 队列。`retry_delay_s` 是重试前冷却，`queue_interval_s` 是请求开始节流，两者会同时生效。
+
+### 实现规则
+
+1. 一个 `ModelGateway` generation 必须为每个 Provider 创建且只创建一个 `APIRequestQueue`，并注入该 Provider 的全部 `LLMClient`。
+2. semaphore 槽位只覆盖排队后实际 HTTP 尝试；排队取消必须清理请求记录并计入 `cancelled`，不得泄漏活动槽位。
+3. 派发间隔以请求“开始”时间计算。等待间隔的请求应显示为 `spacing`，普通等待显示为 `queued`，已占用上游请求显示为 `active`。
+4. 热更新先预建新队列和新客户端，再原子切换 generation。保留旧的两参数 `_create_clients(config, runtime_keys)` 测试/定制工厂兼容入口，不能因新增队列参数破坏 promotion reload。
+5. 队列上下文必须使用 allowlist；不要把 messages、tools、headers、API Key、base URL 或原始异常加入 snapshot。
+
+### 指标接口
+
+`GET /api/debug/llm-metrics` 的稳定顶层形状：
+
+```json
+{
+  "totals": {
+    "calls": 0,
+    "successes": 0,
+    "errors": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "entries": [],
+  "generation": 1,
+  "queues": []
+}
+```
+
+每个 `queues[]` 项包含 Provider 名称、`max_concurrent`、`queue_interval_s`、`active`、`waiting`、`spacing`、累计等待/失败/取消统计和有限的 `requests` 安全投影。前端设置中心打开时每 2 秒轮询；接口暂不可用时只显示安全错误提示，不能清空已保存配置。
+
+### UI 与回归检查
+
+- Provider 页的每个数字框必须同时显示名称、用途、合法范围和热更新提示。前端 `PROVIDER_FIELD_FALLBACKS` 是旧后端 schema 的兼容兜底，不能只依赖服务端字段元数据。
+- 共享并发和出队间隔必须解释与 Profile 并发的层级关系，并显示建议值，禁止只呈现裸数字框。
+- 修改后运行：
+  - `npm test -- --runInBand`
+  - `npm run build`
+  - `python -m pytest tests/unit/test_api_request_queue.py tests/unit/test_llm_client.py tests/unit/test_model_gateway.py tests/unit/test_model_promotion_apply.py tests/unit/test_settings_center.py -q`
+- 排查 `turn exceeded time budget` 时，先对照 action log 和 LLM trace：如果多次请求接近 `timeout_s × 尝试次数 + retry_delay_s`，再查看 `/api/debug/llm-metrics` 的 Provider 等待、最长等待和失败数，避免把已成功的工具查询误判为根因。
+
+## Deadline-aware model calls and timeout investigation (v0.32.0)
+
+### Deadline propagation
+
+`TurnEngine.run()` adds `_llm_deadline_monotonic`, `_turn_deadline_monotonic`, and `_turn_reserve_s` to the internal round trace context. `ModelGateway.chat()` extracts only the model deadline and passes it to `LLMClient.chat()`; these private keys are not included in the public `TraceContext` projection or Provider queue metadata.
+
+When changing this path, preserve all of the following invariants:
+
+1. Waiting for a Profile semaphore must stop at the logical model deadline.
+2. Every retry must rejoin the shared Provider queue with that same deadline.
+3. Waiting for a Provider slot and `queue_interval_s` pacing must stop at the deadline and remove the request from `_waiting`.
+4. `client.post(..., timeout=...)` must use the smaller of `ProviderConfig.timeout_s` and the remaining logical deadline.
+5. Retry cooldown must not start if it leaves no useful time for the next attempt.
+6. A nested `TimeoutError` raised by the client is an `llm_error`; only the supervisor's own unfinished task at the hard turn deadline is `time_budget`.
+
+### Runtime diagnosis
+
+If `/api/debug/llm-metrics` returns `totals` and `entries` but has neither `generation` nor `queues`, the running Python process is an old generation. Restart the backend before evaluating Provider shared-queue behavior. Refreshing the browser is insufficient.
+
+For action failures, correlate `chain_id`, `turn_id`, and round number across `/api/debug/action-log` and `runtime/llm_traces.jsonl`. A successful tool round followed by a zero-token model failure near `timeout_s * attempts + retry delays` indicates local HTTP timeout/retry exhaustion, even when a relay dashboard reports no upstream HTTP error.
+
+### Regression commands
+
+- `python -m pytest tests/unit/test_api_request_queue.py tests/unit/test_llm_client.py tests/unit/test_model_gateway.py tests/unit/test_turn_engine.py -q`
+- `npm test --prefix frontend`
+- `npm run build --prefix frontend`
+
+Regression coverage must include queue-deadline cleanup, bounded retry count, per-attempt timeout capping, non-empty timeout diagnostics, propagation through `ModelGateway`, and legacy metrics payload detection.
 
 ## Developing DLC dynamic lifecycles (v0.33.0)
 
@@ -3299,6 +3402,7 @@ npm run build
 
 Before committing, validate `dlcs/example_frontier`, run `git diff --check`, scan the new editor and sample package for replacement characters, and confirm that runtime state, local API keys, Provider URLs, and generated `frontend/dist/` files are not staged.
 
+
 ## Developing DLC outcome feedback rules (v0.35.0)
 
 ### Minimal contract
@@ -3382,7 +3486,6 @@ npm run build
 ```
 
 Also validate the expanded example DLC through `DLCRegistry`, exercise snapshot/restore and same-fingerprint hot reload, and inspect `GET /api/outcome-feedback` plus Tick payloads to ensure hidden causal data never reaches the player projection.
-
 ## Developing cross-genre playability audits (v0.36.0)
 
 ### Validation and audit responsibilities
@@ -3541,6 +3644,8 @@ python -m pytest tests/unit/test_version_consistency.py -q
 ```
 
 至少覆盖：不同来源跨日归并、同刻稳定 tie、零延迟因果、未来 pending 不提前消费、历史因果效果早于未来生命周期实体生成、`next_due_key()` 不改变 snapshot、历史 marker 不更新 condition latch、因果 128 条预算后 pending 保留，以及 lifecycle `truncated` 传播。
+
+
 
 ## Developing the persistent deferred timeline (v0.40.0)
 
@@ -3762,3 +3867,38 @@ npm run build
 - 对 example_frontier、example_orbital、example_abyssal 运行 Registry validate 和七步可玩性审计。
 
 发布验收除工具测试外，还应将一个新前缀分支叠加到真实参考包草稿并执行 Registry 校验，防止前端结构测试遗漏后端跨引用约束。
+
+## Provider 本地配置、连接诊断与共享队列开发指南（v0.46.0）
+
+### 配置规则
+
+- 本地 Provider 配置写入 Git 忽略的 `config/models.json`；允许明文 `api_key`，但禁止把真实 Key 写入 `config/models.example.json`、测试、日志、Trace、截图或提交产物。
+- Provider 字段：`base_url`、`api_key`、`timeout_s`、`retry_delay_s`、`max_concurrent`、`queue_interval_s`。新增字段时同时更新 `ProviderConfig`、持久化/展示投影、`runtime_settings.settings_schema()`、设置中心回退元数据、示例配置和测试。
+- Profile 的 `max_concurrent` 与 Provider 的 `max_concurrent` 含义不同：前者是该 Profile 的逻辑调用上限，后者是共享的真实 HTTP 并发上限。
+- 保存设置必须保持预览、乐观锁、文件快照、热激活和失败回滚的原子顺序；不要恢复为“先写文件、激活失败后留下半套配置”。
+
+### 连接测试
+
+`POST /api/settings/providers/test` 使用草稿 Base URL、Key、超时和可选模型 ID 请求 `/models`。修改诊断逻辑时必须覆盖成功、模型不存在、401/403、404、429、5xx、超时与连接失败，并验证响应中不包含输入 Key。不要把 Prompt 或模型请求正文加入该接口。
+
+### APIRequestQueue 约束
+
+- 同一 Provider 的所有 `LLMClient` 必须持有同一个队列实例；不同 Provider 不共享。
+- 每次 HTTP attempt 都调用队列，重试不可复用上一次许可。
+- Deadline 必须覆盖队列等待、出队间隔和 HTTP 阶段；取消与超时后清理等待状态。
+- `snapshot()` 只可暴露 allowlist 元数据与聚合计数。扩展指标前先添加泄密回归测试。
+- 热重载时不要提前关闭仍被在途调用引用的旧 Generation 客户端。
+
+### 回归命令
+
+```powershell
+python -m pytest tests/unit/test_api_request_queue.py tests/unit/test_provider_connection.py tests/unit/test_llm_client.py tests/unit/test_model_gateway.py tests/unit/test_settings_center.py tests/unit/test_settings_security.py tests/unit/test_turn_engine.py -q
+python -m pytest -q
+python -m compileall -q multiagent_framework routers tests
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+当前完整 Python 门禁有一个已知浮点边界：`test_turn_deadline_caps_each_http_attempt_timeout` 可能观察到 `0.2000000000007276`，断言要求 `<= 0.2`。除非同时定义并评审 deadline 舍入策略，否则不要用扩大断言或吞掉 Deadline 的方式掩盖该问题。

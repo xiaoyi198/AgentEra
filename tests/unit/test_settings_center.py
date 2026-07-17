@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -79,7 +80,7 @@ def test_runtime_settings_migrates_legacy_time_and_validates_memory(tmp_path):
         })
 
 
-def test_settings_schema_and_document_are_chinese_and_secret_free(monkeypatch, tmp_path):
+def test_settings_schema_and_document_return_local_plaintext_key(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_GATEWAY_KEY", "never-return-this-secret")
     client, orchestrator, _gateway = _client(tmp_path)
     previous = state.orchestrator
@@ -91,10 +92,15 @@ def test_settings_schema_and_document_are_chinese_and_secret_free(monkeypatch, t
         assert schema.status_code == 200
         assert schema.json()["categories"][0]["label"] == "配置总览"
         assert any(item["path"] == "agent_defaults.max_rounds" for item in schema.json()["fields"])
-        serialized = json.dumps(document.json(), ensure_ascii=False)
+        assert any(item["path"] == "providers.*.api_key" for item in schema.json()["fields"])
+        assert any(item["path"] == "providers.*.retry_delay_s" for item in schema.json()["fields"])
+        assert any(item["path"] == "providers.*.max_concurrent" for item in schema.json()["fields"])
+        assert any(item["path"] == "providers.*.queue_interval_s" for item in schema.json()["fields"])
+        assert not any(item["path"] == "providers.*.api_key_env" for item in schema.json()["fields"])
         assert document.status_code == 200
-        assert "never-return-this-secret" not in serialized
-        assert document.json()["model_gateway"]["providers"]["primary"]["api_key_configured"] is True
+        provider = document.json()["model_gateway"]["providers"]["primary"]
+        assert provider["api_key"] == "never-return-this-secret"
+        assert provider["api_key_configured"] is True
     finally:
         state.orchestrator = previous
 
@@ -114,7 +120,7 @@ def test_settings_validate_rejects_unknown_profile(tmp_path):
         state.orchestrator = previous
 
 
-def test_settings_save_persists_and_hot_reloads_without_secret(monkeypatch, tmp_path):
+def test_settings_save_persists_plaintext_key_and_hot_reloads(monkeypatch, tmp_path):
     monkeypatch.delenv("TEST_GATEWAY_KEY", raising=False)
     client, orchestrator, gateway = _client(tmp_path)
     previous = state.orchestrator
@@ -127,7 +133,10 @@ def test_settings_save_persists_and_hot_reloads_without_secret(monkeypatch, tmp_
             payload["runtime"]["simulation"] = {"seconds_per_day": 75, "tick_interval": 0.4}
             payload["runtime"]["agent_defaults"]["max_rounds"] = 7
             payload["runtime"]["action_agent"]["max_tool_calls"] = 55
-            payload["runtime_keys"] = {"primary": "session-only-secret"}
+            payload["model_gateway"]["providers"]["primary"]["api_key"] = "local-hot-key"
+            payload["model_gateway"]["providers"]["primary"]["retry_delay_s"] = 6.5
+            payload["model_gateway"]["providers"]["primary"]["max_concurrent"] = 1
+            payload["model_gateway"]["providers"]["primary"]["queue_interval_s"] = 1.25
             response = client.post("/api/settings", json=payload)
             refreshed = client.get("/api/settings")
 
@@ -139,15 +148,28 @@ def test_settings_save_persists_and_hot_reloads_without_secret(monkeypatch, tmp_
         assert orchestrator._tick_interval == 0.4
         assert orchestrator.action_agent.max_tool_calls == 55
         assert orchestrator.dlc_loader.agent_factory.agent_defaults["max_rounds"] == 7
-        assert "session-only-secret" not in (tmp_path / "models.json").read_text(encoding="utf-8")
-        assert "session-only-secret" not in json.dumps(refreshed.json())
+        saved_models = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+        assert saved_models["providers"]["primary"]["api_key"] == "local-hot-key"
+        assert refreshed.json()["model_gateway"]["providers"]["primary"]["api_key"] == "local-hot-key"
+        assert gateway._runtime_keys["primary"] == "local-hot-key"
+        assert gateway._clients["fast"].config.api_key == "local-hot-key"
+        assert gateway.config.providers["primary"].retry_delay_s == 6.5
+        assert gateway._clients["fast"].config.retry_delay_s == 6.5
+        assert saved_models["providers"]["primary"]["retry_delay_s"] == 6.5
+        assert gateway.config.providers["primary"].max_concurrent == 1
+        assert gateway.config.providers["primary"].queue_interval_s == 1.25
+        assert gateway._clients["fast"]._request_queue is gateway._clients["deep"]._request_queue
+        assert gateway._provider_queues["primary"].max_concurrent == 1
+        assert gateway._provider_queues["primary"].queue_interval_s == 1.25
+        assert saved_models["providers"]["primary"]["max_concurrent"] == 1
+        assert saved_models["providers"]["primary"]["queue_interval_s"] == 1.25
         saved_runtime = json.loads((tmp_path / "runtime.json").read_text(encoding="utf-8-sig"))
         assert saved_runtime["agent_defaults"]["max_rounds"] == 7
     finally:
         state.orchestrator = previous
 
 
-def test_settings_requires_confirmation_before_secret_host_change(tmp_path):
+def test_settings_host_change_no_longer_requires_extra_confirmation(tmp_path):
     client, orchestrator, _gateway = _client(tmp_path)
     previous = state.orchestrator
     state.orchestrator = orchestrator
@@ -156,15 +178,10 @@ def test_settings_requires_confirmation_before_secret_host_change(tmp_path):
             payload = _payload(client)
             payload["model_gateway"]["providers"]["primary"]["base_url"] = "https://new-host.invalid/v1"
             response = client.post("/api/settings/validate", json=payload)
-            payload["allow_secret_host_change"] = True
-            confirmed = client.post("/api/settings/validate", json=payload)
-        assert response.status_code == 422
-        assert "安全确认" in response.json()["detail"]
-        assert confirmed.status_code == 200
-        assert confirmed.json()["valid"] is True
+        assert response.status_code == 200
+        assert response.json()["valid"] is True
     finally:
         state.orchestrator = previous
-
 
 def test_settings_save_rolls_back_all_files_when_activation_fails(monkeypatch, tmp_path):
     client, orchestrator, gateway = _client(tmp_path)
@@ -200,3 +217,18 @@ def test_settings_save_rolls_back_all_files_when_activation_fails(monkeypatch, t
         assert orchestrator._tick_interval == 0.25
     finally:
         state.orchestrator = previous
+
+
+def test_provider_fields_keep_frontend_labels_when_schema_is_stale():
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "SettingsCenter.jsx"
+    ).read_text(encoding="utf-8")
+    assert "const PROVIDER_FIELD_FALLBACKS" in source
+    assert "Provider \u5171\u4eab\u5e76\u53d1\u4e0a\u9650" in source
+    assert "API \u51fa\u961f\u95f4\u9694\uff08\u79d2\uff09" in source
+    assert "\u5931\u8d25\u91cd\u8bd5\u51b7\u5374\uff08\u79d2\uff09" in source
+    assert "providerFieldMeta(fieldMap, 'providers.*.max_concurrent')" in source
+    assert "providerFieldMeta(fieldMap, 'providers.*.queue_interval_s')" in source

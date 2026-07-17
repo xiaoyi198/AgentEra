@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.45.0**
+> 当前版本：**v0.46.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -77,10 +77,10 @@ npm install
 Copy-Item config/models.example.json config/models.json
 ```
 
-在 `config/models.json` 中配置 Provider、模型 Profile 和任务策略。密钥必须通过 `api_key_env` 指向环境变量，不能把明文密钥写入配置文件。
+在 `config/models.json` 中配置 Provider、模型 Profile 和任务策略。API Key 直接以明文保存在这个本地文件中；该文件已被 Git 忽略，适合本地单机使用，但不要共享或上传。
 
-```powershell
-$env:WORLD_SIM_PRIMARY_API_KEY = "your-key"
+```json
+"api_key": "在本地填写服务商 API Key"
 ```
 
 兼容旧版 `config/llm.json`，但 DLC/Agent 分层模型策略和晋级应用要求使用 `config/models.json`。
@@ -110,7 +110,7 @@ npm run dev -- --host
 
 主界面右上角齿轮已升级为完整设置中心，用于替代旧版只覆盖少量字段的简陋弹窗。界面按中文说明组织为九类：配置总览、接口服务商、模型 Profile、任务模型路由、Agent 多轮调用、多轮记忆、世界模拟、安全与运维、高级 JSON。
 
-- Provider：新增、删除和改名 Provider，配置 Base URL、API Key 环境变量名、超时，并可临时输入仅驻留当前后端进程内存的 Session Key。
+- Provider：新增、删除和改名 Provider，直接配置 Base URL、明文 API Key 和超时；可使用“测试连接”查看 DNS、超时、TLS、认证、限流和模型不存在等具体失败原因。
 - 模型 Profile：配置 Provider、模型 ID、能力标签、并发和重试；Profile 改名会同步更新三级任务路由引用。
 - 任务路由：可视化编辑全局 `task_policies`、DLC `dlc_task_policies` 和 Agent `agent_task_policies`，候选 Profile 顺序即失败回退顺序。
 - Agent 多轮调用：分别控制普通 Agent 与 ActionAgent 的轮数、工具调用数、Token、耗时和无进展终止预算。
@@ -122,11 +122,12 @@ npm run dev -- --host
 运行时数值保存在 `config/runtime.json`（示例见 `config/runtime.example.json`），模型与路由仍保存在 `config/models.json`。设置接口为：
 
 - `GET /api/settings/schema`：读取中文字段元数据、范围、选项和安全说明。
-- `GET /api/settings`：读取脱敏设置文档、当前 Generation 与环境状态。
+- `GET /api/settings`：读取本地设置文档、Provider 明文 API Key、当前 Generation 与环境状态。
 - `POST /api/settings/validate`：无副作用校验并生成 Warning、规范化文档和 Diff。
-- `POST /api/settings`：使用 `expected_generation` 乐观锁原子保存并激活配置。
+- `POST /api/settings`：使用 `expected_generation` 乐观锁原子保存并热激活配置。
+- `POST /api/settings/providers/test`：使用当前草稿测试 Provider 的 `/models` 连接并返回结构化失败原因。
 
-API Key 不会通过设置 API 明文回传，也不会写入 JSON 或浏览器存储。长期凭据应使用 `api_key_env` 指向环境变量；Session Key 只适合本机临时调试。若已配置密钥的 Provider 修改到不同主机，必须在预览警告后显式确认 `allow_secret_host_change`。模型、Agent 预算、记忆和时间参数可热更新；管理 API 开关、管理令牌、归档加密密钥等环境变量仍需在进程启动前配置并重启生效。
+Provider API Key 会通过本地设置 API 回传给设置页面，并以明文写入被 Git 忽略的 `config/models.json`；保存后模型客户端立即热更新，不需要重启，也不再要求额外的主机变更确认。公共模型元数据、日志、Trace、评估报告和模型代次归档仍不会包含 Key。管理 API 开关、管理令牌、归档签名密钥等运维凭据仍需在进程启动前通过环境变量配置并重启生效。
 
 ## DLC 玩法契约 (v0.20.0)
 
@@ -460,6 +461,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 
 
+## v0.46.0 发布说明
+
+v0.46.0 完成详细中文设置中心的 Provider 配置闭环，并将模型请求调度升级为 Provider 级共享队列。面向本地部署，Provider API Key 以明文保存在 Git 忽略的 `config/models.json`，设置页可直接编辑、显示/隐藏、测试连接并热更新运行中的模型客户端；公共配置、日志、Trace 和代次归档继续严格脱敏。
+
+- Provider 设置新增 `retry_delay_s`、`max_concurrent`、`queue_interval_s` 中文字段说明，可视化区分 Profile 逻辑并发与 Provider 实际 HTTP 并发。
+- 新增 `POST /api/settings/providers/test`，使用当前草稿探测 `/models`，区分 DNS/连接、TLS、超时、401/403、404、429、Provider 5xx 与模型不存在，并在返回前清理 API Key。
+- 新增 Provider 共享 `APIRequestQueue`：同一 Provider 下所有 Profile 和每次失败重试统一排队，遵守并发上限、最小出队间隔、调用 Deadline 与取消清理；设置中心展示安全的聚合队列指标。
+- OpenAI 兼容层容忍 `tool_calls: null`、缺失工具调用 ID 和空 arguments；HTTP 错误保留脱敏 Provider 诊断与不含正文的请求结构摘要。
+- `start.bat` 默认以 Uvicorn `--reload` 启动后端，默认世界 Tick 间隔调整为 0.25 秒。
+- 版本同步更新到 `0.46.0`。验证结果：前端 **102 passed**，ESLint、Vite build、Python compileall 通过；Python 全量 **833 passed, 2 skipped, 1 failed**，唯一失败仍为已知的 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`。
+
 ## v0.45.0 发布说明
 
 v0.45.0 把 DLC Studio 的“快速创建”从实体/Actor/Agent 骨架扩展为题材无关的完整玩法分支向导。作者不再需要手工跨十余个 JSON 区段拼接 Action、Issue、延迟因果、恢复路径和反馈规则。
@@ -750,7 +762,6 @@ ActionAgent 现在使用三个类型化经济工具：`produce_resource`、`cons
 Release `0.20.0` introduces a theme-neutral `GameplayContract` for the primary DLC. It validates player identity and controlled entity/Agent references, distinguishes direct control from command authority, excludes directly controlled Agents from autonomous LLM construction, and lets explicit gameplay metadata override legacy `role=player` markers. The contract is carried through initial load, generation snapshots, encrypted archive blueprints, hot reload, rollback, Orchestrator player-recipient routing, and `GET /api/gameplay`.
 
 The bundled frontier example now declares a non-imperial station-commander contract while keeping its player-like Agent role set to `operator`, proving that runtime behavior no longer depends on a theme-specific role string. The React shell consumes the public contract for package title, identity, control count, and view labels. This is the first P0 gameplay-framework slice; generic actions, issues/objectives, permissions, and a complete DLC UI manifest remain future work. Release `0.20.0` is verified with **472 Python tests**, **16 frontend tests**, Python compile, frontend lint/build, Prompt contracts **100%**, deterministic trajectory replay **100%**, and Git diff checks.
-
 ## 跨题材 DLC 可玩性验收 (v0.36.0)
 
 `multiagent_framework.dlc_playability` 提供题材无关的七步静态审计。`GET /api/dlcs` 与 `GET /api/dlcs/{id}` 的每个包响应都包含 `playability`：`passed_count / total_count`、中文摘要、缺口和定位到具体 Action、Agent、Issue、因果规则、反馈、目标或结局的证据。Registry `validate()` 仍只回答“配置是否合法”，`audit_playability()` 回答“配置是否声明了可信的玩家循环”，两者不会互相替代。

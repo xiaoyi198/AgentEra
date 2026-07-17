@@ -26,10 +26,7 @@ export function createSettingsDraft(document = {}) {
   return {
     model_gateway: stripModelMetadata(document.model_gateway),
     runtime: deepClone(document.runtime || {}),
-    runtime_keys: {},
-    clear_runtime_keys: [],
     expected_generation: document.generation ?? document.model_gateway?.generation ?? null,
-    allow_secret_host_change: false,
   }
 }
 
@@ -38,11 +35,6 @@ export function settingsFingerprint(draft) {
   return JSON.stringify({
     model_gateway: draft.model_gateway,
     runtime: draft.runtime,
-    clear_runtime_keys: [...(draft.clear_runtime_keys || [])].sort(),
-    has_runtime_keys: Object.fromEntries(
-      Object.entries(draft.runtime_keys || {}).map(([name, value]) => [name, Boolean(value)]),
-    ),
-    allow_secret_host_change: Boolean(draft.allow_secret_host_change),
   })
 }
 
@@ -88,6 +80,14 @@ export function renameMappingKey(mapping, oldName, nextName) {
     key === oldName ? name : key,
     value,
   ]))
+}
+
+export function supportsProviderQueueMetrics(metrics) {
+  return Boolean(
+    metrics
+    && Object.prototype.hasOwnProperty.call(metrics, 'queues')
+    && Array.isArray(metrics.queues)
+  )
 }
 
 export function summarizeSettingsPreview(preview = {}) {

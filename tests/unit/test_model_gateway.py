@@ -23,9 +23,11 @@ class FakeClient:
         self.response = response
         self.error = error
         self.calls = 0
+        self.last_kwargs = {}
 
     async def chat(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         if self.error:
             raise self.error
         return self.response or LLMResponse(content=self.config.model, latency_ms=4.0)
@@ -41,6 +43,9 @@ def make_config(tmp_path):
                 name="primary",
                 base_url="https://example.invalid/v1",
                 api_key_env="TEST_GATEWAY_KEY",
+                retry_delay_s=7.5,
+                max_concurrent=2,
+                queue_interval_s=0.75,
             )
         },
         models={
@@ -68,18 +73,25 @@ def make_config(tmp_path):
     )
 
 
-def test_config_round_trip_never_persists_secret(monkeypatch, tmp_path):
-    monkeypatch.setenv("TEST_GATEWAY_KEY", "never-write-this-secret")
+def test_config_round_trip_persists_local_plaintext_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_GATEWAY_KEY", "local-persisted-secret")
     config = make_config(tmp_path)
 
     config.save_to_file()
 
-    raw = (tmp_path / "models.json").read_text(encoding="utf-8")
+    raw = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
     loaded = GatewayConfig.from_file(str(tmp_path / "models.json"))
-    assert "never-write-this-secret" not in raw
-    assert loaded.providers["primary"].api_key_env == "TEST_GATEWAY_KEY"
+    assert raw["providers"]["primary"]["api_key"] == "local-persisted-secret"
+    assert "api_key_env" not in raw["providers"]["primary"]
+    assert loaded.providers["primary"].api_key == "local-persisted-secret"
+    assert loaded.providers["primary"].api_key_env == ""
+    assert raw["providers"]["primary"]["retry_delay_s"] == 7.5
+    assert loaded.providers["primary"].retry_delay_s == 7.5
+    assert raw["providers"]["primary"]["max_concurrent"] == 2
+    assert raw["providers"]["primary"]["queue_interval_s"] == 0.75
+    assert loaded.providers["primary"].max_concurrent == 2
+    assert loaded.providers["primary"].queue_interval_s == 0.75
     assert loaded.task_policies["router.ambiguous"] == ["deep", "fast"]
-
 
 def test_config_rejects_plaintext_provider_key(tmp_path):
     payload = {
@@ -95,8 +107,65 @@ def test_config_rejects_plaintext_provider_key(tmp_path):
         "task_policies": {"default": ["default"]},
     }
 
-    with pytest.raises(ValueError, match="Plaintext api_key is forbidden"):
-        GatewayConfig.from_dict(payload, source_path=str(tmp_path / "models.json"))
+    config = GatewayConfig.from_dict(payload, source_path=str(tmp_path / "models.json"))
+
+    assert config.providers["primary"].api_key == "must-not-be-accepted"
+    assert config.to_dict()["providers"]["primary"].get("api_key") is None
+    assert config.to_persisted_dict()["providers"]["primary"]["api_key"] == "must-not-be-accepted"
+
+
+def test_profiles_on_same_provider_share_one_request_queue(tmp_path):
+    gateway = ModelGateway(make_config(tmp_path))
+
+    assert gateway._clients["fast"]._request_queue is gateway._clients["deep"]._request_queue
+    queue = gateway._clients["fast"]._request_queue
+    assert queue is gateway._provider_queues["primary"]
+    assert queue.max_concurrent == 2
+    assert queue.queue_interval_s == 0.75
+
+
+def test_different_providers_receive_different_request_queues(tmp_path):
+    config = make_config(tmp_path)
+    config.providers["secondary"] = ProviderConfig(
+        name="secondary", base_url="https://secondary.invalid/v1"
+    )
+    config.models["deep"].provider = "secondary"
+    gateway = ModelGateway(config)
+
+    assert gateway._clients["fast"]._request_queue is not gateway._clients["deep"]._request_queue
+    assert set(gateway._provider_queues) == {"primary", "secondary"}
+
+
+def test_gateway_passes_safe_queue_context_and_reports_queue_snapshot(tmp_path):
+    gateway = ModelGateway(make_config(tmp_path))
+    fake = FakeClient("fast-model", response=LLMResponse(content="ok", input_tokens=4, output_tokens=2))
+    gateway._clients["fast"] = fake
+
+    response = asyncio.run(gateway.chat(
+        task_type="agent.turn",
+        messages=[{"role": "user", "content": "secret prompt"}],
+        agent_id="agent-1",
+        trace_context={
+            "turn_id": "turn-1",
+            "chain_id": "chain-1",
+            "_llm_deadline_monotonic": 123.45,
+        },
+    ))
+
+    assert response.content == "ok"
+    assert fake.last_kwargs["deadline_monotonic"] == 123.45
+    context = fake.last_kwargs["queue_context"]
+    assert context["task_type"] == "agent.turn"
+    assert context["profile"] == "fast"
+    assert context["model"] == "fast-model"
+    assert context["agent_id"] == "agent-1"
+    assert context["turn_id"] == "turn-1"
+    assert context["chain_id"] == "chain-1"
+    assert "messages" not in context
+    snapshot = gateway.metrics_snapshot()
+    assert snapshot["generation"] == gateway.generation
+    assert snapshot["totals"]["total_tokens"] == 6
+    assert snapshot["queues"][0]["provider"] == "primary"
 
 
 def test_task_policy_selects_different_models(tmp_path):
@@ -264,7 +333,7 @@ def test_primary_dlc_task_binding_rejects_unknown_profile(tmp_path):
         )
 
 
-def test_credentials_available_never_exposes_runtime_secret(monkeypatch, tmp_path):
+def test_credentials_available_exposes_key_only_in_local_display(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_GATEWAY_KEY", "runtime-only-secret")
     gateway = ModelGateway(
         make_config(tmp_path),
@@ -273,7 +342,8 @@ def test_credentials_available_never_exposes_runtime_secret(monkeypatch, tmp_pat
 
     assert gateway.credentials_available("agent.turn")
     assert gateway.credentials_available("router.ambiguous")
-    assert "runtime-only-secret" not in json.dumps(gateway.display_config())
+    assert gateway.display_config()["providers"]["primary"]["api_key"] == "runtime-only-secret"
+    assert "runtime-only-secret" not in json.dumps(gateway.public_config())
 
 
 class ControlledClient(FakeClient):
@@ -562,3 +632,30 @@ def test_strict_profile_disables_task_policy_fallback(tmp_path):
     assert gateway.candidates(
         "router.ambiguous", "deep", strict_profile=True
     ) == ["deep"]
+
+
+def test_reload_from_file_applies_and_clears_persisted_key(tmp_path):
+    config = GatewayConfig(
+        providers={
+            "primary": ProviderConfig(
+                name="primary",
+                base_url="https://example.invalid/v1",
+                api_key="first-local-key",
+            )
+        },
+        models={
+            "fast": ModelProfile(name="fast", provider="primary", model="fast-model")
+        },
+        task_policies={"default": ["fast"]},
+        source_path=str(tmp_path / "models.json"),
+    )
+    config.save_to_file()
+    gateway = ModelGateway(config, trace_store=TraceStore(str(tmp_path / "trace.jsonl")))
+    assert gateway._clients["fast"].config.api_key == "first-local-key"
+
+    config.providers["primary"].api_key = ""
+    config.save_to_file()
+    asyncio.run(gateway.reload_from_file())
+
+    assert "primary" not in gateway._runtime_keys
+    assert gateway._clients["fast"].config.api_key == ""

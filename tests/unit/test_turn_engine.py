@@ -652,3 +652,51 @@ async def test_contract_capability_delegates_to_action_catalog_with_agent_identi
         "target_id": "station",
         "parameters": {"days": 2},
     })]
+
+
+@async_test
+async def test_turn_engine_propagates_model_deadline_with_cleanup_reserve() -> None:
+    llm = ScriptedLLM([LLMResponse(content="done")])
+    engine = TurnEngine()
+
+    async def execute_tool(name, args, tool_call):
+        return {"ok": True}
+
+    outcome = await engine.run(
+        llm=llm,
+        messages=[{"role": "system", "content": "test"}],
+        tools=[],
+        execute_tool=execute_tool,
+        terminal_predicate=lambda name, result: False,
+        budget=TurnBudget(max_seconds=20),
+    )
+
+    context = llm.contexts[0]
+    assert outcome.stop_reason == "no_tool_calls"
+    assert context["_turn_reserve_s"] == 2.0
+    assert context["_llm_deadline_monotonic"] < context["_turn_deadline_monotonic"]
+    assert context["_turn_deadline_monotonic"] - context["_llm_deadline_monotonic"] == 2.0
+
+
+@async_test
+async def test_turn_engine_preserves_nonempty_error_for_empty_timeout_exception() -> None:
+    class EmptyTimeoutLLM:
+        async def chat(self, **kwargs):
+            raise TimeoutError()
+
+    engine = TurnEngine()
+
+    async def execute_tool(name, args, tool_call):
+        return {"ok": True}
+
+    outcome = await engine.run(
+        llm=EmptyTimeoutLLM(),
+        messages=[{"role": "system", "content": "test"}],
+        tools=[],
+        execute_tool=execute_tool,
+        terminal_predicate=lambda name, result: False,
+        budget=TurnBudget(max_seconds=2),
+    )
+
+    assert outcome.stop_reason == "llm_error"
+    assert outcome.error == "TimeoutError"

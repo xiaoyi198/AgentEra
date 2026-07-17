@@ -2,8 +2,11 @@
   "providers": {
     "primary": {
       "base_url": "https://api.openai.com/v1",
-      "api_key_env": "WORLD_SIM_PRIMARY_API_KEY",
-      "timeout_s": 45
+      "api_key": "在本地填写服务商 API Key",
+      "timeout_s": 45,
+      "retry_delay_s": 5.0,
+      "max_concurrent": 2,
+      "queue_interval_s": 1.0
     }
   },
   "models": {
