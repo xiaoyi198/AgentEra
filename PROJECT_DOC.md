@@ -2703,3 +2703,39 @@ frontend/src/GameplayBranchTools.test.js 覆盖默认参与者推导、完整引
 - Python 单元：**826 passed, 1 failed**；唯一失败为既有的 0.2 秒 deadline 浮点表示边界。
 - Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
 - Python compileall、ESLint、Vite production build、版本一致性和 Git Diff 检查通过。
+
+## 参数感知真实模型轨迹评估架构（v0.48.0）
+
+### 参数契约模型
+
+真实轨迹 Suite 的 `expect.tool_argument_contracts` 用于验证模型实际提交给工具的参数，而不是仅验证工具名或脚本化终局结果。每条契约包含目标 `tool`、一基 `occurrence`、参数 `path`，以及且仅有一种比较源：
+
+- `equals`：与场景中声明的 JSON 字面量比较。
+- `equals_tool_result`：定位另一次工具调用，并从其 `result` 的指定路径读取预期值；用于验证跨轮证据传递。
+
+`path` 支持点分对象键、方括号列表下标和显式字符串/整数路径数组，例如 `commitment.id`、`memory_ids[0]` 或 `["items", 0, "id"]`。布尔值不作为 occurrence 或列表下标；occurrence 必须是正整数。缺失工具、缺失路径或引用结果缺失只产生失败检查，不抛出泄密异常；契约结构本身畸形则在 Suite 加载/评分阶段明确拒绝。
+
+### 安全评分与聚合
+
+参数检查报告只保留契约位置、是否通过和固定消息：`matched`、`tool/path missing`、`value mismatch`。实际参数、期望字面量、跨轮结果、Prompt、Provider URL 和凭据均不进入报告。Suite 汇总 `tool_argument_contract_rate`，`TrajectoryMatrixCell` 同步聚合该指标，使任务/Profile 对比可以衡量“参数证据链正确率”，而不只衡量工具是否出现。
+
+Router 的 `_route_target()` 采用证据优先级：模型实际工具参数 → 终局结果 → 静态 evidence。这样 Fake Gateway 或 scripted result 不能覆盖模型提交的错误 `target`，路由场景的参数契约与历史 `route_target` 检查保持一致。
+
+### 严格真实场景
+
+`tests/evals/daming_live_trajectory_scenarios.json` 的五项场景均使用严格 JSON Schema 与参数契约：
+
+1. Agent Memory：终局报告必须复制 `recall_memory.memory_ids[0]`。
+2. Router：验证 `route_intent.target=hubu` 和 `reason_code=fiscal_reserve`。
+3. Action：提交参数必须复制来源、目标、资源、单位基础价值和快照代次，并保持数量 10、总基础价值 20。
+4. Memory Compression：保留列表与 commitment 字段引用检查结果 ID。
+5. Tianji：只读取一次粮储快照，两轮内提交建议，并复用 `snapshot_generation` 与 `reserve_days`。
+
+### v0.48.0 验证证据
+
+- 参数契约与矩阵聚焦测试：64 passed。
+- 临时真实 Provider 连接 Smoke：2 passed；本地配置、URL 和 Key 不进入 Git 或报告。
+- 五个真实场景：5/5 passed，9 rounds，`tool_argument_contract_rate = 1.0`。
+- 模型矩阵 Smoke：9/9 cells passed，所有 Cell 参数契约率为 1.0；未进行人工复核，因此 `approved = false`。
+- 完整 Python：855 passed, 2 skipped, 1 known failure；唯一失败为既有 LLM HTTP deadline 浮点边界。
+- Frontend：102 passed；ESLint、Vite production build、Python compileall 和版本一致性检查通过。

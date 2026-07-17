@@ -3944,3 +3944,67 @@ git diff --check
 ```
 
 必须覆盖无关高重要性噪声、空 Query、已结承诺 resolution、未结承诺 fallback、intent/近重复去重、类型多样性、中文主题、序列化一致性，以及至少一个三轮保存/恢复场景。不要通过降低主题门槛、提高保底数量、扩大测试断言或吞掉 Deadline 来制造表面全绿。
+
+## 参数感知真实轨迹开发与回归（v0.48.0）
+
+### 契约示例
+
+```json
+{
+  "expect": {
+    "tool_argument_contracts": [
+      {
+        "tool": "route_intent",
+        "occurrence": 1,
+        "path": "target",
+        "equals": "hubu"
+      },
+      {
+        "tool": "submit_advice",
+        "occurrence": 1,
+        "path": "evidence_generation",
+        "equals_tool_result": {
+          "tool": "inspect_world",
+          "occurrence": 1,
+          "path": "snapshot_generation"
+        }
+      }
+    ]
+  }
+}
+```
+
+### 编写原则
+
+1. 契约验证模型实际提交的参数；不要用 scripted terminal result 或静态 evidence 代替参数正确性。
+2. `occurrence` 从 1 开始并按同名工具的时间顺序计数。路径优先使用稳定、短小的业务字段；对象键和列表下标可以混合，但不要依赖无序或不稳定输出。
+3. 每条契约只能声明 `equals` 或 `equals_tool_result`。当预期值来自前序工具时优先使用 `equals_tool_result`，不要把运行时生成的 ID、代次或世界值复制成静态 expected value。
+4. 不得把 API Key、Provider URL、Prompt、消息正文、用户隐私或其他秘密写入 `equals`。即使报告会脱敏，测试夹具和 Git 历史仍会永久保存字面量。
+5. JSON Schema 先收紧工具输入形状，再用参数契约验证跨工具语义。Schema 负责类型、必填项、枚举、长度和附加字段；契约负责值相等和证据传递。
+6. Token 超限时先压缩 System Prompt、工具描述、Schema 和工具结果快照，再根据真实波动小幅调整预算；不要直接移除轮次、工具次数或参数契约门禁。
+7. 缺失工具/路径应得到固定脱敏失败消息。新增消息或报告字段前必须补充 Key、URL、Prompt、实际值和预期值不泄露测试。
+8. Router 评估必须优先读取模型实际调用参数。不得让静态 evidence 或脚本结果遮蔽错误的路由参数。
+
+### 回归命令
+
+```powershell
+# 快速 replay / 单元回归
+python -m pytest -q -p no:cacheprovider tests/unit/test_trajectory_evaluation.py tests/unit/test_trajectory_matrix.py
+
+# 本地 Suite replay（按当前 CLI/配置传入场景文件和报告路径）
+python -m multiagent_framework.trajectory_evaluation --help
+
+# 真实模型与矩阵回归；仅使用 Git 忽略的本地 config/models.json
+python -m pytest -q -p no:cacheprovider tests/integration
+
+# 发布门禁
+python -m pytest -q -p no:cacheprovider tests/unit/test_version_consistency.py
+python -m compileall -q multiagent_framework routers tests
+git diff --check
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+真实 Provider 配置必须留在 Git 忽略文件中，运行报告也不得提交。矩阵只有在重复运行证据稳定且完成人工复核后才能标记晋级批准；没有人工复核时必须保持 `approved = false`，即使所有 Cell 都通过也不能声称模型已获批准。

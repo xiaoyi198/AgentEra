@@ -212,3 +212,219 @@ def test_live_tool_executor_can_emit_dynamic_conservation_evidence():
     assert report.passed
     assert report.metrics["resource_conservation_rate"] == 1
     assert "_evaluation_evidence" not in json.dumps(report.to_dict())
+
+
+def _scenario_with_contracts(index, contracts):
+    suite = load_trajectory_suite(SUITE_PATH)
+    scenario = deepcopy(suite["scenarios"][index])
+    scenario["expect"]["tool_argument_contracts"] = contracts
+    suite["scenarios"] = [scenario]
+    return suite, scenario
+
+
+def test_tool_argument_contract_literal_equals_passes_and_aggregates():
+    suite, _scenario = _scenario_with_contracts(0, [
+        {
+            "tool": "recall_memory",
+            "occurrence": 1,
+            "path": "query",
+            "equals": "tax promise",
+        },
+        {
+            "tool": "submit_report",
+            "occurrence": 1,
+            "path": "status",
+            "equals": "resolved",
+        },
+    ])
+
+    report = evaluate(suite)
+    contract_checks = [
+        item for item in report.scenarios[0].checks
+        if item.check_id == "tool_argument_contract"
+    ]
+
+    assert report.passed
+    assert report.metrics["tool_argument_contract_rate"] == 1
+    assert [item.message for item in contract_checks] == ["matched", "matched"]
+
+
+def test_tool_argument_contract_literal_mismatch_is_generic():
+    actual_value = "private-actual-value"
+    expected_value = "private-expected-value"
+    suite, scenario = _scenario_with_contracts(0, [{
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "status",
+        "equals": expected_value,
+    }])
+    scenario["replay"]["responses"][1]["tool_calls"][0]["function"]["arguments"] = json.dumps({
+        "status": actual_value,
+    })
+
+    report = evaluate(suite)
+    payload = json.dumps(report.to_dict(), ensure_ascii=False)
+    check = next(
+        item for item in report.scenarios[0].checks
+        if item.check_id == "tool_argument_contract"
+    )
+
+    assert not report.passed
+    assert not check.passed
+    assert check.message == "value mismatch"
+    assert actual_value not in payload
+    assert expected_value not in payload
+    assert report.metrics["tool_argument_contract_rate"] == 0
+
+
+def test_tool_argument_contract_can_reference_prior_tool_result_nested_list():
+    suite, scenario = _scenario_with_contracts(0, [{
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "commitment.id",
+        "equals_tool_result": {
+            "tool": "recall_memory",
+            "occurrence": 1,
+            "path": "memory_ids[0]",
+        },
+    }])
+    scenario["replay"]["responses"][1]["tool_calls"][0]["function"]["arguments"] = json.dumps({
+        "status": "resolved",
+        "commitment": {"id": "mem_tax_promise"},
+    })
+
+    report = evaluate(suite)
+    check = next(
+        item for item in report.scenarios[0].checks
+        if item.check_id == "tool_argument_contract"
+    )
+
+    assert report.passed
+    assert check.passed
+    assert check.message == "matched"
+
+
+def test_tool_argument_contract_missing_tool_or_path_fails_safely():
+    suite, _scenario = _scenario_with_contracts(0, [
+        {
+            "tool": "submit_report",
+            "occurrence": 2,
+            "path": "status",
+            "equals": "resolved",
+        },
+        {
+            "tool": "submit_report",
+            "occurrence": 1,
+            "path": "missing.path",
+            "equals": "resolved",
+        },
+        {
+            "tool": "submit_report",
+            "occurrence": 1,
+            "path": "status",
+            "equals_tool_result": {
+                "tool": "recall_memory",
+                "occurrence": 1,
+                "path": "missing[0]",
+            },
+        },
+    ])
+
+    report = evaluate(suite)
+    checks = [
+        item for item in report.scenarios[0].checks
+        if item.check_id == "tool_argument_contract"
+    ]
+
+    assert not report.passed
+    assert [item.message for item in checks] == [
+        "tool/path missing",
+        "tool/path missing",
+        "tool/path missing",
+    ]
+
+
+@pytest.mark.parametrize("occurrence", [0, -1, True, "1", 1.0, 1.5])
+def test_tool_argument_contract_rejects_invalid_occurrence(occurrence):
+    suite, _scenario = _scenario_with_contracts(0, [{
+        "tool": "submit_report",
+        "occurrence": occurrence,
+        "path": "status",
+        "equals": "resolved",
+    }])
+
+    with pytest.raises(TrajectoryEvaluationError, match="positive integer"):
+        evaluate(suite)
+
+
+@pytest.mark.parametrize("contract", [
+    {
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "status",
+    },
+    {
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "status",
+        "equals": "resolved",
+        "equals_tool_result": {
+            "tool": "recall_memory",
+            "occurrence": 1,
+            "path": "memory_ids[0]",
+        },
+    },
+    {
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "status",
+        "equals_tool_result": "not-an-object",
+    },
+    {
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "items[-1]",
+        "equals": "resolved",
+    },
+    {
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "items[0]value",
+        "equals": "resolved",
+    },
+])
+def test_malformed_tool_argument_contract_is_rejected(contract):
+    suite, _scenario = _scenario_with_contracts(0, [contract])
+
+    with pytest.raises(TrajectoryEvaluationError):
+        evaluate(suite)
+
+
+def test_tool_argument_contract_report_excludes_prompts_urls_and_keys():
+    prompt_secret = "prompt-private-marker"
+    actual_secret = "sk-actualprivate123456"
+    expected_secret = "sk-expectedprivate123456"
+    provider_url = "https://private-provider.example/v1"
+    suite, scenario = _scenario_with_contracts(0, [{
+        "tool": "submit_report",
+        "occurrence": 1,
+        "path": "status",
+        "equals": expected_secret,
+    }])
+    scenario["replay"]["messages"] = [{
+        "role": "user",
+        "content": f"{prompt_secret} {provider_url}",
+    }]
+    scenario["replay"]["responses"][1]["tool_calls"][0]["function"]["arguments"] = json.dumps({
+        "status": actual_secret,
+    })
+
+    report = evaluate(suite)
+    payload = json.dumps(report.to_dict(), ensure_ascii=False)
+
+    assert not report.passed
+    assert "value mismatch" in payload
+    assert prompt_secret not in payload
+    assert actual_secret not in payload
+    assert expected_secret not in payload
+    assert provider_url not in payload

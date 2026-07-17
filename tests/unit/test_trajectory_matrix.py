@@ -291,11 +291,48 @@ class SequenceLLM:
     async def chat(self, **kwargs):
         tools = kwargs["tools"]
         selected = tools[min(self.index, len(tools) - 1)]["function"]["name"]
+        arguments_by_tool = {
+            "recall_memory": {"query": "tax commitment"},
+            "submit_report": {
+                "commitment_id": "commitment-tax-v1",
+                "status": "resolved",
+                "summary": "resolved from retrieved evidence",
+            },
+            "route_intent": {"target": "hubu", "reason_code": "fiscal_reserve"},
+            "inspect_inventory": {"scope": "anchored_transfer"},
+            "apply_world_command": {
+                "command_type": "transfer_resource",
+                "source_entity": "treasury",
+                "target_entity": "relief_granary",
+                "resource_id": "grain_token",
+                "quantity": 10,
+                "unit_base_value": 2,
+                "total_base_value": 20,
+                "evidence_generation": 4,
+            },
+            "inspect_memory": {"scope": "unresolved_commitments"},
+            "submit_memory_summary": {
+                "preserved_ids": ["commitment-grain-v1"],
+                "commitment_id": "commitment-grain-v1",
+                "status": "retained",
+                "summary": "commitment retained",
+            },
+            "inspect_world": {"topic": "grain"},
+            "submit_advice": {
+                "summary": "bounded grain advice",
+                "evidence_generation": 7,
+                "reserve_days": 60,
+                "actions": ["reduce outflow", "protect relief floor"],
+            },
+        }
         self.index += 1
         return LLMResponse(
             tool_calls=[{
                 "id": f"call-{self.index}",
-                "function": {"name": selected, "arguments": "{}"},
+                "function": {
+                    "name": selected,
+                    "arguments": json.dumps(arguments_by_tool[selected]),
+                },
             }],
             input_tokens=10,
             output_tokens=5,
@@ -336,6 +373,7 @@ def test_repository_live_suite_covers_all_model_tasks_with_fake_live_gateway():
     assert next(
         cell for cell in result.cells if cell.task_type == "action.simulation"
     ).resource_conservation_rate == 1
+    assert all(cell.tool_argument_contract_rate == 1 for cell in result.cells)
     assert len(gateway.bindings) == 5
 
 

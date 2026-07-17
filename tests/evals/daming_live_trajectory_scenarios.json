@@ -12,11 +12,11 @@
         "messages": [
           {
             "role": "system",
-            "content": "Use recall_memory exactly once, then submit_report exactly once. Do not answer with plain text."
+            "content": "Use tools only. Call recall_memory exactly once with query tax commitment. After the result arrives, call submit_report exactly once. Copy the first returned memory_ids value into commitment_id, set status to resolved, and briefly summarize the evidence. Never invent an identifier or call recall_memory twice."
           },
           {
             "role": "user",
-            "content": "Recall the prior tax commitment and submit its resolved status."
+            "content": "Recall the prior tax commitment and submit its evidence-grounded resolved status."
           }
         ],
         "tools": [
@@ -24,10 +24,21 @@
             "type": "function",
             "function": {
               "name": "recall_memory",
-              "description": "Recall structured memory records.",
+              "description": "Retrieve the bounded structured record for one commitment topic.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "enum": [
+                      "tax commitment"
+                    ]
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "additionalProperties": false
               }
             }
           },
@@ -35,10 +46,30 @@
             "type": "function",
             "function": {
               "name": "submit_report",
-              "description": "Submit the final structured status report.",
+              "description": "Submit the final report using the identifier returned by recall_memory.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "commitment_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "resolved",
+                      "unresolved"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "commitment_id",
+                  "status",
+                  "summary"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -47,9 +78,9 @@
           "submit_report"
         ],
         "budget": {
-          "max_rounds": 4,
-          "max_tool_calls": 4,
-          "max_tokens": 1200,
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 1600,
           "max_seconds": 45
         },
         "tool_results": [
@@ -60,6 +91,14 @@
               "accepted": true,
               "memory_ids": [
                 "commitment-tax-v1"
+              ],
+              "records": [
+                {
+                  "id": "commitment-tax-v1",
+                  "kind": "commitment",
+                  "state": "resolved",
+                  "evidence": "The promised tax-adjustment report was delivered and acknowledged."
+                }
               ]
             }
           },
@@ -95,9 +134,33 @@
             "commitment-tax-v1"
           ],
           "commitment_status": "resolved",
-          "max_rounds": 3,
+          "max_rounds": 2,
           "max_tool_calls": 2,
-          "max_tokens": 1200
+          "max_tokens": 1600,
+          "tool_argument_contracts": [
+            {
+              "tool": "recall_memory",
+              "occurrence": 1,
+              "path": "query",
+              "equals": "tax commitment"
+            },
+            {
+              "tool": "submit_report",
+              "occurrence": 1,
+              "path": "commitment_id",
+              "equals_tool_result": {
+                "tool": "recall_memory",
+                "occurrence": 1,
+                "path": "memory_ids[0]"
+              }
+            },
+            {
+              "tool": "submit_report",
+              "occurrence": 1,
+              "path": "status",
+              "equals": "resolved"
+            }
+          ]
         },
         "temperature": 0
       },
@@ -112,11 +175,11 @@
         "messages": [
           {
             "role": "system",
-            "content": "Call route_intent exactly once and do not answer with plain text."
+            "content": "Route by institutional responsibility and use route_intent exactly once. hubu handles treasury, taxation, grain reserves, and state finance; libu_personnel handles appointments; libu_rites handles ritual and diplomacy; bingbu handles military affairs; xingbu handles justice; gongbu handles public works. Return no plain text."
           },
           {
             "role": "user",
-            "content": "Route a petition about treasury grain reserves to the responsible ministry."
+            "content": "Route a petition requesting verification of treasury grain reserve accounts before relief allocation."
           }
         ],
         "tools": [
@@ -124,10 +187,38 @@
             "type": "function",
             "function": {
               "name": "route_intent",
-              "description": "Choose the responsible target for an ambiguous petition.",
+              "description": "Select the single office whose declared responsibility best matches the petition.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "target": {
+                    "type": "string",
+                    "enum": [
+                      "hubu",
+                      "libu_personnel",
+                      "libu_rites",
+                      "bingbu",
+                      "xingbu",
+                      "gongbu"
+                    ]
+                  },
+                  "reason_code": {
+                    "type": "string",
+                    "enum": [
+                      "fiscal_reserve",
+                      "appointment",
+                      "ritual",
+                      "military",
+                      "justice",
+                      "public_works"
+                    ]
+                  }
+                },
+                "required": [
+                  "target",
+                  "reason_code"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -138,8 +229,8 @@
         "budget": {
           "max_rounds": 1,
           "max_tool_calls": 1,
-          "max_tokens": 500,
-          "max_seconds": 30
+          "max_tokens": 700,
+          "max_seconds": 45
         },
         "tool_results": [
           {
@@ -151,9 +242,7 @@
             }
           }
         ],
-        "evidence": {
-          "route_target": "hubu"
-        },
+        "evidence": {},
         "expect": {
           "allowed_tools": [
             "route_intent"
@@ -165,7 +254,21 @@
           "route_target": "hubu",
           "max_rounds": 1,
           "max_tool_calls": 1,
-          "max_tokens": 500
+          "max_tokens": 700,
+          "tool_argument_contracts": [
+            {
+              "tool": "route_intent",
+              "occurrence": 1,
+              "path": "target",
+              "equals": "hubu"
+            },
+            {
+              "tool": "route_intent",
+              "occurrence": 1,
+              "path": "reason_code",
+              "equals": "fiscal_reserve"
+            }
+          ]
         },
         "temperature": 0
       },
@@ -181,11 +284,11 @@
         "messages": [
           {
             "role": "system",
-            "content": "Inspect inventory first, then apply exactly one transfer command. Use only the provided tools."
+            "content": "Use tools only. Inspect anchored_transfer once, then transfer 10 units. Copy the returned generation, entities, resource, and unit value. Set total_base_value=quantity*unit_base_value."
           },
           {
             "role": "user",
-            "content": "Inspect the anchored inventory and transfer equivalent value without creating or destroying value."
+            "content": "Move 10 anchored units from source to target without changing total base value."
           }
         ],
         "tools": [
@@ -193,10 +296,21 @@
             "type": "function",
             "function": {
               "name": "inspect_inventory",
-              "description": "Inspect inventory using common base-value anchors.",
+              "description": "Read one anchored transfer snapshot.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "anchored_transfer"
+                    ]
+                  }
+                },
+                "required": [
+                  "scope"
+                ],
+                "additionalProperties": false
               }
             }
           },
@@ -204,10 +318,49 @@
             "type": "function",
             "function": {
               "name": "apply_world_command",
-              "description": "Apply one validated world command.",
+              "description": "Apply one value-conserving transfer.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "command_type": {
+                    "type": "string",
+                    "enum": [
+                      "transfer_resource"
+                    ]
+                  },
+                  "source_entity": {
+                    "type": "string"
+                  },
+                  "target_entity": {
+                    "type": "string"
+                  },
+                  "resource_id": {
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "type": "number"
+                  },
+                  "unit_base_value": {
+                    "type": "number"
+                  },
+                  "total_base_value": {
+                    "type": "number"
+                  },
+                  "evidence_generation": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "command_type",
+                  "source_entity",
+                  "target_entity",
+                  "resource_id",
+                  "quantity",
+                  "unit_base_value",
+                  "total_base_value",
+                  "evidence_generation"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -216,9 +369,9 @@
           "apply_world_command"
         ],
         "budget": {
-          "max_rounds": 4,
-          "max_tool_calls": 4,
-          "max_tokens": 1200,
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 1900,
           "max_seconds": 45
         },
         "tool_results": [
@@ -227,7 +380,13 @@
             "result": {
               "ok": true,
               "accepted": true,
-              "base_value_total": 200
+              "snapshot_generation": 4,
+              "source_entity": "treasury",
+              "target_entity": "relief_granary",
+              "resource_id": "grain_token",
+              "available_quantity": 100,
+              "unit_base_value": 2,
+              "source_base_value_total": 200
             }
           },
           {
@@ -262,9 +421,85 @@
           ],
           "required_terminal_tool": "apply_world_command",
           "resource_conservation": true,
-          "max_rounds": 3,
+          "max_rounds": 2,
           "max_tool_calls": 2,
-          "max_tokens": 1200
+          "max_tokens": 1900,
+          "tool_argument_contracts": [
+            {
+              "tool": "inspect_inventory",
+              "occurrence": 1,
+              "path": "scope",
+              "equals": "anchored_transfer"
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "command_type",
+              "equals": "transfer_resource"
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "source_entity",
+              "equals_tool_result": {
+                "tool": "inspect_inventory",
+                "occurrence": 1,
+                "path": "source_entity"
+              }
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "target_entity",
+              "equals_tool_result": {
+                "tool": "inspect_inventory",
+                "occurrence": 1,
+                "path": "target_entity"
+              }
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "resource_id",
+              "equals_tool_result": {
+                "tool": "inspect_inventory",
+                "occurrence": 1,
+                "path": "resource_id"
+              }
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "quantity",
+              "equals": 10
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "unit_base_value",
+              "equals_tool_result": {
+                "tool": "inspect_inventory",
+                "occurrence": 1,
+                "path": "unit_base_value"
+              }
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "total_base_value",
+              "equals": 20
+            },
+            {
+              "tool": "apply_world_command",
+              "occurrence": 1,
+              "path": "evidence_generation",
+              "equals_tool_result": {
+                "tool": "inspect_inventory",
+                "occurrence": 1,
+                "path": "snapshot_generation"
+              }
+            }
+          ]
         },
         "temperature": 0
       },
@@ -280,11 +515,11 @@
         "messages": [
           {
             "role": "system",
-            "content": "Inspect the memory set, preserve the commitment identifier, then submit one compressed memory summary using tools only."
+            "content": "Use tools only. Inspect unresolved_commitments exactly once. Then submit one compressed summary. Copy the first returned memory_ids value into both preserved_ids[0] and commitment_id, and set status to retained. Never inspect twice and never invent a memory identifier."
           },
           {
             "role": "user",
-            "content": "Compress the memory set without losing the unresolved grain-delivery commitment."
+            "content": "Compress the memory set while preserving the unresolved grain-delivery commitment and its identifier."
           }
         ],
         "tools": [
@@ -292,10 +527,21 @@
             "type": "function",
             "function": {
               "name": "inspect_memory",
-              "description": "Inspect structured memories selected for compression.",
+              "description": "Inspect the bounded unresolved-commitment memory set.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "unresolved_commitments"
+                    ]
+                  }
+                },
+                "required": [
+                  "scope"
+                ],
+                "additionalProperties": false
               }
             }
           },
@@ -303,10 +549,38 @@
             "type": "function",
             "function": {
               "name": "submit_memory_summary",
-              "description": "Submit the compressed structured memory artifact.",
+              "description": "Submit a compressed artifact that explicitly preserves returned commitment identifiers.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "preserved_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  },
+                  "commitment_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "retained",
+                      "dropped"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "preserved_ids",
+                  "commitment_id",
+                  "status",
+                  "summary"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -315,9 +589,9 @@
           "submit_memory_summary"
         ],
         "budget": {
-          "max_rounds": 4,
-          "max_tool_calls": 4,
-          "max_tokens": 1200,
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 1600,
           "max_seconds": 45
         },
         "tool_results": [
@@ -328,6 +602,14 @@
               "accepted": true,
               "memory_ids": [
                 "commitment-grain-v1"
+              ],
+              "records": [
+                {
+                  "id": "commitment-grain-v1",
+                  "kind": "commitment",
+                  "state": "open",
+                  "summary": "Deliver grain to the northern depot before the next review."
+                }
               ]
             }
           },
@@ -366,9 +648,43 @@
             "commitment-grain-v1"
           ],
           "commitment_status": "retained",
-          "max_rounds": 3,
+          "max_rounds": 2,
           "max_tool_calls": 2,
-          "max_tokens": 1200
+          "max_tokens": 1600,
+          "tool_argument_contracts": [
+            {
+              "tool": "inspect_memory",
+              "occurrence": 1,
+              "path": "scope",
+              "equals": "unresolved_commitments"
+            },
+            {
+              "tool": "submit_memory_summary",
+              "occurrence": 1,
+              "path": "preserved_ids[0]",
+              "equals_tool_result": {
+                "tool": "inspect_memory",
+                "occurrence": 1,
+                "path": "memory_ids[0]"
+              }
+            },
+            {
+              "tool": "submit_memory_summary",
+              "occurrence": 1,
+              "path": "commitment_id",
+              "equals_tool_result": {
+                "tool": "inspect_memory",
+                "occurrence": 1,
+                "path": "memory_ids[0]"
+              }
+            },
+            {
+              "tool": "submit_memory_summary",
+              "occurrence": 1,
+              "path": "status",
+              "equals": "retained"
+            }
+          ]
         },
         "temperature": 0
       },
@@ -384,11 +700,11 @@
         "messages": [
           {
             "role": "system",
-            "content": "Inspect world state before advice. Then submit exactly one grounded advice artifact. Never answer before inspection."
+            "content": "Use tools only. Call inspect_world once with topic grain. Then call submit_advice once; copy snapshot_generation to evidence_generation and reserve_days unchanged. Submit exactly two short actions. Never inspect twice."
           },
           {
             "role": "user",
-            "content": "Assess the current grain situation and submit grounded policy advice."
+            "content": "Assess the grain snapshot and submit concise grounded advice."
           }
         ],
         "tools": [
@@ -396,10 +712,21 @@
             "type": "function",
             "function": {
               "name": "inspect_world",
-              "description": "Inspect current world state relevant to the question.",
+              "description": "Read one bounded grain snapshot.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "enum": [
+                      "grain"
+                    ]
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "additionalProperties": false
               }
             }
           },
@@ -407,10 +734,37 @@
             "type": "function",
             "function": {
               "name": "submit_advice",
-              "description": "Submit grounded policy advice.",
+              "description": "Submit concise advice tied to the inspected snapshot.",
               "parameters": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "evidence_generation": {
+                    "type": "integer"
+                  },
+                  "reserve_days": {
+                    "type": "number"
+                  },
+                  "actions": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 100
+                    }
+                  }
+                },
+                "required": [
+                  "summary",
+                  "evidence_generation",
+                  "reserve_days",
+                  "actions"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -419,9 +773,9 @@
           "submit_advice"
         ],
         "budget": {
-          "max_rounds": 4,
-          "max_tool_calls": 4,
-          "max_tokens": 1200,
+          "max_rounds": 3,
+          "max_tool_calls": 3,
+          "max_tokens": 1800,
           "max_seconds": 45
         },
         "tool_results": [
@@ -430,7 +784,12 @@
             "result": {
               "ok": true,
               "accepted": true,
-              "snapshot_generation": 1
+              "snapshot_generation": 7,
+              "grain_quantity": 1200,
+              "daily_net_change": -20,
+              "reserve_days": 60,
+              "emergency_floor": 300,
+              "external_purchase_available": false
             }
           },
           {
@@ -457,9 +816,37 @@
             "submit_advice"
           ],
           "required_terminal_tool": "submit_advice",
-          "max_rounds": 3,
+          "max_rounds": 2,
           "max_tool_calls": 2,
-          "max_tokens": 1400
+          "max_tokens": 1800,
+          "tool_argument_contracts": [
+            {
+              "tool": "inspect_world",
+              "occurrence": 1,
+              "path": "topic",
+              "equals": "grain"
+            },
+            {
+              "tool": "submit_advice",
+              "occurrence": 1,
+              "path": "evidence_generation",
+              "equals_tool_result": {
+                "tool": "inspect_world",
+                "occurrence": 1,
+                "path": "snapshot_generation"
+              }
+            },
+            {
+              "tool": "submit_advice",
+              "occurrence": 1,
+              "path": "reserve_days",
+              "equals_tool_result": {
+                "tool": "inspect_world",
+                "occurrence": 1,
+                "path": "reserve_days"
+              }
+            }
+          ]
         },
         "temperature": 0
       },

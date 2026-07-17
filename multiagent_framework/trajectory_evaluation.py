@@ -381,6 +381,14 @@ def _score_outcome(
     calls = [call for round_item in outcome.trace for call in round_item.get("calls", [])]
     called_tools = [str(call.get("tool", "")) for call in calls]
 
+    checks.extend(
+        _tool_argument_contract_checks(
+            scenario_id,
+            calls,
+            expect.get("tool_argument_contracts"),
+        )
+    )
+
     allowed_raw = expect.get("allowed_tools")
     if allowed_raw is not None:
         if not isinstance(allowed_raw, list):
@@ -468,12 +476,8 @@ def _score_outcome(
 
 
 def _route_target(outcome: TurnOutcome, evidence: Mapping[str, Any]) -> str:
-    if evidence.get("route_target") is not None:
-        return str(evidence.get("route_target", ""))
-    result = outcome.terminal_result or {}
-    for key in ("target", "route_target", "routed_to"):
-        if result.get(key) is not None:
-            return str(result[key])
+    # Prefer what the model actually submitted. Scripted results and static evidence
+    # are useful fixtures, but neither may mask an incorrect routing argument.
     for round_item in reversed(outcome.trace):
         for call in reversed(round_item.get("calls", [])):
             args = call.get("args", {})
@@ -481,7 +485,234 @@ def _route_target(outcome: TurnOutcome, evidence: Mapping[str, Any]) -> str:
                 for key in ("target", "route_target", "routed_to"):
                     if args.get(key) is not None:
                         return str(args[key])
+    result = outcome.terminal_result or {}
+    for key in ("target", "route_target", "routed_to"):
+        if result.get(key) is not None:
+            return str(result[key])
+    if evidence.get("route_target") is not None:
+        return str(evidence.get("route_target", ""))
     return ""
+
+
+def _tool_argument_contract_checks(
+    scenario_id: str,
+    calls: Sequence[Any],
+    raw_contracts: Any,
+) -> list[TrajectoryCheck]:
+    if raw_contracts is None:
+        return []
+    if not isinstance(raw_contracts, list):
+        raise TrajectoryEvaluationError(
+            f"{scenario_id}.tool_argument_contracts must be a list"
+        )
+
+    checks: list[TrajectoryCheck] = []
+    for index, raw_contract in enumerate(raw_contracts):
+        label = f"{scenario_id}.tool_argument_contracts[{index}]"
+        if not isinstance(raw_contract, Mapping):
+            raise TrajectoryEvaluationError(f"{label} must be an object")
+
+        tool = _contract_tool(raw_contract.get("tool"), f"{label}.tool")
+        occurrence = _contract_occurrence(
+            raw_contract.get("occurrence", 1),
+            f"{label}.occurrence",
+        )
+        path = _contract_path(raw_contract.get("path"), f"{label}.path")
+        has_literal = "equals" in raw_contract
+        has_reference = "equals_tool_result" in raw_contract
+        if has_literal == has_reference:
+            raise TrajectoryEvaluationError(
+                f"{label} must define exactly one comparison source"
+            )
+
+        call = _find_tool_occurrence(calls, tool, occurrence)
+        found_actual = False
+        actual: Any = None
+        if call is not None:
+            args = call.get("args", {})
+            found_actual, actual = _resolve_value_path(args, path)
+
+        found_expected = True
+        expected: Any
+        if has_literal:
+            expected = raw_contract.get("equals")
+        else:
+            reference = raw_contract.get("equals_tool_result")
+            if not isinstance(reference, Mapping):
+                raise TrajectoryEvaluationError(
+                    f"{label}.equals_tool_result must be an object"
+                )
+            reference_tool = _contract_tool(
+                reference.get("tool"),
+                f"{label}.equals_tool_result.tool",
+            )
+            reference_occurrence = _contract_occurrence(
+                reference.get("occurrence", 1),
+                f"{label}.equals_tool_result.occurrence",
+            )
+            reference_path = _contract_path(
+                reference.get("path"),
+                f"{label}.equals_tool_result.path",
+            )
+            reference_call = _find_tool_occurrence(
+                calls,
+                reference_tool,
+                reference_occurrence,
+            )
+            if reference_call is None:
+                found_expected = False
+                expected = None
+            else:
+                found_expected, expected = _resolve_value_path(
+                    reference_call.get("result", {}),
+                    reference_path,
+                )
+
+        if not found_actual or not found_expected:
+            checks.append(
+                _check(
+                    "tool_argument_contract",
+                    "tool_arguments",
+                    False,
+                    "tool/path missing",
+                )
+            )
+        elif actual != expected:
+            checks.append(
+                _check(
+                    "tool_argument_contract",
+                    "tool_arguments",
+                    False,
+                    "value mismatch",
+                )
+            )
+        else:
+            checks.append(
+                _check(
+                    "tool_argument_contract",
+                    "tool_arguments",
+                    True,
+                    "matched",
+                )
+            )
+    return checks
+
+
+def _contract_tool(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TrajectoryEvaluationError(f"{label} must be non-empty text")
+    return value.strip()
+
+
+def _contract_occurrence(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise TrajectoryEvaluationError(f"{label} must be a positive integer")
+    return value
+
+
+def _contract_path(value: Any, label: str) -> tuple[str | int, ...]:
+    if isinstance(value, list):
+        if not value:
+            raise TrajectoryEvaluationError(f"{label} must not be empty")
+        parts: list[str | int] = []
+        for part in value:
+            if isinstance(part, bool) or not isinstance(part, (str, int)):
+                raise TrajectoryEvaluationError(
+                    f"{label} items must be text keys or non-negative indexes"
+                )
+            if isinstance(part, int):
+                if part < 0:
+                    raise TrajectoryEvaluationError(
+                        f"{label} list indexes must be non-negative"
+                    )
+                parts.append(part)
+            elif not part:
+                raise TrajectoryEvaluationError(f"{label} keys must not be empty")
+            else:
+                parts.append(part)
+        return tuple(parts)
+
+    if not isinstance(value, str) or not value.strip():
+        raise TrajectoryEvaluationError(f"{label} must be a non-empty path")
+    raw = value.strip()
+    parts = []
+    index = 0
+    expect_segment = True
+    while index < len(raw):
+        char = raw[index]
+        if char == ".":
+            if expect_segment:
+                raise TrajectoryEvaluationError(f"{label} is malformed")
+            expect_segment = True
+            index += 1
+            continue
+        if char == "[":
+            if expect_segment:
+                raise TrajectoryEvaluationError(f"{label} is malformed")
+            close = raw.find("]", index + 1)
+            if close < 0:
+                raise TrajectoryEvaluationError(f"{label} is malformed")
+            token = raw[index + 1:close]
+            if not token.isdigit():
+                raise TrajectoryEvaluationError(f"{label} is malformed")
+            parts.append(int(token))
+            index = close + 1
+            expect_segment = False
+            continue
+        if char == "]" or not expect_segment:
+            raise TrajectoryEvaluationError(f"{label} is malformed")
+        end = index
+        while end < len(raw) and raw[end] not in ".[":
+            if raw[end] == "]":
+                raise TrajectoryEvaluationError(f"{label} is malformed")
+            end += 1
+        token = raw[index:end]
+        if not token:
+            raise TrajectoryEvaluationError(f"{label} is malformed")
+        parts.append(int(token) if token.isdigit() else token)
+        index = end
+        expect_segment = False
+    if expect_segment or not parts:
+        raise TrajectoryEvaluationError(f"{label} is malformed")
+    return tuple(parts)
+
+
+def _find_tool_occurrence(
+    calls: Sequence[Any],
+    tool: str,
+    occurrence: int,
+) -> Mapping[str, Any] | None:
+    matched = 0
+    for raw_call in calls:
+        if not isinstance(raw_call, Mapping):
+            continue
+        if str(raw_call.get("tool", "")) != tool:
+            continue
+        matched += 1
+        if matched == occurrence:
+            return raw_call
+    return None
+
+
+def _resolve_value_path(
+    root: Any,
+    path: Sequence[str | int],
+) -> tuple[bool, Any]:
+    current = root
+    for part in path:
+        if isinstance(part, int):
+            if (
+                not isinstance(current, Sequence)
+                or isinstance(current, (str, bytes, bytearray))
+                or part >= len(current)
+            ):
+                return False, None
+            current = current[part]
+        else:
+            if not isinstance(current, Mapping) or part not in current:
+                return False, None
+            current = current[part]
+    return True, current
 
 
 def _aggregate_metrics(results: Sequence[TrajectoryScenarioResult]) -> dict[str, Any]:
@@ -495,6 +726,7 @@ def _aggregate_metrics(results: Sequence[TrajectoryScenarioResult]) -> dict[str,
         "scenario_count": len(results),
         "passed_scenarios": sum(1 for item in results if item.passed),
         "tool_legality_rate": rate("tool_legality"),
+        "tool_argument_contract_rate": rate("tool_argument_contract"),
         "termination_rate": rate("termination"),
         "routing_accuracy": rate("routing_accuracy"),
         "resource_conservation_rate": rate("resource_conservation"),

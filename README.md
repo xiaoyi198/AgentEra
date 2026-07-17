@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.47.0**
+> 当前版本：**v0.48.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -9,6 +9,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 ## 核心能力
 
 - **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
+- **参数感知真实轨迹评测**：除工具顺序、轮次与预算外，可按工具调用序号校验嵌套参数，并把后续工具参数与前序工具结果做跨轮引用比较；报告仅输出脱敏状态，模型矩阵同步聚合参数契约通过率。
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化；v0.47.0 增加主题相关性过滤、未结承诺有限保底、意图/近重复去重与记忆类型多样性排序。
 - **持久唤醒投递**：Agent 唤醒采用有界 Outbox 与 `pending → inflight → ack/retry` 状态机，崩溃恢复提供明确的 at-least-once 语义。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
@@ -460,6 +461,19 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+
+## v0.48.0 发布说明
+
+v0.48.0 将真实模型轨迹评测从“调用了正确工具”提升为“提交了正确且可追溯的参数”。场景可以声明 `expect.tool_argument_contracts`，直接约束模型实际工具参数，也可以要求后续工具复用前序工具返回的证据值。
+
+- 参数契约按工具名和一基 `occurrence` 定位调用，支持对象嵌套键、列表下标和显式路径数组；每条契约必须且只能使用 `equals` 或 `equals_tool_result` 一种比较源。
+- 跨轮结果引用可把终局报告、行动提交、记忆压缩或天机建议中的字段锚定到先前工具结果，缺失工具、缺失路径、非法 occurrence 和畸形契约均安全失败。
+- 评测报告只输出 `matched`、`tool/path missing` 或 `value mismatch`，不记录实际值、预期值、Prompt、消息正文、Provider URL 或 API Key；矩阵新增 `tool_argument_contract_rate` 聚合指标。
+- 路由目标判定现在优先读取模型实际提交的工具参数，其次读取终局结果，最后才读取静态 evidence，避免脚本结果遮蔽错误路由参数。
+- 五个大明真实模型场景升级为严格 JSON Schema 与参数契约，覆盖 Agent 记忆、Router、Action、记忆压缩和天机两轮建议；工具调用、轮次和 Token 预算均采用有界门禁。
+- 验证结果：参数契约聚焦测试 **64 passed**；外部连接 Smoke **2 passed**；真实五场景 **5/5 passed**、总计 9 轮、`tool_argument_contract_rate = 1.0`；模型矩阵 Smoke **9/9 cells passed** 且参数契约率均为 1.0。矩阵未经过人工复核，因此 `approved = false`，不宣称模型晋级获批。
+- 完整 Python 门禁为 **855 passed, 2 skipped, 1 failed**，唯一失败仍是已知 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`；前端 **102 passed**，ESLint、Vite production build、Python compileall 和版本一致性检查通过。
+- AgentEra 四处产品版本统一升级到 `0.48.0`。
 
 ## v0.47.0 发布说明
 

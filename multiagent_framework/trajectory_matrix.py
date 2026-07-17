@@ -39,6 +39,7 @@ REVIEW_DIMENSIONS = (
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _RATE_KEYS = (
     "tool_legality_rate",
+    "tool_argument_contract_rate",
     "termination_rate",
     "routing_accuracy",
     "memory_recall_rate",
@@ -70,6 +71,7 @@ class MatrixCellResult:
     tokens_mean: float
     tokens_total: int
     tool_legality_rate: float | None = None
+    tool_argument_contract_rate: float | None = None
     termination_rate: float | None = None
     routing_accuracy: float | None = None
     memory_recall_rate: float | None = None
