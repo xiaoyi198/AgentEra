@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { buildQuickCreateDraft, summarizeQuickCreate } from './QuickCreateTools.js'
+import GameplayBranchPanel from './GameplayBranchPanel.jsx'
 
 const ENTITY_EXAMPLE = `# 实体 ID | 名称 | 类型 | 当前状态 | 中文说明
 headquarters | 总部 | location | 正常运转 | 玩家与 Agent 的主要活动地点
@@ -99,7 +100,9 @@ export default function QuickCreatePanel({ content, onSaveContent, busy = false,
         {onNavigate && <button type="button" onClick={() => onNavigate('gameplay')}>下一步：配置玩家身份</button>}
         <button type="button" className="primary" onClick={submit} disabled={!hasInput || !preview.valid || !preview.changed || busy}>{busy ? '处理中…' : '生成差异预览'}</button>
       </div>
-      <p className="dlc-quick-create-footnote">本工具只生成题材无关的基础骨架，不会自动写入人格 Prompt、模型配置或玩法数值。保存后请进入 Actor、Agent、玩家身份、行动和七步可玩性验收继续完善。</p>
+      <p className="dlc-quick-create-footnote">本区只生成题材无关的实体与 Agent 基础骨架，不会自动写入人格 Prompt 或模型配置。需要生成 Action、Issue、延迟因果与恢复链时，请继续使用下方玩法分支向导。</p>
     </section>
+
+    <GameplayBranchPanel content={content} onSaveContent={onSaveContent} busy={busy} />
   </section>
 }

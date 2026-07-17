@@ -3728,3 +3728,37 @@ npm run build
 ```
 
 验收必须断言两种资产的 `anchor_rate` 和 `base_value`，不能只检查“数量变少”；延迟路径必须推进到一个游戏日、确认 causal world effect 已 applied、找到新 Issue 与 pending DecisionRequest，并实际执行恢复 Action。当前完整单元测试的唯一已知失败位于并行维护的 LLM timeout 浮点边界，未经文件所有者授权不得在本玩法发布中顺手修改。
+
+
+## DLC Studio 玩法分支向导开发指南（v0.45.0）
+
+### 作者使用流程
+
+1. 先在“快速创建”上半区建立实体、Actor 与 Agent，并在“玩家身份”页配置 gameplay.player 和直接控制实体。
+2. 在“玩法分支模板向导”中填写稳定前缀。前缀只允许字母、数字、点、下划线和连字符；发布后不要随意更名。
+3. 分别选择接收初始 Issue 的玩家 Agent、写入 Action 权限的玩家 Actor、负责报告/唤醒的 Agent，以及接收 Capability 的 Actor。
+4. 为两种库存资产填写同一个 anchor_rate。Action 成本填写基础价值 base_value，不要按资产数量手工换算。
+5. 配置即时收益指标、取舍指标、即时下降、延迟下降、恢复提升和恢复副作用。延迟单位是游戏日。
+6. 保持默认“拒绝冲突”生成差异预览；只有确认要重建同前缀整套分支时才使用“覆盖整套同前缀分支”。
+7. 应用差异后运行 Registry、七步可玩性审计，并至少真实推进一次游戏内时间，确认延迟 Issue 与恢复 Action 可执行。
+
+### 生成器维护规则
+
+- 生成逻辑必须保持纯函数：输入 content + form + conflictPolicy，输出 nextContent + errors + warnings + counts，不得直接请求 API 或修改文件。
+- 新增区段时同时扩展稳定键冲突检查、计数摘要和原子测试；不得出现主 Action 已生成但 Issue、Capability 或反馈缺失的半套状态。
+- actions[].permissions.actor_ids 使用玩家行动授权 Actor；actors[].capability_ids 使用能力持有 Actor。修改推导逻辑时必须保留这一区分。
+- 两种资产必须声明相同正数 anchor_rate，并在副资源 Metadata 中记录 parity_with；前置条件和成本都使用 anchored_inventory + base_value。
+- 延迟 Rule 的 source_event_types 必须与主 Action emit 的事件完全一致；create_issue.issue_type_id 必须指向生成的后续 Issue。
+- Outcome Feedback 的 source_kinds、action_ids 和 event_types 必须与实际来源匹配；没有派生指标筛选需求时保持 metric_ids 为空数组。
+- UI 必须继续只调用 onSaveContent() 进入 Studio Diff，不得直接 PUT、发布或热重载 DLC。
+
+### 回归命令
+
+- cd frontend；node --test src/GameplayBranchTools.test.js
+- npm test
+- npm run lint
+- npm run build
+- python -m pytest tests/unit/test_version_consistency.py -q
+- 对 example_frontier、example_orbital、example_abyssal 运行 Registry validate 和七步可玩性审计。
+
+发布验收除工具测试外，还应将一个新前缀分支叠加到真实参考包草稿并执行 Registry 校验，防止前端结构测试遗漏后端跨引用约束。

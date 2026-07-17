@@ -2562,3 +2562,39 @@ Agent wakeup delivery now uses the persisted `WakeupOutboxRuntime` at-least-once
 - `tests/integration/test_abyssal_dlc_playthrough.py` 同时保留常规巡检胜利路径，并新增封舱→延迟 Issue→恢复通道路径，真实验证双资产锚率、扣费数量、指标变化、Wakeup Outbox、causal world effect、DecisionRequest 和反馈文本。
 
 发布验证：三个跨题材参考包 Registry 0 error、可玩性审计 7/7；集成测试 13 passed, 2 skipped；前端 97 passed；完整单元集 820 passed, 1 failed，剩余失败属于并行维护的 LLM timeout 浮点边界，本轮未越界修改。
+
+
+## DLC Studio 玩法分支生成架构（v0.45.0）
+
+v0.45.0 在不增加题材专属运行时代码的前提下，为 DLC Studio 增加题材无关的“机械分支”草稿生成层。核心实现位于 frontend/src/GameplayBranchTools.js，React 表单位于 frontend/src/GameplayBranchPanel.jsx，并从现有 QuickCreatePanel 接入；生成后的内容继续调用 stageContentChange()，因此必须经过 Content Diff、人工确认和后端 Registry 校验。
+
+### 生成的数据图
+
+向导以稳定 prefix 为命名空间，一次建立以下引用闭环：
+
+1. 两种 kind=asset 资源使用相同正数 anchor_rate，库存分别写入目标实体；两项 kind=metric 指标同时写入 resources 与 entity_values。
+2. 初始 Issue 的高风险选项调用主 Action。主 Action 原子扣除两种资产的 base_value，提高收益指标、降低取舍指标、唤醒报告 Agent，并发布 prefix_committed 事件。
+3. Causal Rule 在指定游戏日后监听该事件，再次降低取舍指标，并通过通用 create_issue world effect 创建后续 Issue。
+4. 后续 Issue 的恢复选项调用恢复 Action。恢复 Action 再次支付双资产成本，提高取舍指标，同时让收益指标承受小幅回撤。
+5. 两个 contract_action Capability 分别引用主/恢复 Action，并合并到指定 Actor 的 capability_ids；Rhythm 规则负责后续 Issue 的优先级、升级、降级与收束；Outcome Feedback 分别解释主行动即时结果、延迟代价和恢复结果。
+
+### 权限与 Actor 边界
+
+向导显式区分两类 Actor 引用：
+
+- “行动授权 Actor”写入 actions[].permissions.actor_ids，默认取 gameplay.player.actor_id；这是玩家身份是否能执行契约 Action 的权限边界。
+- “能力挂载 Actor”接收两个 Capability ID，默认取报告/唤醒 Agent 的 actor_id；这是 Agent 可发现能力的声明边界。
+
+两者可以相同，但不能隐式混用。前端会验证实体、Agent、Actor 引用是否存在，并在目标实体不属于 gameplay.player.controlled_objects 时给出 controlled_only 风险提醒。
+
+### 原子冲突与保留策略
+
+buildGameplayBranchDraft() 先在内存中完成全部中文校验，再检查 resources、inventory、entity_values、actions、issue_types、initial_events、causal_event_rules、capabilities、rhythm.rules 和 outcome_feedback.rules 的稳定键冲突。
+
+- 默认 reject：任一冲突会返回原始内容，不产生半套 Action/Issue/Capability 引用。
+- 高级 replace：只替换本分支生成器拥有的同稳定键条目，保留其他规则；Actor 更新采用集合合并，不删除已有 capability_ids 或 Metadata。
+- 生成器不读取或写入 Provider、API Key、Prompt、模型路由和 Settings 配置。
+
+### 验证
+
+frontend/src/GameplayBranchTools.test.js 覆盖默认参与者推导、完整引用闭环、同价值锚、Agent 唤醒、延迟 Issue、恢复路径、Actor Capability 合并、原子拒绝和整套覆盖。额外将生成结果叠加到 example_abyssal 后执行 Registry 验收，结果为 0 issues、七步可玩性审计 7/7。

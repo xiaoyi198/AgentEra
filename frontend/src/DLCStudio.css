@@ -933,3 +933,138 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .dlc-gameplay-control-index,
   .dlc-gameplay-control-list > article .danger { grid-column: auto; }
 }
+
+
+/* Topic-neutral mechanical branch wizard: assets -> actions -> delayed consequence -> recovery. */
+.dlc-branch-builder {
+  display: grid;
+  gap: 18px;
+  margin-top: 10px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(201, 168, 76, .18);
+}
+.dlc-branch-builder-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, .85fr);
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(84, 177, 163, .3);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(34, 124, 116, .18), rgba(12, 17, 24, .82));
+}
+.dlc-branch-builder-hero > div:first-child > span {
+  color: #6fd0c2;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .16em;
+}
+.dlc-branch-builder-hero h2 { margin: 6px 0 8px; }
+.dlc-branch-builder-hero p { margin: 0; color: #afbec7; line-height: 1.75; }
+.dlc-branch-builder-flow {
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, .2);
+}
+.dlc-branch-builder-flow ol { margin: 10px 0 0; padding-left: 20px; color: #c9d7d8; line-height: 1.75; }
+.dlc-branch-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.dlc-branch-form-grid fieldset {
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 16px;
+  background: rgba(13, 18, 25, .72);
+}
+.dlc-branch-form-grid legend {
+  padding: 0 8px;
+  color: #84d5ca;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .03em;
+}
+.dlc-branch-form-grid label { display: grid; gap: 6px; min-width: 0; }
+.dlc-branch-form-grid label > span { color: #dce5e7; font-size: 12px; font-weight: 700; }
+.dlc-branch-form-grid label > small { color: #83959e; font-size: 11px; line-height: 1.5; }
+.dlc-branch-form-grid input,
+.dlc-branch-form-grid select { width: 100%; min-width: 0; }
+.dlc-branch-inline {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.dlc-branch-cost-table {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) repeat(2, minmax(90px, .55fr));
+  gap: 10px;
+  align-items: end;
+  padding: 13px;
+  border: 1px solid rgba(111, 208, 194, .12);
+  border-radius: 12px;
+  background: rgba(14, 43, 43, .2);
+}
+.dlc-branch-cost-table b { align-self: center; color: #acc8c6; font-size: 12px; line-height: 1.45; }
+.dlc-branch-generated-ids {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, .2);
+}
+.dlc-branch-generated-ids > b { color: #d6e5e3; }
+.dlc-branch-generated-ids > code { overflow: hidden; color: #78d3c7; text-overflow: ellipsis; }
+.dlc-branch-generated-ids summary { cursor: pointer; color: #a9b9bd; font-size: 12px; }
+.dlc-branch-generated-ids pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: #090d12; color: #b7c7ca; font-size: 11px; }
+.dlc-branch-review {
+  padding: 18px;
+  border: 1px solid rgba(84, 177, 163, .24);
+  border-radius: 16px;
+  background: rgba(10, 27, 28, .56);
+}
+.dlc-branch-review-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+.dlc-branch-review-head h3 { margin: 0 0 5px; }
+.dlc-branch-review-head p { max-width: 720px; margin: 0; color: #91a3aa; line-height: 1.55; }
+.dlc-branch-review-head > label { display: grid; gap: 6px; min-width: min(390px, 100%); }
+.dlc-branch-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 16px;
+}
+.dlc-branch-preview-grid article {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .035);
+}
+.dlc-branch-preview-grid strong { color: #edf4f4; font-size: 12px; }
+.dlc-branch-preview-grid span { color: #9cb0b3; font-size: 11px; }
+.dlc-branch-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+@media (max-width: 1180px) {
+  .dlc-branch-preview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1050px) {
+  .dlc-branch-builder-hero,
+  .dlc-branch-form-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .dlc-branch-inline,
+  .dlc-branch-cost-table,
+  .dlc-branch-preview-grid { grid-template-columns: 1fr; }
+  .dlc-branch-review-head,
+  .dlc-branch-actions { align-items: stretch; flex-direction: column; }
+}

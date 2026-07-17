@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.44.0**
+> 当前版本：**v0.45.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -458,6 +458,18 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+
+## v0.45.0 发布说明
+
+v0.45.0 把 DLC Studio 的“快速创建”从实体/Actor/Agent 骨架扩展为题材无关的完整玩法分支向导。作者不再需要手工跨十余个 JSON 区段拼接 Action、Issue、延迟因果、恢复路径和反馈规则。
+
+- 新增“玩法分支模板向导”，用完整中文说明配置参与实体、玩家 Agent、行动授权 Actor、报告 Agent、能力挂载 Actor、同价值锚资产、两项取舍指标、即时/延迟数值和玩家可见名称。
+- 一次生成双锚定库存资产、实体指标值、主 Action、初始 Issue/事件、延迟因果事件、后续 Issue、恢复 Action、两项 Capability、Actor capability 引用、Rhythm 规则和三条 Outcome Feedback 规则。
+- 主行动采用“快速收益 + 即时代价 + 延迟代价”，后续恢复行动再次消耗两种同价值锚资产并保留小幅副作用，默认形成可恢复但不能免费撤销的机械分支。
+- 生成器区分 gameplay.player.actor_id 对 Action 权限的作用与响应 Actor 对 Capability 的持有关系，避免把报告 Agent 的 Actor 错当成玩家行动授权 Actor。
+- 默认采用原子“拒绝冲突”策略；高级覆盖会整套替换同前缀声明并在差异预览中提示。所有结果只进入现有 Content Diff、确认和 Registry 保存链路，不直接发布，也不修改 Prompt、模型或 Settings。
+- 新增 5 个工具测试；前端测试现为 **102 passed**，完整集成测试 **13 passed, 2 skipped**，ESLint、Vite production build、Python compileall 与版本一致性测试通过。三个参考包 Registry 均为 **0 issues**、七步可玩性审计均为 **7/7**；使用向导叠加到 example_abyssal 的生成草稿同样为 0 issues、7/7。完整 Python 单元集为 **820 passed, 1 failed**，唯一失败仍是并行维护的 LLM HTTP timeout 浮点边界（0.2000000000007276 <= 0.2），本发布按用户约束未修改对应文件。
 
 ## v0.44.0 发布说明
 
