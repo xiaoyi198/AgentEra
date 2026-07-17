@@ -18,6 +18,7 @@ class TimerSystem:
 
     def __init__(self, db_path: str | None = None) -> None:
         self._heap: list[TimerEntry] = []
+        self._claimed: dict[str, TimerEntry] = {}
         self._db_path = db_path
         if db_path:
             self._init_db()
@@ -83,16 +84,44 @@ class TimerSystem:
                 return True
         return False
 
-    def pop_due(self, current_time: float) -> list[TimerEntry]:
-        """弹出所有到期的定时器."""
+    def claim_due(self, current_time: float) -> list[TimerEntry]:
+        """Claim due timers without deleting their durable SQLite rows.
+
+        Claimed timers leave the in-memory heap so one process does not deliver
+        them twice concurrently. Until ``ack`` they remain in SQLite and will be
+        loaded again after a crash.
+        """
         due: list[TimerEntry] = []
         while self._heap and self._heap[0].fire_at <= current_time:
             entry = heapq.heappop(self._heap)
             if entry.cancelled:
                 self._remove_from_db(entry.timer_id)
                 continue
+            self._claimed[entry.timer_id] = entry
             due.append(entry)
-            self._remove_from_db(entry.timer_id)
+        return due
+
+    def ack(self, timer_id: str) -> bool:
+        """Acknowledge a claimed timer and remove its durable row."""
+        entry = self._claimed.pop(timer_id, None)
+        if entry is None:
+            return False
+        self._remove_from_db(timer_id)
+        return True
+
+    def release_claim(self, timer_id: str) -> bool:
+        """Return a claimed timer to the heap when outbox enqueue fails."""
+        entry = self._claimed.pop(timer_id, None)
+        if entry is None:
+            return False
+        heapq.heappush(self._heap, entry)
+        return True
+
+    def pop_due(self, current_time: float) -> list[TimerEntry]:
+        """Compatibility API: claim and immediately acknowledge due timers."""
+        due = self.claim_due(current_time)
+        for entry in due:
+            self.ack(entry.timer_id)
         return due
 
     def peek_next_time(self) -> float | None:
@@ -116,6 +145,7 @@ class TimerSystem:
         if not self._db_path:
             return 0
         self._heap.clear()
+        self._claimed.clear()
         loaded = 0
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
@@ -145,7 +175,7 @@ class TimerSystem:
         with sqlite3.connect(self._db_path) as conn:
             conn.execute("DELETE FROM pending_timers")
         count = 0
-        for entry in self._heap:
+        for entry in [*self._heap, *self._claimed.values()]:
             if not entry.cancelled:
                 self._persist(entry)
                 count += 1
@@ -163,7 +193,7 @@ class TimerSystem:
                 "parent_timer_id": e.parent_timer_id,
                 "created_at": e.created_at,
             }
-            for e in self._heap
+            for e in [*self._heap, *self._claimed.values()]
             if not e.cancelled
         ]
 
@@ -173,6 +203,7 @@ class TimerSystem:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute("DELETE FROM pending_timers")
         self._heap.clear()
+        self._claimed.clear()
         for t in timers:
             entry = TimerEntry(
                 timer_id=t["timer_id"],

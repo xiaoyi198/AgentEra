@@ -11,6 +11,8 @@ from multiagent_framework.runtime_persistor import RuntimePersistor
 from multiagent_framework.gameplay_contract import GameplayContract
 from multiagent_framework.issue_contract import IssueManager
 from multiagent_framework.objective_contract import ObjectiveManager
+from multiagent_framework.orchestrator import Orchestrator
+from multiagent_framework.timer_system import TimerSystem
 
 
 class UnusedLLM:
@@ -259,3 +261,82 @@ def test_runtime_persistor_round_trips_objective_receipts_and_ending(tmp_path, m
     assert restored_state["current_ending"]["ending_id"] == "persist_ending"
     assert restored_state["current_ending"]["reached_at"] == 86400
     assert restored_state["objectives"][0]["status"] == "completed"
+
+
+
+def test_runtime_persistor_uses_complete_orchestrator_snapshot(tmp_path, monkeypatch):
+    state_file = tmp_path / "runtime" / "state.json"
+    agents_dir = tmp_path / "runtime" / "agents"
+    agents_dir.mkdir(parents=True)
+    monkeypatch.setattr(runtime_persistor, "STATE_FILE", state_file)
+    monkeypatch.setattr(runtime_persistor, "AGENTS_DIR", agents_dir)
+
+    expected = {
+        "sim_time": 42.0,
+        "seconds_per_day": 300.0,
+        "time_system_runtime": {"cursor": 1},
+        "lifecycle_runtime": {"receipts": ["life-1"]},
+        "deferred_timeline": {"entries": [{"entry_id": "timeline-1"}]},
+        "wakeup_outbox": {"entries": [{"delivery_id": "wake-1"}]},
+        "rhythm_runtime": {"phase": "crisis"},
+        "outcome_feedback_runtime": {"pending": ["feedback-1"]},
+        "actor_runtime": {"actors": {"actor-1": {}}},
+        "auto_pause_reason": {"code": "ending"},
+    }
+    calls = []
+    orch = SimpleNamespace(
+        agents={},
+        runtime_snapshot=lambda: calls.append("snapshot") or dict(expected),
+    )
+    persistor = RuntimePersistor(orch)
+    persistor.mark_state_dirty()
+
+    asyncio.run(persistor.flush())
+
+    assert calls == ["snapshot"]
+    assert json.loads(state_file.read_text(encoding="utf-8")) == expected
+
+
+
+def test_actual_orchestrator_automatic_flush_contains_durable_runtime(tmp_path, monkeypatch):
+    state_file = tmp_path / "runtime" / "state.json"
+    agents_dir = tmp_path / "runtime" / "agents"
+    agents_dir.mkdir(parents=True)
+    monkeypatch.setattr(runtime_persistor, "STATE_FILE", state_file)
+    monkeypatch.setattr(runtime_persistor, "AGENTS_DIR", agents_dir)
+
+    court = SimpleNamespace(get_official=lambda _target: None)
+    router = FakeRouter()
+    router.llm = SimpleNamespace(token_counter=SimpleNamespace(to_dict=lambda: {}))
+    chain_log = SimpleNamespace()
+    orch = Orchestrator(court, TimerSystem(), chain_log, router)
+    persistor = RuntimePersistor(orch)
+    orch.persistor = persistor
+    orch._pending_wakeups.append({
+        "target": "agent-a",
+        "chain_id": "chain-persist",
+        "payload": {"message": "persist me"},
+    })
+
+    asyncio.run(persistor.flush())
+
+    stored = json.loads(state_file.read_text(encoding="utf-8"))
+    assert stored["wakeup_outbox"]["entries"][0]["target"] == "agent-a"
+    assert "deferred_timeline" in stored
+    assert "lifecycle_runtime" in stored
+    assert "time_system_runtime" in stored
+    assert "rhythm_runtime" in stored
+    assert "outcome_feedback_runtime" in stored
+    assert "actor_runtime" in stored
+
+
+    monkeypatch.setattr(main, "STATE_FILE", state_file)
+    monkeypatch.setattr(main, "AGENTS_DIR", agents_dir)
+    restored_chain_log = SimpleNamespace(load_from_file=lambda: 0)
+    restored = Orchestrator(court, TimerSystem(), restored_chain_log, router)
+    main._load_runtime_state(restored)
+
+    restored_entries = restored._pending_wakeups.snapshot()["entries"]
+    assert len(restored_entries) == 1
+    assert restored_entries[0]["target"] == "agent-a"
+    assert restored_entries[0]["status"] == "pending"

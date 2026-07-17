@@ -10,6 +10,7 @@ from multiagent_framework.operational_metrics import (
 )
 from multiagent_framework.world_commands import WorldCommand, WorldCommandType
 from multiagent_framework.world_state import Entity, WorldState
+from multiagent_framework.wakeup_runtime import WakeupOutboxRuntime
 
 
 class FakeGateway:
@@ -236,5 +237,39 @@ def test_collector_alerts_and_prometheus_are_secret_free(tmp_path):
         "provider-secret", "secret.invalid", "private prompt", "private memory",
         "private summary", "archive-secret", "c:/private", "api_key",
         "provider_url", "authorization", "timeline-secret", "private-agent",
+    ):
+        assert secret not in serialized
+
+def test_wakeup_outbox_metrics_expose_only_aggregate_counts(tmp_path):
+    world = WorldState(str(tmp_path / "world.db"))
+    orchestrator = _orchestrator(world)
+    outbox = WakeupOutboxRuntime()
+    first = outbox.enqueue({
+        "target": "private-agent-a",
+        "payload": {"message": "hidden wakeup body"},
+    }, delivery_id="private-delivery-a")
+    outbox.enqueue({
+        "target": "private-agent-b",
+        "payload": {"message": "another hidden body"},
+    }, delivery_id="private-delivery-b")
+    outbox.claim_pending()
+    outbox.retry([first["delivery_id"]])
+    orchestrator._pending_wakeups = outbox
+
+    snapshot = OperationalMetricsCollector(orchestrator).collect()
+    simulator = snapshot["metrics"]["simulator"]
+    assert simulator["pending_wakeups"] == 1
+    assert simulator["inflight_wakeups"] == 1
+    assert simulator["wakeup_outbox_total"] == 2
+    assert simulator["wakeup_outbox_payload_bytes"] == outbox.payload_bytes
+
+    prometheus = render_prometheus(snapshot)
+    assert "world_sim_pending_wakeups 1" in prometheus
+    assert "world_sim_inflight_wakeups 1" in prometheus
+    assert "world_sim_wakeup_outbox_total 2" in prometheus
+    serialized = (json.dumps(snapshot) + prometheus).lower()
+    for secret in (
+        "private-agent-a", "private-agent-b", "private-delivery-a",
+        "private-delivery-b", "hidden wakeup body", "another hidden body",
     ):
         assert secret not in serialized

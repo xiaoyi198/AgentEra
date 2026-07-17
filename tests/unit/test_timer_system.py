@@ -114,3 +114,37 @@ class TestTimerSystemPersistence:
         ts2 = TimerSystem(self.tmp.name)
         loaded = ts2.load_from_db()
         assert loaded == 0
+
+
+
+def test_claim_due_keeps_sqlite_row_until_ack(tmp_path):
+    db_path = tmp_path / "timers.db"
+    timer = TimerEntry(
+        timer_id="tmr-durable",
+        fire_at=5.0,
+        target_agent="agent-a",
+        payload={"message": "deliver"},
+    )
+    first = TimerSystem(str(db_path))
+    first.schedule(timer)
+
+    claimed = first.claim_due(5.0)
+    assert [entry.timer_id for entry in claimed] == ["tmr-durable"]
+    assert first.count() == 0
+
+    restarted = TimerSystem(str(db_path))
+    assert restarted.load_from_db() == 1
+    assert [entry.timer_id for entry in restarted.claim_due(5.0)] == ["tmr-durable"]
+    assert restarted.ack("tmr-durable")
+
+    final = TimerSystem(str(db_path))
+    assert final.load_from_db() == 0
+
+
+def test_release_claim_returns_timer_to_heap():
+    timers = TimerSystem()
+    timers.schedule(TimerEntry(timer_id="retry", fire_at=1.0, target_agent="a"))
+
+    assert [entry.timer_id for entry in timers.claim_due(1.0)] == ["retry"]
+    assert timers.release_claim("retry")
+    assert [entry.timer_id for entry in timers.claim_due(1.0)] == ["retry"]

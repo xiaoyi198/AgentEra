@@ -226,7 +226,7 @@ FC 处理函数的中央注册表：
 - `fired_timers` — `deque(maxlen=2000)`，已触发的定时器记录
 - `__init__(court_graph, timer_system, chain_log, router, seconds_per_day, on_tick, action_agent, memory_compressor)` — 构造参数
 - `run(tick_interval=0.25)` — tick 循环，用 `time.monotonic()` 推进游戏时间；启动 persistor 后台任务
-- `_tick()` — 检查定时器 → 弹出到期的 OngoingEvent → 派发唤醒（皇帝奏折 vs Agent 调用）→ 处理玩家操作
+- `_tick()` — claim 到期 Timer → 发布持久 Wakeup Outbox → 弹出到期 OngoingEvent → claim/派发唤醒（玩家 Issue vs Agent 调用）→ 处理玩家操作
   - 同一 Agent 的多个唤醒消息会自动合并（拼接为一条 payload）
 - `_apply_matured_event(ev)` — 应用到期 OngoingEvent 的 expected_result（更新实体状态 + 库存变化）
 - `_process_agents_background()` — **后台 asyncio.Task**，不阻塞时间流动
@@ -236,7 +236,7 @@ FC 处理函数的中央注册表：
 - `_call_agent_safe()` — 调用单个 Agent，记录 chain log，异常安全
   - 检测 `request_action` → 绕过 Router，直接分发给 ActionAgent
   - 检测 hop 超限 → 标记 loop_detected
-- `_run_action()` — 运行 ActionAgent 模拟行动，完成后创建 Timer 把结果送回发起者
+- `_run_action()` — 运行 ActionAgent 模拟行动，完成后创建 Timer 把结果送回发起者；`request_action` 在后台 wakeup 任务内等待该分发完成后才 ACK
 - `_build_fc_context()` — 组装 `FCContext`，注入 sim_time、pending_wakeups、_run_action 绑定等
 - `_execute_commands(commands)` — 遍历 RouterCommand 列表，调用 `dispatch_fc` 统一执行；不再有 if/elif 分支
 - `_handle_player_action(action, result)` — 确定性逻辑，皇帝→太监→逐级传达（第二个参数 `result: TickResult`）
@@ -3593,7 +3593,7 @@ Use `Orchestrator.deferred_timeline_status()` or `GET /api/timeline` for diagnos
 - World Command committed, Causal queue not acknowledged: restart must return a replayed command result and must not apply inventory/resource changes twice.
 - Lifecycle Receipt committed, cursor not acknowledged: restart must resolve as `already_applied` and must not create a second dynamic Actor/Entity.
 - Canonical command normalization must preserve field presence when presence participates in idempotency. In particular, an explicit empty `reason` is not equivalent to an omitted `reason`.
-- Agent wakeups are not yet a durable outbox. Do not claim exactly-once wakeup delivery until `_pending_wakeups` and chain IDs have receipt-backed persistence.
+- Agent wakeups use a durable at-least-once Outbox. Persisted `inflight` work returns to `pending` after restart; duplicates remain possible across the downstream side-effect/ACK crash boundary, so do not claim exactly-once delivery.
 
 ### Regression commands
 
@@ -3610,3 +3610,66 @@ npm run build
 ```
 
 Required stress/recovery coverage includes 20,000 queued lifecycle markers, exact UTF-8 snapshot bytes, stable full drain ordering, producer cursor rollback at capacity, aggregate-only API/metrics output, World Command pre-ack restart replay, and Lifecycle Receipt pre-ack restart replay.
+
+## Durable Agent wakeup delivery (v0.42.0)
+
+### Delivery contract
+
+`WakeupOutboxRuntime` replaces the process-only wakeup list while retaining the small list-like surface required by legacy FC handlers. New orchestration code must use `enqueue()`, `claim_pending()`, `ack()`, and `retry()`.
+
+1. Delivery is **at-least-once**, never exactly-once. A crash after a downstream side effect but before persisted ACK may replay the wakeup.
+2. Entries transition `pending → inflight → ack/remove`. Agent errors, Router/command exceptions, background cancellation, and unexpected background failures return claimed delivery IDs to `pending`.
+3. Snapshot restore converts every valid `inflight` entry back to `pending`. Malformed snapshots fail closed as a whole; never salvage individual entries.
+4. Player-recipient wakeups are terminal after Issue contract rejection or successful Issue creation. Disabled and missing targets are terminal. Transient Issue creation failures retry.
+5. `request_action` runs inside the existing background wakeup task and awaits ActionAgent dispatch before ACK; do not reintroduce a detached child-task crash window.
+
+### Stable identities and idempotency
+
+- Timer: `timer:<timer_id>`.
+- Event: deterministic hash of `event_id + target`.
+- Routed chain: deterministic hash of `chain_id + target + canonical JSON payload`.
+- Legacy wakeup without source identity: persisted monotonic sequence; its chain ID derives from the delivery ID.
+- Merged wakeups must preserve every `delivery_id`, `timer_id`, and `chain_id` for ACK/retry and Chain Log diagnostics.
+- Downstream World Command IDs, Issue `external_id`, Lifecycle Receipts, action invocation IDs, and other receipt-backed boundaries remain responsible for replay idempotency.
+
+### Timer claim/ack ordering
+
+Use `TimerSystem.claim_due()` in the Orchestrator. Claim removes a due Timer from the heap but leaves its SQLite row intact. Enqueue the stable Timer wakeup next; if Outbox validation/capacity rejects it, call `release_claim()`. Delete the SQLite row only through `ack(timer_id)` after terminal wakeup completion.
+
+Timer ACK intentionally occurs before Outbox removal. A crash between those operations can replay the persisted Outbox entry, but cannot lose both durable sources. Reversing the order would also permit duplicates and can leave a Timer row to regenerate; neither ordering provides exactly-once, so preserve the documented no-loss ordering and downstream idempotency.
+
+### Snapshot and capacity rules
+
+- Hard entry capacity: 32,768.
+- Per-payload UTF-8 JSON size: 256 KiB.
+- Aggregate payload bytes: 64 MiB, enforced on enqueue and restore.
+- Maximum nesting depth: 16; maximum visited nodes: 20,000; maximum ID length: 256.
+- Reject NaN, Infinity, non-string mapping keys, arbitrary Python objects, and any non-JSON-safe payload.
+- `RuntimePersistor.flush()`, manual `save_state()`, and startup loading share `runtime_snapshot()` / `restore_runtime_snapshot()`. When adding runtime state, update this single contract and its parity tests instead of maintaining separate field lists.
+
+### Aggregate-only operations metrics
+
+The simulator projection and Prometheus output may expose only:
+
+- `pending_wakeups`
+- `inflight_wakeups`
+- `wakeup_outbox_total`
+- `wakeup_outbox_payload_bytes`
+
+Never expose payloads, target Agent IDs, delivery IDs, chain IDs, prompts, memories, provider credentials, or hidden world state through operational metrics.
+
+### Regression commands
+
+```powershell
+python -m pytest tests/unit/test_wakeup_runtime.py tests/unit/test_wakeup_orchestrator.py tests/unit/test_timer_system.py tests/unit/test_runtime_persistor.py tests/unit/test_event_generator.py tests/unit/test_operational_metrics.py -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m compileall -q main.py multiagent_framework routers tests
+python -m pytest tests/unit/test_version_consistency.py -q
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+Required recovery coverage includes: inflight snapshot restart to pending, Router failure retry, request_action completion before ACK, Timer claimed before crash, Timer + persisted Outbox replay deduplication, malformed and aggregate-oversized snapshot rejection, automatic state.json parity, startup Outbox restore, and secret-free aggregate metrics.

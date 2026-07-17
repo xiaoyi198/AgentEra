@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.41.0**
+> 当前版本：**v0.42.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -10,6 +10,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 
 - **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化。
+- **持久唤醒投递**：Agent 唤醒采用有界 Outbox 与 `pending → inflight → ack/retry` 状态机，崩溃恢复提供明确的 at-least-once 语义。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
 - **统一价值锚**：资产库存使用 `quantity × anchor_rate` 计算统一基础价值。
 - **类型化 Agent 经济动作**：ActionAgent 使用生产、消费和统一锚值转移工具；跨资源调拨按基础价值换算并原子提交。
@@ -457,6 +458,20 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.42.0 发布说明
+
+v0.42.0 将 Agent 唤醒从进程内临时列表升级为持久 Wakeup Outbox，并统一自动存档与手工存档的运行时快照字段。该版本承诺 **at-least-once**（至少一次）投递，不宣称 exactly-once；下游 World Command、Issue external ID 与 Lifecycle Receipt 继续承担幂等边界。
+
+- 新增 `WakeupOutboxRuntime`：条目按 `pending → inflight → ack/remove` 流转；失败、Router 异常或任务取消会回到 `pending`，重启时持久化的 `inflight` 也会重排为 `pending`。
+- Timer 改为 `claim_due()` / `ack()` / `release_claim()`：到期后先离开内存 heap，但 SQLite 行要等对应 wakeup 完成后才删除，关闭“Timer 已删除、唤醒尚未持久化”的崩溃窗口。
+- Timer、Event、路由 Chain 使用稳定 delivery ID；缺少 chain 的旧路径由持久 sequence 生成 ID，并从 delivery ID 派生稳定 chain ID。重复重放可被 Outbox 去重，已执行但尚未 ACK 的崩溃仍可能产生允许的重复。
+- `request_action` 在后台 wakeup 任务内等待 ActionAgent 分发完成后再 ACK，不再只创建易丢失的子任务。
+- Outbox 最多 32,768 条；单 payload 最大 256 KiB、总 payload 最大 64 MiB，并限制嵌套深度、节点数、ID 长度以及 JSON-safe 数据类型；损坏或越界快照原子 fail closed。
+- `Orchestrator.runtime_snapshot()` / `restore_runtime_snapshot()` 统一 `save_state()`、启动加载与 `RuntimePersistor.flush()`，自动 `state.json` 现在与手工存档覆盖同一组时间、生命周期、timeline、wakeup、节奏、反馈、Issue、目标和 Actor 运行时。
+- Operational Metrics JSON / Prometheus 新增 pending、inflight、Outbox 总量与 payload 字节数，只暴露聚合值，不暴露 payload、Agent ID、delivery ID 或隐藏世界状态。
+
+当前验证：Wakeup/Timer/Persistor/Event/Metrics 定向测试 **57 passed**；集成测试 **11 passed, 2 skipped**；前端测试 **97 passed**，ESLint、Vite build、Python compileall 与版本一致性测试通过。完整单元集为 **820 passed, 1 failed**；唯一失败位于并行修改中的 LLM HTTP timeout 浮点边界（观测值 `0.2000000000007276`，断言上限 `0.2`），本提交未越界修改该文件，发布前需由对应修改方修复并复跑。
 
 ## v0.41.0 发布说明
 

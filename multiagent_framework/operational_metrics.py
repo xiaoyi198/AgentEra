@@ -335,13 +335,26 @@ class OperationalMetricsCollector:
                 "agent_turn_input_tokens", "agent_turn_output_tokens",
             )
         }
+        wakeup_runtime = getattr(self.orchestrator, "_pending_wakeups", ())
+        pending_wakeups = _integer(
+            getattr(wakeup_runtime, "pending_count", len(wakeup_runtime))
+        )
         simulator = {
             "up": 1,
             "running": bool(getattr(self.orchestrator, "is_running", False)),
             "paused": bool(getattr(self.orchestrator, "is_paused", False)),
             "sim_time": round(_number(getattr(self.orchestrator, "sim_time", 0)), 3),
             "pending_agent_tasks": len(getattr(self.orchestrator, "_agent_tasks", ())),
-            "pending_wakeups": len(getattr(self.orchestrator, "_pending_wakeups", ())),
+            "pending_wakeups": pending_wakeups,
+            "inflight_wakeups": _integer(
+                getattr(wakeup_runtime, "inflight_count", 0)
+            ),
+            "wakeup_outbox_total": _integer(
+                getattr(wakeup_runtime, "total_count", pending_wakeups)
+            ),
+            "wakeup_outbox_payload_bytes": _integer(
+                getattr(wakeup_runtime, "payload_bytes", 0)
+            ),
         }
         rates = {
             "llm_error_rate": _ratio(llm["totals"]["errors"], llm["totals"]["calls"]),
@@ -427,6 +440,12 @@ def render_prometheus(snapshot: Mapping[str, Any]) -> str:
         f'world_sim_pending_agent_tasks {metrics["simulator"]["pending_agent_tasks"]}',
         "# TYPE world_sim_pending_wakeups gauge",
         f'world_sim_pending_wakeups {metrics["simulator"]["pending_wakeups"]}',
+        "# TYPE world_sim_inflight_wakeups gauge",
+        f'world_sim_inflight_wakeups {metrics["simulator"]["inflight_wakeups"]}',
+        "# TYPE world_sim_wakeup_outbox_total gauge",
+        f'world_sim_wakeup_outbox_total {metrics["simulator"]["wakeup_outbox_total"]}',
+        "# TYPE world_sim_wakeup_outbox_payload_bytes gauge",
+        f'world_sim_wakeup_outbox_payload_bytes {metrics["simulator"]["wakeup_outbox_payload_bytes"]}',
         "# TYPE world_sim_agents_total gauge",
         f'world_sim_agents_total {metrics["agents"]["total"]}',
         "# TYPE world_sim_agents_busy gauge",

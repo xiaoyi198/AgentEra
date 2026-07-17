@@ -61,6 +61,7 @@
 │   ├── orchestrator.py              # 【核心】主循环，驱动整个模拟
 │   ├── court_graph.py               # 朝廷层级图（官员查询 + 坐标委托 WorldState）
 │   ├── timer_system.py              # 定时器系统（heapq + SQLite 持久化）
+│   ├── wakeup_runtime.py            # 持久 Agent Wakeup Outbox（at-least-once）
 │   ├── chain_log.py                 # 调用链日志（JSONL 追加写入）
 │   ├── world_state.py               # 世界状态数据库（实体/库存/关系/事件/资源代币）
 │   ├── memory_compressor.py         # 【核心】LLM 记忆压缩（Agent 记忆超阈值时自动摘要）
@@ -146,11 +147,12 @@ run() 主循环（0.25s 间隔）
   ├─ 用真实流逝时间推进 sim_time（不被 LLM 阻塞）
   │
   └─ _tick() 每帧处理
-      ├─ 1. 检查到期定时器 → 加入待唤醒队列
+      ├─ 1. claim 到期定时器 → 以稳定 ID 加入持久 Wakeup Outbox
       ├─ 1.5 弹出到期的 OngoingEvent → _apply_matured_event()（写回实体状态/库存）
-      ├─ 2. 处理待唤醒
-      │     ├─ 皇帝奏折 → 添加到 TickResult.new_memorials
-      │     └─ Agent 调用 → 后台 asyncio.Task（不阻塞主循环）
+      ├─ 2. claim Outbox pending 唤醒
+      │     ├─ 皇帝奏折 → Issue/奏折落地后 ACK
+      │     ├─ Agent 调用 → 后台 asyncio.Task（不阻塞主循环）
+      │     └─ 成功 ACK；Agent/Router 异常或取消则 retry 为 pending
       ├─ 3. 处理玩家操作队列
       ├─ 4. 收集在途公文状态
       └─ 5. Token 统计
@@ -162,6 +164,7 @@ run() 主循环（0.25s 间隔）
 | `run(tick_interval=0.25)` | 主循环，实时推进 sim_time；启动 persistor 后台任务 |
 | `_tick()` | 单次 tick：检查定时器 → 弹出到期事件 → 派发唤醒 → 处理玩家操作 |
 | `_process_agents_background()` | 后台并行调用 Agent → Router 批量处理 → 执行指令 |
+| `runtime_snapshot()` / `restore_runtime_snapshot()` | 统一自动存档、手工存档与启动恢复的运行时字段 |
 | `_call_agent_safe()` | 调用单个 Agent，记录 chain log，异常安全 |
 | `_apply_matured_event(ev)` | 应用到期 OngoingEvent 的 expected_result（更新状态 + 库存） |
 | `_build_fc_context()` | 组装 FCContext |
@@ -424,7 +427,19 @@ BaseAgent (抽象基类)
 
 ### 3.10 timer_system.py — 定时器系统
 
-与 DEV_GUIDE 一致，无重大变更。
+- `claim_due(current_time)`：从 heap claim 到期 Timer，但保留 SQLite 行并进入进程内 claimed 集合。
+- `ack(timer_id)`：只有对应 Wakeup 已完成时才删除 SQLite 行。
+- `release_claim(timer_id)`：Outbox 容量或校验失败时把 Timer 放回 heap。
+- `pop_due()` 保留兼容语义，内部执行 claim 后立即 ACK；新 Orchestrator 路径必须使用 claim/ack。
+- 重启会从 SQLite 重新加载尚未 ACK 的 Timer；结合稳定 `timer:<timer_id>` delivery ID，可与已持久 Outbox 条目幂等汇合。
+
+### 3.10a wakeup_runtime.py — 持久唤醒 Outbox
+
+- 状态机：`pending → inflight → ack/remove`；失败和取消执行 retry，重启把 `inflight` 恢复为 `pending`。
+- 交付契约是 **at-least-once**，不是 exactly-once。崩溃可能重放，但不能因为 Timer 先删除或内存列表丢失而静默漏投。
+- 稳定 ID：Timer 使用 `timer:<timer_id>`，Event 使用 `event_id + target` 哈希，Chain 使用 `chain_id + target + canonical payload` 哈希；无来源 ID 的兼容路径使用持久 sequence。
+- 容量边界：32,768 条、单 payload 256 KiB、总 payload 64 MiB，并限制嵌套深度、节点数和 ID 长度；仅接受 JSON-safe 数据，损坏快照原子 fail closed。
+- 兼容旧 FC handler 的 list-like 表面（`append`、遍历、下标、`len`、`clear`），新代码应使用 `enqueue/claim_pending/ack/retry`。
 
 ---
 
@@ -547,6 +562,8 @@ BaseAgent (抽象基类)
   - `start()` / `stop()` — 启停 flush loop
 
 设计要点：mark_*_dirty 只标记，不做 IO；flush() 批量序列化并原子写入（.tmp → rename）。
+
+自动 flush、手工 `save_state()` 与启动加载统一通过 `Orchestrator.runtime_snapshot()` / `restore_runtime_snapshot()`，覆盖 sim time、时间倍率、随机/因果事件、时间规则、Temporal/Lifecycle、Deferred Timeline、Wakeup Outbox、Rhythm、Outcome Feedback、Action、Issue、Objective 与 Actor runtime，避免自动存档遗漏新运行时字段。
 
 ---
 

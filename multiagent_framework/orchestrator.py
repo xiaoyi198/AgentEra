@@ -61,6 +61,12 @@ from .runtime_bindings import (
     RuntimeTaskBinding,
 )
 from .timer_system import TimerSystem
+from .wakeup_runtime import (
+    WakeupOutboxError,
+    WakeupOutboxRuntime,
+    event_delivery_id,
+    stable_chain_id,
+)
 from .types import (
     ActionResult,
     AgentAction,
@@ -195,7 +201,7 @@ class Orchestrator:
         self._player_actions: asyncio.Queue[PlayerAction] = asyncio.Queue()
 
         # 待处理的 Agent 唤醒（下次 tick 处理）
-        self._pending_wakeups: list[dict[str, Any]] = []
+        self._pending_wakeups = WakeupOutboxRuntime(on_change=self._mark_wakeup_state_dirty)
 
         # 奏折列表（持久化到 runtime/state.json）
         self.memorials: list[dict[str, Any]] = []
@@ -1267,7 +1273,9 @@ class Orchestrator:
             if not self.is_agent_enabled(agent_id):
                 logger.info("Skipped event %s for disabled agent %s", event.event_id, agent_id)
                 continue
+            delivery_id = event_delivery_id(event.event_id, agent_id)
             self._pending_wakeups.append({
+                "delivery_id": delivery_id,
                 "target": agent_id,
                 "payload": {
                     **event.initial_payload,
@@ -1278,7 +1286,7 @@ class Orchestrator:
                     "generated_at": event_time,
                 },
                 "event_id": event.event_id,
-                "chain_id": f"chain_{uuid.uuid4().hex[:8]}",
+                "chain_id": stable_chain_id(delivery_id),
             })
         logger.info("Injected event %s targeting %d agents", event.event_id, len(event.target_agents))
 
@@ -1309,24 +1317,24 @@ class Orchestrator:
 
     # ── 存档/读档 ──
 
-    def save_state(self) -> dict[str, Any]:
-        if not self._paused:
-            raise RuntimeError("只能在暂停状态下存档")
-        timer_count = self.timers.save_all()
-        # 序列化所有 Agent 记忆（v2 格式：含 summary + messages）
-        agent_memories: dict[str, Any] = {}
-        for agent_id, agent in self.agents.items():
-            agent_memories[agent_id] = agent.serialize_memory()
+    def _mark_wakeup_state_dirty(self) -> None:
+        """Outbox mutation callback; persistor may be attached after construction."""
+        if self.persistor:
+            self.persistor.mark_state_dirty()
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        """Return the complete synchronous runtime state used by every save path."""
         return {
             "sim_time": self._sim_time,
             "seconds_per_day": self._seconds_per_day,
-            "timer_count": timer_count,
+            "memorials": self.issue_manager.legacy_memorials(sim_time=self._sim_time),
             "random_events": self.random_event_generator.snapshot(),
             "causal_events": self.causal_event_engine.snapshot(),
             "time_rules": self.time_rule_status(),
             "time_system_runtime": self.temporal_runtime.snapshot(),
             "lifecycle_runtime": self.lifecycle_runtime.snapshot(),
             "deferred_timeline": self.deferred_timeline.snapshot(),
+            "wakeup_outbox": self._pending_wakeups.snapshot(),
             "rhythm_runtime": self.rhythm_runtime.snapshot(),
             "outcome_feedback_runtime": self.outcome_feedback_runtime.snapshot(),
             "auto_pause_reason": self._auto_pause_reason,
@@ -1334,14 +1342,12 @@ class Orchestrator:
             "issue_runtime": self.issue_manager.snapshot(),
             "objective_runtime": self.objective_manager.snapshot(),
             "actor_runtime": self.actor_manager.snapshot(),
-            "agent_memories": agent_memories,
         }
 
-    def load_state(self, state: dict[str, Any]) -> None:
+    def restore_runtime_snapshot(self, state: dict[str, Any]) -> None:
+        """Restore the synchronous runtime snapshot, including durable wakeups."""
         self._sim_time = state.get("sim_time", 0.0)
         self._seconds_per_day = state.get("seconds_per_day", 600.0)
-        self.timers.load_from_db()
-        self.chain_log.load_from_file()
         self.router.update_time_scale(self._seconds_per_day)
         self.random_event_generator.restore(
             state.get("random_events", {}), sim_time=self._sim_time
@@ -1360,6 +1366,9 @@ class Orchestrator:
         self.objective_manager.restore(
             state.get("objective_runtime", {}), sim_time=self._sim_time
         )
+        actor_state = state.get("actor_runtime")
+        if isinstance(actor_state, dict):
+            self.actor_manager.restore(actor_state)
         temporal_state = state.get("time_system_runtime")
         if isinstance(temporal_state, dict):
             self.temporal_runtime.restore(temporal_state, sim_time=self._sim_time)
@@ -1370,13 +1379,35 @@ class Orchestrator:
         self._last_timeline_restore_error = self.deferred_timeline.last_restore_error
         if not timeline_ok:
             logger.warning("Deferred timeline snapshot rejected: %s", self._last_timeline_restore_error)
+        wakeup_ok = self._pending_wakeups.restore(state.get("wakeup_outbox", {}))
+        if not wakeup_ok:
+            logger.warning(
+                "Wakeup outbox snapshot rejected: %s",
+                self._pending_wakeups.last_restore_error,
+            )
         self.rhythm_runtime.restore(state.get("rhythm_runtime", {}), sim_time=self._sim_time)
         self.issue_manager.set_rhythm_controller(self.rhythm_runtime)
-        self.outcome_feedback_runtime.restore(state.get("outcome_feedback_runtime", {}), sim_time=self._sim_time)
+        self.outcome_feedback_runtime.restore(
+            state.get("outcome_feedback_runtime", {}), sim_time=self._sim_time,
+        )
         auto_pause_reason = state.get("auto_pause_reason")
         self._auto_pause_reason = dict(auto_pause_reason) if isinstance(auto_pause_reason, dict) else None
         self._sync_gameplay_effect_runtime()
-        # 恢复 Agent 记忆
+
+    def save_state(self) -> dict[str, Any]:
+        if not self._paused:
+            raise RuntimeError("Cannot save unless simulation is paused")
+        state = self.runtime_snapshot()
+        state["timer_count"] = self.timers.save_all()
+        state["agent_memories"] = {
+            agent_id: agent.serialize_memory() for agent_id, agent in self.agents.items()
+        }
+        return state
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        self.restore_runtime_snapshot(state)
+        self.timers.load_from_db()
+        self.chain_log.load_from_file()
         agent_memories = state.get("agent_memories", {})
         restored = 0
         for agent_id, memory_data in agent_memories.items():
@@ -1960,14 +1991,35 @@ class Orchestrator:
         if lifecycle_runtime_error:
             result.lifecycle["runtime_error"] = lifecycle_runtime_error
 
-        due_timers = self.timers.pop_due(self._sim_time)
+        claim_due = getattr(self.timers, "claim_due", None)
+        due_timers = (
+            claim_due(self._sim_time) if callable(claim_due)
+            else self.timers.pop_due(self._sim_time)
+        )
         for timer in due_timers:
-            self._pending_wakeups.append({
-                "target": timer.target_agent,
-                "payload": timer.payload,
-                "chain_id": timer.chain_id,
-                "timer_id": timer.timer_id,
-            })
+            try:
+                self._pending_wakeups.enqueue({
+                    "delivery_id": f"timer:{timer.timer_id}",
+                    "target": timer.target_agent,
+                    "payload": timer.payload,
+                    "chain_id": timer.chain_id,
+                    "timer_id": timer.timer_id,
+                })
+            except WakeupOutboxError as exc:
+                release_claim = getattr(self.timers, "release_claim", None)
+                if callable(release_claim):
+                    release_claim(timer.timer_id)
+                logger.warning(
+                    "Timer wakeup enqueue rejected: timer=%s code=%s",
+                    timer.timer_id, exc.code,
+                )
+                result.agent_errors.append({
+                    "agent_id": timer.target_agent,
+                    "error": "wakeup_enqueue_rejected",
+                    "code": exc.code,
+                    "timer_id": timer.timer_id,
+                })
+                continue
             self.fired_timers.append({
                 "timer_id": timer.timer_id,
                 "target": timer.target_agent,
@@ -1998,8 +2050,9 @@ class Orchestrator:
 
         # 2. 处理待唤醒 — 拆分出皇帝奏折 vs Agent 调用
         if self._pending_wakeups:
+            claimed_wakeups = self._pending_wakeups.claim_pending()
             # 先做模糊匹配，统一 target_id
-            for wakeup in self._pending_wakeups:
+            for wakeup in claimed_wakeups:
                 target_id = wakeup["target"]
                 agent = self.agents.get(target_id)
                 official = self.court.get_official(target_id)
@@ -2013,8 +2066,9 @@ class Orchestrator:
             merged_agent_wakeups: dict[str, dict] = {}
             player_wakeups: list[dict] = []
             unresolved: list[str] = []
+            terminal_delivery_ids: list[str] = []
 
-            for wakeup in self._pending_wakeups:
+            for wakeup in claimed_wakeups:
                 target_id = wakeup["target"]
                 official = self.court.get_official(target_id)
                 if self._is_player_recipient(target_id, official):
@@ -2024,12 +2078,23 @@ class Orchestrator:
                         merged_agent_wakeups[target_id] = {
                             "target": target_id,
                             "payload": dict(wakeup.get("payload", {})),
-                            "chain_ids": [wakeup.get("chain_id", "")],
+                            "chain_id": wakeup.get("chain_id", ""),
+                            "chain_ids": list(
+                                wakeup.get("chain_ids") or [wakeup.get("chain_id", "")]
+                            ),
+                            "delivery_ids": [wakeup.get("delivery_id", "")],
+                            "timer_id": wakeup.get("timer_id", ""),
+                            "timer_ids": [wakeup.get("timer_id", "")],
+                            "event_id": wakeup.get("event_id", ""),
                         }
                     else:
                         # 合并消息内容，收集所有 chain_id
                         base = merged_agent_wakeups[target_id]
-                        base["chain_ids"].append(wakeup.get("chain_id", ""))
+                        for chain_id in wakeup.get("chain_ids") or [wakeup.get("chain_id", "")]:
+                            if chain_id and chain_id not in base["chain_ids"]:
+                                base["chain_ids"].append(chain_id)
+                        base["delivery_ids"].append(wakeup.get("delivery_id", ""))
+                        base["timer_ids"].append(wakeup.get("timer_id", ""))
                         base_payload = base["payload"]
                         new_msg = wakeup.get("payload", {}).get("message", "")
                         if new_msg:
@@ -2040,8 +2105,10 @@ class Orchestrator:
                 elif self.agents.get(target_id):
                     logger.info("Dropped wakeup for disabled agent %s", target_id)
                     result.agent_errors.append({"agent_id": target_id, "error": "disabled"})
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
                 else:
                     unresolved.append(target_id)
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
 
             agent_wakeups = []
             for wakeup in player_wakeups:
@@ -2092,6 +2159,20 @@ class Orchestrator:
                         "chain_id": chain_id,
                         "event_id": event_id,
                     })
+                    terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
+                    continue
+                except Exception as exc:
+                    logger.exception(
+                        "Player wakeup delivery failed: target=%s",
+                        wakeup.get("target", ""),
+                    )
+                    result.agent_errors.append({
+                        "agent_id": str(wakeup.get("target", "")),
+                        "error": "wakeup_delivery_failed",
+                        "chain_id": chain_id,
+                        "event_id": event_id,
+                    })
+                    self._retry_wakeup_deliveries([wakeup.get("delivery_id", "")])
                     continue
                 issue = opened["issue"]
                 result.new_issues.append(issue)
@@ -2103,6 +2184,7 @@ class Orchestrator:
                 )
                 if memorial is not None:
                     result.new_memorials.append(memorial)
+                terminal_delivery_ids.append(wakeup.get("delivery_id", ""))
             for target_id, wakeup in merged_agent_wakeups.items():
                 agent = self.agents[target_id]
                 agent_wakeups.append((agent, wakeup))
@@ -2110,7 +2192,7 @@ class Orchestrator:
                 logger.warning("Agent not found: %s", target_id)
                 result.agent_errors.append({"agent_id": target_id, "error": "not_found"})
 
-            self._pending_wakeups.clear()
+            self._ack_wakeup_deliveries(terminal_delivery_ids)
 
             # Agent 调用作为后台任务，不阻塞 tick
             if agent_wakeups:
@@ -2183,78 +2265,118 @@ class Orchestrator:
 
     # ── 后台 Agent 处理 ──
 
+    def _ack_wakeup_deliveries(self, delivery_ids: list[str]) -> None:
+        normalized = [str(item) for item in delivery_ids if str(item)]
+        if not normalized:
+            return
+        timer_ids = {
+            str(entry.get("timer_id", ""))
+            for delivery_id in normalized
+            if (entry := self._pending_wakeups.get(delivery_id)) is not None
+            if str(entry.get("timer_id", ""))
+        }
+        ack_timer = getattr(self.timers, "ack", None)
+        if callable(ack_timer):
+            for timer_id in timer_ids:
+                ack_timer(timer_id)
+        self._pending_wakeups.ack(normalized)
+
+    def _retry_wakeup_deliveries(self, delivery_ids: list[str]) -> None:
+        normalized = [str(item) for item in delivery_ids if str(item)]
+        if normalized:
+            self._pending_wakeups.retry(normalized)
+
     async def _process_agents_background(
         self,
         agent_wakeups: list[tuple[BaseAgent, dict[str, Any]]],
     ) -> None:
-        """后台任务：并行调用 Agent → Router 批量处理 → 执行指令.
-
-        这个方法在后台运行，不阻塞主循环的时间推进。
-        """
-        # 并行调用所有 Agent
-        tasks = [
-            self._call_agent_safe(agent, wakeup)
-            for agent, wakeup in agent_wakeups
-            if self.is_agent_enabled(agent.agent_id)
+        """Deliver claimed wakeups, acknowledging only after routing completes."""
+        all_delivery_ids = [
+            str(delivery_id)
+            for _, wakeup in agent_wakeups
+            for delivery_id in wakeup.get("delivery_ids", [])
+            if str(delivery_id)
         ]
-        results = await asyncio.gather(*tasks)
+        try:
+            tasks = [
+                self._call_agent_safe(agent, wakeup)
+                for agent, wakeup in agent_wakeups
+            ]
+            results = await asyncio.gather(*tasks)
 
-        # 每个 result 是 list[AgentAction]，展平后过滤
-        actions: list[AgentAction] = []
-        for action_list in results:
-            for a in action_list:
-                if a.action != "do_nothing":
-                    actions.append(a)
+            actions: list[AgentAction] = []
+            failed_delivery_ids: list[str] = []
+            successful_delivery_ids: list[str] = []
+            for (_, wakeup), action_list in zip(agent_wakeups, results):
+                delivery_ids = [
+                    str(item) for item in wakeup.get("delivery_ids", []) if str(item)
+                ]
+                if wakeup.pop("_delivery_failed", False):
+                    failed_delivery_ids.extend(delivery_ids)
+                    continue
+                successful_delivery_ids.extend(delivery_ids)
+                for action in action_list:
+                    if action.action != "do_nothing":
+                        actions.append(action)
 
-        # Router 批量处理
-        if actions:
-            self._record_operational_metric("router_batches")
-            self._record_operational_metric("router_actions", len(actions))
-            try:
-                commands = await self.router.process_batch(actions)
-                self._record_operational_metric("router_commands", len(commands))
+            if actions:
+                self._record_operational_metric("router_batches")
+                self._record_operational_metric("router_actions", len(actions))
+                try:
+                    commands = await self.router.process_batch(actions)
+                    self._record_operational_metric("router_commands", len(commands))
 
-                # 记录 Router 决策日志
-                self.router_log.append({
-                    "sim_time": self._sim_time,
-                    "input_actions": [
-                        {"agent": a.agent_id, "action": a.action,
-                         "content": a.content[:80], "urgency": a.urgency}
-                        for a in actions
-                    ],
-                    "output_commands": [
-                        {"type": cmd.command_type.value, "target": cmd.target or ",".join(cmd.targets),
-                         "delay": cmd.delay_seconds,
-                         "payload_preview": str(cmd.payload)[:80]}
-                        for cmd in commands
-                    ],
-                    "command_count": len(commands),
-                    "router_text": self.router.last_response_text[:200] if self.router.last_response_text else "",
-                    "router_stats": dict(getattr(self.router, "last_stats", {}) or {}),
-                })
-
-                execution_results = await self._execute_commands(commands)
-                for command, execution_result in execution_results:
-                    source_action = command.source_action
-                    source_id = source_action.agent_id if source_action else ""
-                    source_agent = self.agents.get(source_id)
-                    if source_agent is None:
-                        continue
-                    await source_agent.record_execution_feedback({
-                        "phase": "dispatch",
-                        "intent_id": (source_action.metadata or {}).get("intent_id", ""),
-                        "chain_id": command.chain_id,
-                        "command": command.command_type.value,
-                        "target": command.target,
-                        "targets": list(command.targets),
-                        "result": execution_result,
+                    self.router_log.append({
+                        "sim_time": self._sim_time,
+                        "input_actions": [
+                            {"agent": a.agent_id, "action": a.action,
+                             "content": a.content[:80], "urgency": a.urgency}
+                            for a in actions
+                        ],
+                        "output_commands": [
+                            {"type": cmd.command_type.value, "target": cmd.target or ",".join(cmd.targets),
+                             "delay": cmd.delay_seconds,
+                             "payload_preview": str(cmd.payload)[:80]}
+                            for cmd in commands
+                        ],
+                        "command_count": len(commands),
+                        "router_text": self.router.last_response_text[:200] if self.router.last_response_text else "",
+                        "router_stats": dict(getattr(self.router, "last_stats", {}) or {}),
                     })
-                    if self.persistor:
-                        self.persistor.mark_agent_dirty(source_id)
-                self._record_operational_metric("router_batches_completed")
-            except Exception as e:
-                self._record_operational_metric("router_failures")
-                logger.error("Router batch processing failed: %s", e)
+
+                    execution_results = await self._execute_commands(commands)
+                    for command, execution_result in execution_results:
+                        source_action = command.source_action
+                        source_id = source_action.agent_id if source_action else ""
+                        source_agent = self.agents.get(source_id)
+                        if source_agent is None:
+                            continue
+                        await source_agent.record_execution_feedback({
+                            "phase": "dispatch",
+                            "intent_id": (source_action.metadata or {}).get("intent_id", ""),
+                            "chain_id": command.chain_id,
+                            "command": command.command_type.value,
+                            "target": command.target,
+                            "targets": list(command.targets),
+                            "result": execution_result,
+                        })
+                        if self.persistor:
+                            self.persistor.mark_agent_dirty(source_id)
+                    self._record_operational_metric("router_batches_completed")
+                except Exception as exc:
+                    self._record_operational_metric("router_failures")
+                    logger.error("Router batch processing failed: %s", exc)
+                    self._retry_wakeup_deliveries(all_delivery_ids)
+                    return
+
+            self._ack_wakeup_deliveries(successful_delivery_ids)
+            self._retry_wakeup_deliveries(failed_delivery_ids)
+        except asyncio.CancelledError:
+            self._retry_wakeup_deliveries(all_delivery_ids)
+            raise
+        except Exception as exc:
+            logger.exception("Background wakeup delivery failed: %s", exc)
+            self._retry_wakeup_deliveries(all_delivery_ids)
 
     async def _call_agent_safe(
         self,
@@ -2272,10 +2394,14 @@ class Orchestrator:
         previous_outcome = getattr(agent, "last_turn_outcome", None)
         turn_error_recorded = False
         try:
-            chain_ids = wakeup.get("chain_ids") or [
-                wakeup.get("chain_id", f"chain_{uuid.uuid4().hex[:8]}")
+            delivery_keys = wakeup.get("delivery_ids") or [
+                wakeup.get("delivery_id") or wakeup.get("target", "legacy")
             ]
-            chain_ids = [c or f"chain_{uuid.uuid4().hex[:8]}" for c in chain_ids]
+            fallback_chain_id = stable_chain_id(str(delivery_keys[0]))
+            chain_ids = wakeup.get("chain_ids") or [
+                wakeup.get("chain_id", fallback_chain_id)
+            ]
+            chain_ids = [c or fallback_chain_id for c in chain_ids]
             agent_payload = dict(wakeup.get("payload", {}))
             agent_payload.setdefault("chain_id", chain_ids[0])
             agent_payload.setdefault("chain_ids", list(chain_ids))
@@ -2342,22 +2468,21 @@ class Orchestrator:
                             status="delivered",
                         ))
                     if self.action_agent is not None:
-                        task = asyncio.create_task(
-                            self._run_action(
-                                payload=action.metadata,
-                                source_agent_id=agent.agent_id,
-                                chain_id=chain_ids[0],
-                                event_id=event_id,
-                            )
+                        # This already runs inside the background wakeup task. Await the
+                        # direct ActionAgent dispatch so the durable wakeup is not acked
+                        # in the crash window between task creation and task execution.
+                        await self._run_action(
+                            payload=action.metadata,
+                            source_agent_id=agent.agent_id,
+                            chain_id=chain_ids[0],
+                            event_id=event_id,
                         )
-                        self._agent_tasks.add(task)
-                        task.add_done_callback(self._agent_tasks.discard)
                         await agent.record_execution_feedback({
                             "phase": "dispatch",
                             "intent_id": (action.metadata or {}).get("intent_id", ""),
                             "chain_id": chain_ids[0],
                             "command": "request_action",
-                            "result": {"ok": True, "scheduled": True},
+                            "result": {"ok": True, "completed": True},
                         })
                     else:
                         logger.warning(
@@ -2420,6 +2545,7 @@ class Orchestrator:
         except Exception as e:
             if not turn_error_recorded:
                 self._record_operational_metric("agent_turn_errors")
+            wakeup["_delivery_failed"] = True
             logger.error("Agent %s failed: %s", agent.agent_id, e)
             return []
 

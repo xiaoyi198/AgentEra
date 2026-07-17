@@ -547,3 +547,32 @@ def test_deferred_timeline_survives_orchestrator_save_and_restart():
     assert ("time_system", "daily_signal") in visible[1:]
     assert ("random", "locust_plague") in visible[1:]
     assert restored.deferred_timeline.pending_count == 0
+
+
+
+def test_event_wakeup_outbox_survives_restart_and_replay_is_idempotent():
+    event = EventObject(
+        event_id="stable-event",
+        event_type="inspection",
+        severity=3,
+        target_agents=["county-a"],
+        initial_payload={"message": "inspect granary"},
+        generated_at=12,
+    )
+    original = make_orchestrator_for_events()
+    original.inject_event(event)
+    original._paused = True
+    state = copy.deepcopy(original.save_state())
+
+    assert state["wakeup_outbox"]["entries"][0]["status"] == "pending"
+    expected_delivery_id = state["wakeup_outbox"]["entries"][0]["delivery_id"]
+    expected_chain_id = state["wakeup_outbox"]["entries"][0]["chain_id"]
+
+    restored = make_orchestrator_for_events()
+    restored.load_state(state)
+    restored.inject_event(copy.deepcopy(event))
+
+    snapshot = restored._pending_wakeups.snapshot()
+    assert len(snapshot["entries"]) == 1
+    assert snapshot["entries"][0]["delivery_id"] == expected_delivery_id
+    assert snapshot["entries"][0]["chain_id"] == expected_chain_id
