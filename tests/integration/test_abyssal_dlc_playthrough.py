@@ -140,3 +140,127 @@ async def _playthrough(tmp_path: Path) -> None:
     assert any(item["objective_id"] == "secure_abyssal" and item["status"] == "completed" for item in objective_state["objectives"])
     assert objective_state["current_ending"]["ending_id"] == "abyssal_safe"
     assert objective_state["current_ending"]["outcome"] == "victory"
+
+
+def test_abyssal_emergency_isolation_creates_recoverable_supply_tradeoff(tmp_path: Path) -> None:
+    asyncio.run(_play_isolation_branch(tmp_path))
+
+
+async def _play_isolation_branch(tmp_path: Path) -> None:
+    registry, world, orchestrator, loader = _runtime(tmp_path)
+    assert registry.validate("example_abyssal") == []
+    assert registry.audit_playability("example_abyssal").passed_count == 7
+
+    loader.load_active(seed_world=True)
+    opening_tick = await orchestrator._tick()
+    request_id = opening_tick.new_decision_requests[0]["decision_request_id"]
+
+    inventory_before = {
+        item.item_name: item.quantity
+        for item in world.get_inventory("沧渊深海栖站")
+    }
+    values_before = {
+        item.name: item.value
+        for item in world.get_entity_values("沧渊深海栖站")
+    }
+    assert inventory_before["维护配额"] == 200
+    assert inventory_before["氧气储备"] == 160
+    assert values_before["压力壳完整度"] == 65
+    assert values_before["补给通行度"] == 85
+
+    isolation = orchestrator.resolve_decision(request_id, {
+        "decision_id": "abyssal-isolation-decision-1",
+        "expected_generation": loader.generation,
+        "option_id": "isolate",
+        "note": "立即隔离压力失衡舱段，接受后续补给压力。",
+    })
+    assert isolation["action_result"]["ok"] is True
+    assert isolation["issue"]["status"] == "resolved"
+    costs = {
+        item["resource_name"]: item
+        for item in isolation["action_result"]["costs"]
+    }
+    assert costs["维护配额"]["anchor_rate"] == 0.5
+    assert costs["氧气储备"]["anchor_rate"] == 0.5
+    assert costs["维护配额"]["base_value"] == 12
+    assert costs["氧气储备"]["base_value"] == 10
+    assert any(
+        item["rule_id"] == "abyssal_isolation_immediate_result"
+        and "补给通行度" in item["summary"]
+        for item in isolation["action_result"]["outcome_feedback"]["delivered"]
+    )
+    assert any(item["target"] == "潜航工程师" for item in orchestrator._pending_wakeups)
+
+    inventory_after_isolation = {
+        item.item_name: item.quantity
+        for item in world.get_inventory("沧渊深海栖站")
+    }
+    values_after_isolation = {
+        item.name: item.value
+        for item in world.get_entity_values("沧渊深海栖站")
+    }
+    assert inventory_after_isolation["维护配额"] == 176
+    assert inventory_after_isolation["氧气储备"] == 140
+    assert values_after_isolation["压力壳完整度"] == 83
+    assert values_after_isolation["补给通行度"] == 65
+
+    orchestrator._sim_time = DAY
+    supply_tick = await orchestrator._tick()
+    await orchestrator.drain_agent_tasks(timeout=2)
+    causal_rows = [
+        item for item in supply_tick.generated_events
+        if item.get("source") == "causal"
+    ]
+    assert any(
+        item["event_type"] == "abyssal_supply_pressure"
+        and item.get("world_effect_status") == "applied"
+        for item in causal_rows
+    )
+    assert any(
+        item["rule_id"] == "abyssal_supply_pressure_reveal"
+        and "延迟代价" in item["reason"]
+        for item in supply_tick.outcome_feedback["delivered"]
+    )
+
+    values_under_pressure = {
+        item.name: item.value
+        for item in world.get_entity_values("沧渊深海栖站")
+    }
+    assert values_under_pressure["补给通行度"] == 50
+    supply_issue = next(
+        item for item in orchestrator.issue_manager.list_issues(sim_time=DAY)
+        if item["issue_type_id"] == "abyssal_supply_pressure"
+    )
+    assert supply_issue["status"] == "open"
+    assert supply_issue["evidence"][0]["kind"] == "supply_pressure_report"
+    supply_request = next(
+        item for item in orchestrator.issue_manager.list_decision_requests(sim_time=DAY)
+        if item["issue_id"] == supply_issue["issue_id"] and item["status"] == "pending"
+    )
+
+    reopened = orchestrator.resolve_decision(supply_request["decision_request_id"], {
+        "decision_id": "abyssal-reopen-decision-1",
+        "expected_generation": loader.generation,
+        "option_id": "reopen",
+        "note": "建立受控单向补给通道，恢复氧气与工料运输。",
+    })
+    assert reopened["action_result"]["ok"] is True
+    assert reopened["issue"]["status"] == "resolved"
+    assert any(
+        item["rule_id"] == "abyssal_supply_reopen_immediate_result"
+        and "结构扰动" in item["summary"]
+        for item in reopened["action_result"]["outcome_feedback"]["delivered"]
+    )
+
+    inventory_after_reopen = {
+        item.item_name: item.quantity
+        for item in world.get_inventory("沧渊深海栖站")
+    }
+    values_after_reopen = {
+        item.name: item.value
+        for item in world.get_entity_values("沧渊深海栖站")
+    }
+    assert inventory_after_reopen["维护配额"] == 164
+    assert inventory_after_reopen["氧气储备"] == 132
+    assert values_after_reopen["补给通行度"] == 80
+    assert values_after_reopen["压力壳完整度"] == 79

@@ -20,6 +20,31 @@
       "max_quantity": 100,
       "anchor_rate": null,
       "metadata": {}
+    },
+    {
+      "name": "氧气储备",
+      "unit": "罐",
+      "kind": "asset",
+      "default_quantity": 0,
+      "min_quantity": 0,
+      "max_quantity": null,
+      "anchor_rate": 0.5,
+      "metadata": {
+        "value_anchor": "abyssal_base_value",
+        "parity_with": "维护配额"
+      }
+    },
+    {
+      "name": "补给通行度",
+      "unit": "%",
+      "kind": "metric",
+      "default_quantity": 85,
+      "min_quantity": 0,
+      "max_quantity": 100,
+      "anchor_rate": null,
+      "metadata": {
+        "role": "supply_access_tradeoff"
+      }
     }
   ],
   "entities": [
@@ -79,6 +104,13 @@
       "item_name": "维护配额",
       "quantity": 200,
       "description": "栖站流通券"
+    },
+    {
+      "entity_id": "沧渊深海栖站",
+      "category": "氧气储备",
+      "item_name": "氧气储备",
+      "quantity": 160,
+      "description": "封舱维生与外部作业共用氧气罐；与维护配额按同一价值锚换算"
     }
   ],
   "entity_values": [
@@ -469,13 +501,327 @@
           }
         ]
       }
+    },
+    {
+      "action_id": "abyssal_emergency_isolation",
+      "display_name": "紧急封舱隔离",
+      "description": "以更高的双资源成本快速封闭受损舱段，大幅提升压力壳完整度，但会压缩补给通行度并在下一日形成补给压力。",
+      "enabled": true,
+      "parameters": [
+        {
+          "name": "integrity_gain",
+          "type": "number",
+          "display_name": "完整度提升",
+          "required": false,
+          "default": 18,
+          "minimum": 12,
+          "maximum": 25
+        }
+      ],
+      "target": {
+        "kind": "entity",
+        "required": true,
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ],
+        "entity_types": [
+          "location"
+        ],
+        "controlled_only": true
+      },
+      "permissions": {
+        "control_modes": [
+          "direct"
+        ],
+        "control_kinds": [
+          "entity"
+        ],
+        "control_ids": [
+          "沧渊深海栖站"
+        ],
+        "actor_ids": [
+          "abyssal_commander"
+        ]
+      },
+      "preconditions": [
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "维护配额",
+          "operator": "gte",
+          "base_value": 12
+        },
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "氧气储备",
+          "operator": "gte",
+          "base_value": 10
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "压力壳完整度",
+          "operator": "lte",
+          "value": 88
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "补给通行度",
+          "operator": "gte",
+          "value": 30
+        }
+      ],
+      "costs": [
+        {
+          "entity_id": "$control",
+          "resource_name": "维护配额",
+          "base_value": 12,
+          "reason": "紧急封舱隔离的结构施工"
+        },
+        {
+          "entity_id": "$control",
+          "resource_name": "氧气储备",
+          "base_value": 10,
+          "reason": "紧急封舱隔离的维生与外部作业"
+        }
+      ],
+      "duration": {
+        "action_type": "abyssal_emergency_isolation",
+        "proposed_days": 0.25,
+        "severity": 8,
+        "resource_value": 22,
+        "distance_days": 0
+      },
+      "cooldown": {
+        "days": 5,
+        "scope": "control_target"
+      },
+      "result": {
+        "mode": "composite",
+        "results": [
+          {
+            "mode": "world_commands",
+            "effects": [
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "压力壳完整度",
+                "quantity_delta": "$param.integrity_gain",
+                "reason": "紧急封舱快速稳定受损结构"
+              },
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "补给通行度",
+                "quantity_delta": -20,
+                "reason": "封舱切断部分补给通道"
+              },
+              {
+                "effect_type": "update_status",
+                "entity_id": "$target",
+                "new_status": "紧急封舱",
+                "reason": "受损舱段已被隔离"
+              }
+            ]
+          },
+          {
+            "mode": "ongoing_event",
+            "effect": {
+              "effect_type": "create_ongoing_event",
+              "entity_id": "$target",
+              "event_type": "abyssal_isolation",
+              "description": "潜航工程师正在完成紧急封舱与压力复核",
+              "duration_days": "$duration_days",
+              "expected_result": {
+                "new_status": "受损舱段隔离完成"
+              }
+            }
+          },
+          {
+            "mode": "wake_agent",
+            "agent_id": "潜航工程师",
+            "payload": {
+              "description": "执行紧急封舱隔离并准备补给压力报告",
+              "integrity_gain": "$param.integrity_gain",
+              "target_id": "$target"
+            }
+          },
+          {
+            "mode": "emit_event",
+            "event": {
+              "event_type": "abyssal_isolation_started",
+              "severity": 8,
+              "target_agents": [
+                "潜航工程师"
+              ],
+              "initial_payload": {
+                "target_id": "$target",
+                "action_id": "abyssal_emergency_isolation",
+                "tradeoff": "快速安全收益将换来次日补给压力"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action_id": "abyssal_reopen_supply_channel",
+      "display_name": "恢复受控补给通道",
+      "description": "在封舱后重建单向补给通道，消耗同一价值锚下的维护配额与氧气储备，恢复补给通行度但承担少量结构扰动。",
+      "enabled": true,
+      "parameters": [
+        {
+          "name": "access_gain",
+          "type": "number",
+          "display_name": "通行度恢复",
+          "required": false,
+          "default": 30,
+          "minimum": 20,
+          "maximum": 40
+        }
+      ],
+      "target": {
+        "kind": "entity",
+        "required": true,
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ],
+        "entity_types": [
+          "location"
+        ],
+        "controlled_only": true
+      },
+      "permissions": {
+        "control_modes": [
+          "direct"
+        ],
+        "control_kinds": [
+          "entity"
+        ],
+        "control_ids": [
+          "沧渊深海栖站"
+        ],
+        "actor_ids": [
+          "abyssal_commander"
+        ]
+      },
+      "preconditions": [
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "维护配额",
+          "operator": "gte",
+          "base_value": 6
+        },
+        {
+          "kind": "anchored_inventory",
+          "entity_id": "$control",
+          "name": "氧气储备",
+          "operator": "gte",
+          "base_value": 4
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "补给通行度",
+          "operator": "lte",
+          "value": 75
+        },
+        {
+          "kind": "metric",
+          "entity_id": "$target",
+          "name": "压力壳完整度",
+          "operator": "gte",
+          "value": 20
+        }
+      ],
+      "costs": [
+        {
+          "entity_id": "$control",
+          "resource_name": "维护配额",
+          "base_value": 6,
+          "reason": "重建受控补给通道"
+        },
+        {
+          "entity_id": "$control",
+          "resource_name": "氧气储备",
+          "base_value": 4,
+          "reason": "补给通道外部作业维生"
+        }
+      ],
+      "duration": {
+        "action_type": "abyssal_reopen_supply_channel",
+        "proposed_days": 0.5,
+        "severity": 5,
+        "resource_value": 10,
+        "distance_days": 0
+      },
+      "cooldown": {
+        "days": 2,
+        "scope": "control_target"
+      },
+      "result": {
+        "mode": "composite",
+        "results": [
+          {
+            "mode": "world_commands",
+            "effects": [
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "补给通行度",
+                "quantity_delta": "$param.access_gain",
+                "reason": "建立受控单向补给通道"
+              },
+              {
+                "effect_type": "adjust_resource",
+                "entity_id": "$target",
+                "resource_name": "压力壳完整度",
+                "quantity_delta": -4,
+                "reason": "重新开启通道造成可控结构扰动"
+              },
+              {
+                "effect_type": "update_status",
+                "entity_id": "$target",
+                "new_status": "受控补给恢复",
+                "reason": "封舱后的补给瓶颈得到缓解"
+              }
+            ]
+          },
+          {
+            "mode": "wake_agent",
+            "agent_id": "潜航工程师",
+            "payload": {
+              "description": "复核受控补给通道并报告剩余风险",
+              "access_gain": "$param.access_gain",
+              "target_id": "$target"
+            }
+          },
+          {
+            "mode": "emit_event",
+            "event": {
+              "event_type": "abyssal_supply_channel_reopened",
+              "severity": 4,
+              "target_agents": [
+                "潜航工程师"
+              ],
+              "initial_payload": {
+                "target_id": "$target",
+                "action_id": "abyssal_reopen_supply_channel"
+              }
+            }
+          }
+        ]
+      }
     }
   ],
   "issue_types": [
     {
       "issue_type_id": "abyssal_security_report",
       "display_name": "深海安全报告",
-      "description": "潜航工程师上报的深海风险事项，可由玩家选择立即巡查或持续监控。",
+      "description": "潜航工程师上报的深海风险事项，可由玩家选择常规巡检、紧急封舱或持续监控。",
       "category": "security",
       "default_urgency": "high",
       "default_deadline_days": 3,
@@ -507,7 +853,7 @@
         {
           "request_id": "security_response",
           "title": "决定深海应对方式",
-          "prompt": "请选择立即巡查或持续监控。",
+          "prompt": "请选择常规巡检、紧急封舱隔离或持续监控。",
           "deadline_days": 2,
           "options": [
             {
@@ -526,12 +872,94 @@
               }
             },
             {
+              "option_id": "isolate",
+              "display_name": "紧急封舱隔离",
+              "action_id": "abyssal_emergency_isolation",
+              "control_object_id": "沧渊深海栖站",
+              "target_id": "沧渊深海栖站",
+              "parameters": {
+                "integrity_gain": 18
+              },
+              "resolution": {
+                "issue_status": "resolved",
+                "case_status": "resolved",
+                "summary": "已执行紧急封舱，次日需处理补给压力"
+              }
+            },
+            {
               "option_id": "monitor",
               "display_name": "持续监控",
               "resolution": {
                 "issue_status": "monitoring",
                 "case_status": "monitoring",
                 "summary": "暂不行动，继续收集情报"
+              }
+            }
+          ]
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "issue_type_id": "abyssal_supply_pressure",
+      "display_name": "封舱后的补给压力",
+      "description": "紧急封舱保护了栖站结构，却压缩了氧气与物资运输能力；玩家可以重开受控通道或继续配给观察。",
+      "category": "supply",
+      "default_urgency": "high",
+      "default_deadline_days": 2,
+      "source": {
+        "allowed_kinds": [
+          "agent"
+        ],
+        "allowed_ids": [
+          "潜航工程师"
+        ]
+      },
+      "match": {
+        "payload_types": [
+          "abyssal_supply_pressure"
+        ],
+        "source_ids": [
+          "潜航工程师"
+        ],
+        "default_for_player_reports": false
+      },
+      "evidence": [
+        {
+          "kind": "supply_pressure_report",
+          "display_name": "补给压力报告",
+          "required": true
+        }
+      ],
+      "decision_requests": [
+        {
+          "request_id": "supply_response",
+          "title": "决定封舱后的补给处置",
+          "prompt": "恢复受控补给通道可解除瓶颈，但会消耗双资源并造成少量结构扰动。",
+          "deadline_days": 1,
+          "options": [
+            {
+              "option_id": "reopen",
+              "display_name": "恢复受控补给通道",
+              "action_id": "abyssal_reopen_supply_channel",
+              "control_object_id": "沧渊深海栖站",
+              "target_id": "沧渊深海栖站",
+              "parameters": {
+                "access_gain": 30
+              },
+              "resolution": {
+                "issue_status": "resolved",
+                "case_status": "resolved",
+                "summary": "已恢复受控补给通道"
+              }
+            },
+            {
+              "option_id": "ration",
+              "display_name": "维持封舱并限额配给",
+              "resolution": {
+                "issue_status": "monitoring",
+                "case_status": "monitoring",
+                "summary": "继续封舱，接受较低补给通行度"
               }
             }
           ]
@@ -1081,6 +1509,84 @@
         "content_placeholder": "可选：补充本次深潜修复巡检重点。"
       },
       "enabled": true
+    },
+    {
+      "capability_id": "launch_abyssal_isolation",
+      "display_name": "执行紧急封舱隔离",
+      "description": "调用 abyssal_emergency_isolation 契约 Action，以双资源成本换取快速结构安全并生成延迟补给代价。",
+      "handler": "contract_action",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "isolate_abyssal"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "integrity_gain",
+          "type": "number",
+          "display_name": "完整度提升",
+          "description": "紧急封舱计划提升的压力壳完整度。",
+          "required": false,
+          "default": 18,
+          "minimum": 12,
+          "maximum": 25
+        }
+      ],
+      "action_id": "abyssal_emergency_isolation",
+      "default_urgency": "critical",
+      "input": {
+        "content_required": false,
+        "content_label": "封舱备注",
+        "content_placeholder": "可选：说明优先隔离的舱段。"
+      },
+      "enabled": true
+    },
+    {
+      "capability_id": "restore_abyssal_supply",
+      "display_name": "恢复受控补给通道",
+      "description": "调用 abyssal_reopen_supply_channel 契约 Action，处理封舱后的补给压力并保留结构风险取舍。",
+      "handler": "contract_action",
+      "audiences": [
+        "player"
+      ],
+      "aliases": [
+        "reopen_abyssal_supply"
+      ],
+      "target": {
+        "kind": "entity",
+        "mode": "required",
+        "allowed_ids": [
+          "沧渊深海栖站"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "access_gain",
+          "type": "number",
+          "display_name": "通行度恢复",
+          "description": "计划恢复的补给通行度。",
+          "required": false,
+          "default": 30,
+          "minimum": 20,
+          "maximum": 40
+        }
+      ],
+      "action_id": "abyssal_reopen_supply_channel",
+      "default_urgency": "urgent",
+      "input": {
+        "content_required": false,
+        "content_label": "补给恢复备注",
+        "content_placeholder": "可选：说明优先恢复的物资通道。"
+      },
+      "enabled": true
     }
   ],
   "actors": [
@@ -1135,7 +1641,9 @@
         "abyssal_report",
         "abyssal_command",
         "abyssal_operation",
-        "launch_abyssal_patrol"
+        "launch_abyssal_patrol",
+        "launch_abyssal_isolation",
+        "restore_abyssal_supply"
       ],
       "identities": [
         {
@@ -1932,6 +2440,68 @@
           "reason": "三层知识与调查链已完成"
         }
       ]
+    },
+    {
+      "rule_id": "abyssal_isolation_to_supply_pressure",
+      "source_event_types": [
+        "abyssal_isolation_started"
+      ],
+      "child_event_type": "abyssal_supply_pressure",
+      "target_agents": [],
+      "initial_payload": {
+        "phase": "supply_pressure",
+        "summary": "紧急封舱后的补给瓶颈开始显现"
+      },
+      "inherit_payload_keys": [
+        "target_id",
+        "action_id",
+        "tradeoff"
+      ],
+      "conditions": [],
+      "world_effects": [
+        {
+          "effect_type": "adjust_resource",
+          "entity_id": "沧渊深海栖站",
+          "resource_name": "补给通行度",
+          "quantity_delta": -15,
+          "reason": "封舱后的单向运输瓶颈持续累积"
+        },
+        {
+          "effect_type": "create_issue",
+          "issue_type_id": "abyssal_supply_pressure",
+          "source": {
+            "kind": "agent",
+            "id": "潜航工程师",
+            "entity_id": "沧渊深海栖站"
+          },
+          "title": "封舱后的补给压力",
+          "summary": "紧急封舱已稳住结构，但氧气与物资运输受到持续挤压，需要决定是否恢复受控通道。",
+          "details": {
+            "phase": "supply_pressure",
+            "tradeoff": "当前结构安全换取了后续补给代价"
+          },
+          "evidence": [
+            {
+              "kind": "supply_pressure_report",
+              "source": "潜航工程师",
+              "summary": "补给通行度在封舱后继续下降。"
+            }
+          ],
+          "urgency": "high",
+          "deadline_days": 2,
+          "metadata": {
+            "generated_by": "abyssal_isolation_tradeoff"
+          },
+          "reason": "把紧急封舱的延迟代价转化为玩家可处理事项"
+        }
+      ],
+      "delay_days": 1,
+      "probability": 1,
+      "max_depth": 4,
+      "max_fires_per_chain": 1,
+      "severity_delta": 1,
+      "enabled": true,
+      "priority": 130
     }
   ],
   "time_system": {
@@ -2661,6 +3231,76 @@
           "quiet_period_days": 3,
           "feedback": ""
         }
+      },
+      {
+        "rule_id": "abyssal_supply_pressure",
+        "display_name": "封舱补给压力",
+        "enabled": true,
+        "issue_type_ids": [
+          "abyssal_supply_pressure"
+        ],
+        "event_types": [
+          "abyssal_supply_pressure"
+        ],
+        "priority": 95,
+        "attention_cost": 2,
+        "max_active": 1,
+        "cooldown_days": 1,
+        "mutual_exclusion_group": "abyssal_supply_crisis",
+        "allow_during_quiet": true,
+        "quiet_period_days": 0,
+        "escalation": {
+          "enabled": true,
+          "after_days": 1,
+          "interval_days": 1,
+          "max_level": 3,
+          "urgency_by_level": [
+            "high",
+            "high",
+            "critical",
+            "critical"
+          ],
+          "feedback_by_level": [
+            "封舱后的补给压力仍未处理。",
+            "氧气与物资运输持续受限，请尽快决定是否重开通道。",
+            "补给瓶颈已进入危急等级。"
+          ]
+        },
+        "deescalation": {
+          "enabled": true,
+          "interval_days": 0.5,
+          "target_level": 1,
+          "issue_status": "monitoring",
+          "conditions": [
+            {
+              "kind": "metric",
+              "operator": "gte",
+              "entity_id": "沧渊深海栖站",
+              "name": "补给通行度",
+              "value": 70
+            }
+          ],
+          "feedback": "补给通行度已经恢复，封舱补给压力降为观察。"
+        },
+        "climax": {
+          "enabled": true,
+          "level": 3,
+          "after_days": 0.5,
+          "conditions": [
+            {
+              "kind": "metric",
+              "operator": "gte",
+              "entity_id": "沧渊深海栖站",
+              "name": "补给通行度",
+              "value": 75
+            }
+          ],
+          "issue_status": "resolved",
+          "case_status": "resolved",
+          "close_group": true,
+          "quiet_period_days": 1,
+          "feedback": "受控补给通道稳定运行，封舱补给压力完成收束。"
+        }
       }
     ]
   },
@@ -2770,6 +3410,82 @@
         "reveal_text": "事后核验表明，早期深潜修复巡检、支援组织与航线核验共同推动了深海稳定。",
         "create_issue_type_id": "",
         "attach_evidence": true
+      },
+      {
+        "rule_id": "abyssal_isolation_immediate_result",
+        "display_name": "紧急封舱即时收益与代价",
+        "enabled": true,
+        "priority": 110,
+        "source_kinds": [
+          "action"
+        ],
+        "delivery": "immediate",
+        "action_ids": [
+          "abyssal_emergency_isolation"
+        ],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": [
+          "abyssal_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "紧急封舱已完成",
+        "summary": "压力壳完整度迅速提升，但补给通行度下降；系统已标记下一日可能出现的补给压力。",
+        "reason": "封舱隔离以双资源成本换取了更快的结构安全收益。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": false
+      },
+      {
+        "rule_id": "abyssal_supply_pressure_reveal",
+        "display_name": "封舱补给代价揭示",
+        "enabled": true,
+        "priority": 105,
+        "source_kinds": [
+          "causal_event"
+        ],
+        "delivery": "immediate",
+        "action_ids": [],
+        "issue_type_ids": [],
+        "event_types": [
+          "abyssal_supply_pressure"
+        ],
+        "metric_ids": [],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "封舱后的补给压力已显现",
+        "summary": "补给通行度继续下降，潜航工程师提交了可恢复补给通道的后续事项。",
+        "reason": "这是紧急封舱在一个游戏日后产生的延迟代价。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": true
+      },
+      {
+        "rule_id": "abyssal_supply_reopen_immediate_result",
+        "display_name": "补给通道恢复结果",
+        "enabled": true,
+        "priority": 100,
+        "source_kinds": [
+          "action"
+        ],
+        "delivery": "immediate",
+        "action_ids": [
+          "abyssal_reopen_supply_channel"
+        ],
+        "issue_type_ids": [],
+        "event_types": [],
+        "metric_ids": [
+          "abyssal_readiness"
+        ],
+        "delay_days": 0,
+        "conditions": [],
+        "title": "受控补给通道已恢复",
+        "summary": "补给通行度显著回升，同时因重新开启通道产生少量结构扰动。",
+        "reason": "玩家使用同一价值锚下的两种库存资产修复了封舱后的补给瓶颈。",
+        "reveal_text": "",
+        "create_issue_type_id": "",
+        "attach_evidence": false
       }
     ]
   }

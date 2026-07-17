@@ -2528,3 +2528,37 @@ Temporal/Random polling plus `enqueue_many()` is treated as one publication tran
 Crash-point tests now cover two durable-side-effect windows: a World Command committed before Causal queue acknowledgement, and a Lifecycle Receipt committed before lifecycle cursor acknowledgement. Restarting from the pre-ack runtime snapshot must replay the durable ledger result without applying inventory changes or dynamic Actor creation twice. Command normalization therefore preserves an explicitly present empty `reason` field; removing it would change the canonical payload and incorrectly produce `idempotency_conflict`.
 
 Agent wakeup delivery now uses the persisted `WakeupOutboxRuntime` at-least-once contract. Timer/Event/Chain deliveries have stable IDs, persisted `inflight` entries replay as `pending`, and Timer SQLite rows survive until terminal wakeup completion. Exactly-once is still not claimed because a crash after a downstream side effect but before Outbox ACK may replay; receipt-backed World Command, Issue, Lifecycle, and Action boundaries remain responsible for idempotency.
+
+## 深海分支决策玩法（v0.44.0）
+
+`dlcs/example_abyssal` 版本升级到 `1.1.0`。本轮只扩展 bundle-v1 数据声明，用同一套 Action、Issue、Causal Event、Rhythm、Outcome Feedback、Actor Capability 和 Wakeup Outbox 运行时表达深海题材的机械差异化。
+
+### 新增资源与同价值锚
+
+| 资源 | kind | 初始值 | anchor_rate | 用途 |
+|------|------|--------|-------------|------|
+| 维护配额 | asset | 200 | 0.5 | 结构施工与通道重建 |
+| 氧气储备 | asset | 160 | 0.5 | 封舱维生与外部作业 |
+| 压力壳完整度 | metric | 65 | - | 生存安全收益 |
+| 补给通行度 | metric | 85 | - | 封舱方案的持续代价与恢复目标 |
+
+“维护配额”和“氧气储备”使用相同 `anchor_rate`，Action 成本统一填写 `base_value`。运行时分别换算资产数量并在同一 Action 执行中原子扣除，避免用不同代币面额掩盖真实成本。
+
+### 分支运行链
+
+`abyssal_security_report` 的决策请求提供三条路径：
+
+1. `patrol`：执行 `abyssal_patrol`，保留 v0.43.0 的常规巡检胜利链。
+2. `isolate`：执行 `abyssal_emergency_isolation`，消耗 12 基础价值维护配额和 10 基础价值氧气储备，提升压力壳完整度、降低补给通行度、更新栖站状态、唤醒潜航工程师并发布 `abyssal_isolation_started`。
+3. `monitor`：不执行 Action，Issue 保持 monitoring。
+
+`abyssal_isolation_to_supply_pressure` 在一个游戏日后生成 `abyssal_supply_pressure`，继续降低补给通行度并通过通用 `create_issue` world effect 投影 `abyssal_supply_pressure` Issue。该 Issue 的 `reopen` 选项执行 `abyssal_reopen_supply_channel`：再次按同一价值锚消耗两种资产，恢复补给通行度，同时扣除少量压力壳完整度表示重开通道的结构扰动；`ration` 则允许玩家接受长期低通行度继续观察。
+
+### 可理解反馈与验收
+
+- `abyssal_isolation_immediate_result` 解释当前结构安全收益和补给代价。
+- `abyssal_supply_pressure_reveal` 在延迟因果事件实际发生时解释“为什么下一日出现补给压力”。
+- `abyssal_supply_reopen_immediate_result` 解释恢复通行度与结构扰动之间的取舍。
+- `tests/integration/test_abyssal_dlc_playthrough.py` 同时保留常规巡检胜利路径，并新增封舱→延迟 Issue→恢复通道路径，真实验证双资产锚率、扣费数量、指标变化、Wakeup Outbox、causal world effect、DecisionRequest 和反馈文本。
+
+发布验证：三个跨题材参考包 Registry 0 error、可玩性审计 7/7；集成测试 13 passed, 2 skipped；前端 97 passed；完整单元集 820 passed, 1 failed，剩余失败属于并行维护的 LLM timeout 浮点边界，本轮未越界修改。

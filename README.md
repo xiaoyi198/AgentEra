@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.43.0**
+> 当前版本：**v0.44.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -458,6 +458,17 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 
 发布时四处版本必须保持一致。
 
+
+## v0.44.0 发布说明
+
+v0.44.0 将“沧渊深海栖站”从单一巡检路径扩展为真正具有资源取舍和延迟后果的分支玩法，仍然只修改 JSON DLC 声明，不增加题材专属 Python/React 分支。
+
+- 初始深海安全 Issue 现在支持“常规巡检 / 紧急封舱隔离 / 持续监控”三种选择。
+- 新增同为 `anchor_rate: 0.5` 的“氧气储备”，与“维护配额”按同一基础价值锚扣费；紧急封舱和通道恢复都会原子消耗两种资产。
+- 新增“补给通行度”指标。紧急封舱可快速提升压力壳完整度，但会立即降低通行度，并在一个游戏日后通过 `abyssal_supply_pressure` 因果事件进一步施加补给压力。
+- 延迟因果效果会创建“封舱后的补给压力” Issue。玩家可以继续限额配给，也可以执行“恢复受控补给通道”，以额外双资源成本恢复通行度并承担少量结构扰动，因此分支不是不可恢复的死路。
+- 即时行动反馈、延迟代价反馈、Wakeup Outbox、Issue/DecisionRequest 和恢复行动全部走现有通用运行时；`example_abyssal` 升级到 `1.1.0`，AgentEra 四处产品版本统一升级到 `0.44.0`。
+- 验证结果：三个参考包 Registry 均为 0 error、静态可玩性审计均为 7/7；集成测试 **13 passed, 2 skipped**；前端测试 **97 passed**；Python compileall、版本一致性、ESLint、Vite build 和 Git Diff 检查通过。完整单元集为 **820 passed, 1 failed**，唯一失败仍是并行 LLM HTTP timeout 浮点边界（`0.2000000000007276 <= 0.2`），本发布未修改对应文件。
 
 ## v0.43.0 发布说明
 

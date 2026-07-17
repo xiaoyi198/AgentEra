@@ -3689,3 +3689,42 @@ python -m pytest tests/integration/test_cross_genre_dlc_playthrough.py tests/int
 python -c "from pathlib import Path; from multiagent_framework.dlc_registry import DLCRegistry; r=DLCRegistry(Path('.')); assert all(not r.validate(i) and r.audit_playability(i).playable for i in ('example_frontier','example_orbital','example_abyssal'))"
 python -m pytest tests/unit/test_version_consistency.py -q
 ```
+
+## 深海分支玩法声明指南（v0.44.0）
+
+### 用统一价值锚表达多资产成本
+
+- 可交换资产必须声明为 `kind=asset` 并设置正数 `anchor_rate`。
+- 希望两种代币保持同一面额时，应使用相同 `anchor_rate`；Action 的 `preconditions` 和 `costs` 填写 `base_value`，不要手工填写资产数量。
+- 多资产成本应放在同一个 Action 的 `costs[]` 中。运行时会先完整校验再原子提交，任何一种资产不足都不得出现部分扣费。
+- 指标必须声明为 `kind=metric`，不能作为库存转移资产。`补给通行度` 因此只接受世界命令调整，不进入统一锚价值总额。
+
+### 把即时收益转换为延迟且可恢复的后果
+
+1. Action 的 composite result 先提交即时指标变化、状态变化、Agent 唤醒和源事件。
+2. Causal rule 监听源事件并设置 `delay_days`，到期后同时应用后续指标变化和 `create_issue`。
+3. 后续 Issue 必须提供至少一条可恢复路径，避免高收益选择成为不可逆死路；恢复 Action 也应保留成本或副作用，而不是免费撤销前一选择。
+4. Rhythm rule 应为后续 Issue 配置独立优先级、升级、降级和高潮条件，避免它被常规报告噪声长期压制。
+5. Outcome Feedback 的筛选字段必须与实际来源相符。因果事件没有派生指标变化时，规则的 `metric_ids` 必须留空，否则 `OutcomeFeedbackRuntime` 会因没有匹配的 metric delta 而跳过该规则。
+
+### 深海参考 ID
+
+- Actions：`abyssal_patrol`、`abyssal_emergency_isolation`、`abyssal_reopen_supply_channel`
+- Issues：`abyssal_security_report`、`abyssal_supply_pressure`
+- Events：`abyssal_isolation_started`、`abyssal_supply_pressure`、`abyssal_supply_channel_reopened`
+- Feedback：`abyssal_isolation_immediate_result`、`abyssal_supply_pressure_reveal`、`abyssal_supply_reopen_immediate_result`
+
+### 回归命令
+
+```powershell
+python -m pytest tests/integration/test_cross_genre_dlc_playthrough.py tests/integration/test_abyssal_dlc_playthrough.py -q
+python -m pytest tests/unit/test_action_contract.py tests/unit/test_issue_contract.py tests/unit/test_causal_world_effects.py tests/unit/test_outcome_feedback_contract.py tests/unit/test_rhythm_runtime.py tests/unit/test_version_consistency.py -q
+python -m pytest tests/integration -q
+python -m pytest tests/unit -q
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+验收必须断言两种资产的 `anchor_rate` 和 `base_value`，不能只检查“数量变少”；延迟路径必须推进到一个游戏日、确认 causal world effect 已 applied、找到新 Issue 与 pending DecisionRequest，并实际执行恢复 Action。当前完整单元测试的唯一已知失败位于并行维护的 LLM timeout 浮点边界，未经文件所有者授权不得在本玩法发布中顺手修改。
