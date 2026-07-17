@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .model_gateway import ModelGateway, ModelGatewayError
 from .trajectory_evaluation import (
     LiveToolExecutor,
+    LiveToolSessionFactory,
     TrajectoryEvaluationError,
     TrajectoryEvaluator,
     load_trajectory_suite,
@@ -152,19 +153,21 @@ class TrajectoryMatrixRunner:
         *,
         gateway: ModelGateway,
         live_tool_executor: LiveToolExecutor | None = None,
+        live_tool_session_factory: LiveToolSessionFactory | None = None,
         evaluator_factory: EvaluatorFactory | None = None,
     ) -> None:
         self.gateway = gateway
         self.live_tool_executor = live_tool_executor
-        self.evaluator_factory = evaluator_factory or self._default_evaluator
+        self.live_tool_session_factory = live_tool_session_factory
+        self.evaluator_factory = evaluator_factory
 
-    @staticmethod
-    def _default_evaluator(
-        gateway: ModelGateway, live_tool_executor: LiveToolExecutor | None
-    ) -> TrajectoryEvaluator:
+    def _make_evaluator(self) -> TrajectoryEvaluator:
+        if self.evaluator_factory is not None:
+            return self.evaluator_factory(self.gateway, self.live_tool_executor)
         return TrajectoryEvaluator(
-            gateway=gateway,
-            live_tool_executor=live_tool_executor,
+            gateway=self.gateway,
+            live_tool_executor=self.live_tool_executor,
+            live_tool_session_factory=self.live_tool_session_factory,
             strict_profile=True,
         )
 
@@ -236,9 +239,7 @@ class TrajectoryMatrixRunner:
                     target_count += len(scenario_ids)
                     reviewed_count += len(qualified_scenarios)
                     reports = []
-                    evaluator = self.evaluator_factory(
-                        self.gateway, self.live_tool_executor
-                    )
+                    evaluator = self._make_evaluator()
                     for repetition in range(spec["repetitions"]):
                         cell_suite = _cell_suite(
                             suite_id=suite_id,
@@ -820,9 +821,15 @@ async def _run_cli(args: argparse.Namespace) -> int:
         return 0
     gateway = ModelGateway.from_files(args.models, args.legacy)
     try:
-        result = await TrajectoryMatrixRunner(gateway=gateway).evaluate(
-            matrix, suite, reviews=reviews
-        )
+        runtime_factory = None
+        if args.runtime_tools:
+            from .trajectory_runtime import IsolatedTrajectoryRuntimeFactory
+
+            runtime_factory = IsolatedTrajectoryRuntimeFactory()
+        result = await TrajectoryMatrixRunner(
+            gateway=gateway,
+            live_tool_session_factory=runtime_factory,
+        ).evaluate(matrix, suite, reviews=reviews)
         payload = result.to_dict()
         if args.output:
             write_report_atomic(args.output, payload)
@@ -847,6 +854,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--review-template", default="")
     parser.add_argument("--template-only", action="store_true")
     parser.add_argument("--policy-output", default="")
+    parser.add_argument(
+        "--runtime-tools",
+        action="store_true",
+        help="Execute allowlisted tools against a fresh isolated runtime_fixture per run",
+    )
     args = parser.parse_args(argv)
     try:
         return asyncio.run(_run_cli(args))

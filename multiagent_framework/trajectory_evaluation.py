@@ -13,6 +13,7 @@ import math
 import os
 import re
 import tempfile
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -88,6 +89,10 @@ LiveToolExecutor = Callable[
     [Mapping[str, Any], str, dict[str, Any], dict[str, Any]],
     Awaitable[dict[str, Any]],
 ]
+LiveToolSessionFactory = Callable[
+    [Mapping[str, Any], Mapping[str, Any]],
+    AbstractAsyncContextManager[LiveToolExecutor],
+]
 
 
 class _ReplayLLM:
@@ -121,12 +126,18 @@ class TrajectoryEvaluator:
         gateway: ModelGateway | None = None,
         turn_engine: TurnEngine | None = None,
         live_tool_executor: LiveToolExecutor | None = None,
+        live_tool_session_factory: LiveToolSessionFactory | None = None,
         default_minimum_score: float = 100.0,
         strict_profile: bool = False,
     ) -> None:
         self.gateway = gateway
         self.turn_engine = turn_engine or TurnEngine()
+        if live_tool_executor is not None and live_tool_session_factory is not None:
+            raise TrajectoryEvaluationError(
+                "Configure either live_tool_executor or live_tool_session_factory, not both"
+            )
         self.live_tool_executor = live_tool_executor
+        self.live_tool_session_factory = live_tool_session_factory
         self.default_minimum_score = _score(default_minimum_score, "default_minimum_score")
         self.strict_profile = bool(strict_profile)
 
@@ -260,13 +271,14 @@ class TrajectoryEvaluator:
             raise TrajectoryEvaluationError("execution.tool_results must be a list")
         result_index = 0
         runtime_evidence: dict[str, Any] = {}
+        active_live_executor = self.live_tool_executor
 
         async def execute_tool(
             name: str, arguments: dict[str, Any], tool_call: dict[str, Any]
         ) -> dict[str, Any]:
             nonlocal result_index
-            if mode == "live" and self.live_tool_executor is not None:
-                result = await self.live_tool_executor(scenario, name, arguments, tool_call)
+            if mode == "live" and active_live_executor is not None:
+                result = await active_live_executor(scenario, name, arguments, tool_call)
             elif result_index < len(scripted_results):
                 raw_result = scripted_results[result_index]
                 result_index += 1
@@ -320,20 +332,39 @@ class TrajectoryEvaluator:
             "task_type": _required_text(scenario, "task"),
             "agent_id": str(scenario.get("agent_id", "")),
         }
-        outcome = await self.turn_engine.run(
-            llm=llm,
-            messages=[dict(item) for item in messages],
-            tools=[dict(item) for item in tools],
-            execute_tool=execute_tool,
-            terminal_predicate=lambda name, result: (
-                name in terminal_names
-                and bool(result.get("ok", True))
-                and bool(result.get("accepted", True))
-            ),
-            trace_context=trace_context,
-            budget=budget,
-            temperature=float(execution.get("temperature", 0.0)),
-        )
+        async with AsyncExitStack() as stack:
+            if mode == "live" and self.live_tool_session_factory is not None:
+                try:
+                    active_live_executor = await stack.enter_async_context(
+                        self.live_tool_session_factory(scenario, execution)
+                    )
+                except Exception as exc:
+                    raise TrajectoryEvaluationError(
+                        "Live runtime fixture could not be opened safely"
+                    ) from exc
+            if (
+                mode == "live"
+                and execution.get("runtime_fixture") is not None
+                and active_live_executor is None
+                and not scripted_results
+            ):
+                raise TrajectoryEvaluationError(
+                    "Live runtime_fixture requires an isolated runtime tool session"
+                )
+            outcome = await self.turn_engine.run(
+                llm=llm,
+                messages=[dict(item) for item in messages],
+                tools=[dict(item) for item in tools],
+                execute_tool=execute_tool,
+                terminal_predicate=lambda name, result: (
+                    name in terminal_names
+                    and bool(result.get("ok", True))
+                    and bool(result.get("accepted", True))
+                ),
+                trace_context=trace_context,
+                budget=budget,
+                temperature=float(execution.get("temperature", 0.0)),
+            )
         return outcome, runtime_evidence
 
     def _ensure_live_ready(self, scenarios: Sequence[Any]) -> None:
@@ -827,7 +858,15 @@ async def _run_cli(args: argparse.Namespace) -> int:
     try:
         if args.mode == "live":
             gateway = ModelGateway.from_files(args.models, args.legacy)
-        evaluator = TrajectoryEvaluator(gateway=gateway)
+        runtime_factory = None
+        if args.mode == "live" and args.runtime_tools:
+            from .trajectory_runtime import IsolatedTrajectoryRuntimeFactory
+
+            runtime_factory = IsolatedTrajectoryRuntimeFactory()
+        evaluator = TrajectoryEvaluator(
+            gateway=gateway,
+            live_tool_session_factory=runtime_factory,
+        )
         report = await evaluator.evaluate_suite(suite, mode=args.mode, source=str(args.suite))
         payload = report.to_dict()
         if args.output:
@@ -846,6 +885,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--models", default="config/models.json")
     parser.add_argument("--legacy", default="config/llm.json")
     parser.add_argument("--output", default="")
+    parser.add_argument(
+        "--runtime-tools",
+        action="store_true",
+        help="Execute allowlisted live tools against an isolated runtime_fixture",
+    )
     args = parser.parse_args(argv)
     try:
         return asyncio.run(_run_cli(args))

@@ -83,39 +83,6 @@
           "max_tokens": 1600,
           "max_seconds": 45
         },
-        "tool_results": [
-          {
-            "tool": "recall_memory",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "memory_ids": [
-                "commitment-tax-v1"
-              ],
-              "records": [
-                {
-                  "id": "commitment-tax-v1",
-                  "kind": "commitment",
-                  "state": "resolved",
-                  "evidence": "The promised tax-adjustment report was delivered and acknowledged."
-                }
-              ]
-            }
-          },
-          {
-            "tool": "submit_report",
-            "result": {
-              "ok": true,
-              "accepted": true
-            }
-          }
-        ],
-        "evidence": {
-          "memory_recalled": [
-            "commitment-tax-v1"
-          ],
-          "commitment_status": "resolved"
-        },
         "expect": {
           "allowed_tools": [
             "recall_memory",
@@ -162,7 +129,32 @@
             }
           ]
         },
-        "temperature": 0
+        "temperature": 0,
+        "runtime_fixture": {
+          "schema_version": "1.0",
+          "memory": {
+            "records": [
+              {
+                "memory_id": "commitment-tax-v1",
+                "kind": "commitment",
+                "content": "The promised tax commitment report was delivered and acknowledged.",
+                "entities": [
+                  "tax-office"
+                ],
+                "importance": 1.0,
+                "status": "resolved",
+                "metadata": {
+                  "topic": "tax_commitment"
+                }
+              }
+            ],
+            "retrieval": {
+              "limit": 4,
+              "max_chars": 1200,
+              "unrelated_commitment_limit": 1
+            }
+          }
+        }
       },
       "cohorts": [
         "daming-core"
@@ -232,17 +224,6 @@
           "max_tokens": 700,
           "max_seconds": 45
         },
-        "tool_results": [
-          {
-            "tool": "route_intent",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "target": "hubu"
-            }
-          }
-        ],
-        "evidence": {},
         "expect": {
           "allowed_tools": [
             "route_intent"
@@ -270,7 +251,10 @@
             }
           ]
         },
-        "temperature": 0
+        "temperature": 0,
+        "runtime_fixture": {
+          "schema_version": "1.0"
+        }
       },
       "cohorts": [
         "daming-core"
@@ -374,38 +358,6 @@
           "max_tokens": 1900,
           "max_seconds": 45
         },
-        "tool_results": [
-          {
-            "tool": "inspect_inventory",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "snapshot_generation": 4,
-              "source_entity": "treasury",
-              "target_entity": "relief_granary",
-              "resource_id": "grain_token",
-              "available_quantity": 100,
-              "unit_base_value": 2,
-              "source_base_value_total": 200
-            }
-          },
-          {
-            "tool": "apply_world_command",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "value_conserved": true
-            }
-          }
-        ],
-        "evidence": {
-          "resource": {
-            "before_base_value": 200,
-            "after_base_value": 200,
-            "external_delta": 0,
-            "tolerance": 1e-06
-          }
-        },
         "expect": {
           "allowed_tools": [
             "inspect_inventory",
@@ -501,7 +453,55 @@
             }
           ]
         },
-        "temperature": 0
+        "temperature": 0,
+        "runtime_fixture": {
+          "schema_version": "1.0",
+          "world": {
+            "generation": 4,
+            "resources": [
+              {
+                "name": "grain_token",
+                "unit": "unit",
+                "kind": "asset",
+                "default_quantity": 0,
+                "min_quantity": 0,
+                "anchor_rate": 2
+              }
+            ],
+            "entities": [
+              {
+                "id": "treasury",
+                "type": "organization",
+                "name": "Treasury"
+              },
+              {
+                "id": "relief_granary",
+                "type": "location",
+                "name": "Relief Granary"
+              }
+            ],
+            "inventory": [
+              {
+                "entity_id": "treasury",
+                "resource_id": "grain_token",
+                "quantity": 100
+              },
+              {
+                "entity_id": "relief_granary",
+                "resource_id": "grain_token",
+                "quantity": 0
+              }
+            ],
+            "transfer_scopes": [
+              {
+                "scope": "anchored_transfer",
+                "source_entity": "treasury",
+                "target_entity": "relief_granary",
+                "resource_id": "grain_token"
+              }
+            ]
+          }
+        }
       },
       "cohorts": [
         "daming-core"
@@ -594,42 +594,6 @@
           "max_tokens": 1600,
           "max_seconds": 45
         },
-        "tool_results": [
-          {
-            "tool": "inspect_memory",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "memory_ids": [
-                "commitment-grain-v1"
-              ],
-              "records": [
-                {
-                  "id": "commitment-grain-v1",
-                  "kind": "commitment",
-                  "state": "open",
-                  "summary": "Deliver grain to the northern depot before the next review."
-                }
-              ]
-            }
-          },
-          {
-            "tool": "submit_memory_summary",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "preserved_ids": [
-                "commitment-grain-v1"
-              ]
-            }
-          }
-        ],
-        "evidence": {
-          "memory_recalled": [
-            "commitment-grain-v1"
-          ],
-          "commitment_status": "retained"
-        },
         "expect": {
           "allowed_tools": [
             "inspect_memory",
@@ -686,7 +650,42 @@
             }
           ]
         },
-        "temperature": 0
+        "temperature": 0,
+        "runtime_fixture": {
+          "schema_version": "1.0",
+          "memory": {
+            "records": [
+              {
+                "memory_id": "commitment-grain-v1",
+                "kind": "commitment",
+                "content": "Deliver grain to the northern depot before the next review.",
+                "entities": [
+                  "northern-depot"
+                ],
+                "importance": 1.0,
+                "status": "unresolved",
+                "metadata": {
+                  "topic": "grain_delivery"
+                }
+              },
+              {
+                "memory_id": "episode-banquet-v1",
+                "kind": "episodic",
+                "content": "A ceremonial banquet concluded without follow-up work.",
+                "entities": [
+                  "ceremonial-hall"
+                ],
+                "importance": 0.8,
+                "status": "active"
+              }
+            ],
+            "retrieval": {
+              "limit": 4,
+              "max_chars": 1200,
+              "unrelated_commitment_limit": 2
+            }
+          }
+        }
       },
       "cohorts": [
         "daming-core"
@@ -778,30 +777,6 @@
           "max_tokens": 1800,
           "max_seconds": 45
         },
-        "tool_results": [
-          {
-            "tool": "inspect_world",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "snapshot_generation": 7,
-              "grain_quantity": 1200,
-              "daily_net_change": -20,
-              "reserve_days": 60,
-              "emergency_floor": 300,
-              "external_purchase_available": false
-            }
-          },
-          {
-            "tool": "submit_advice",
-            "result": {
-              "ok": true,
-              "accepted": true,
-              "grounded": true
-            }
-          }
-        ],
-        "evidence": {},
         "expect": {
           "allowed_tools": [
             "inspect_world",
@@ -848,7 +823,47 @@
             }
           ]
         },
-        "temperature": 0
+        "temperature": 0,
+        "runtime_fixture": {
+          "schema_version": "1.0",
+          "world": {
+            "generation": 7,
+            "resources": [
+              {
+                "name": "grain",
+                "unit": "unit",
+                "kind": "asset",
+                "default_quantity": 0,
+                "min_quantity": 0,
+                "anchor_rate": 1
+              }
+            ],
+            "entities": [
+              {
+                "id": "central_granary",
+                "type": "location",
+                "name": "Central Granary"
+              }
+            ],
+            "inventory": [
+              {
+                "entity_id": "central_granary",
+                "resource_id": "grain",
+                "quantity": 1200
+              }
+            ],
+            "snapshots": [
+              {
+                "topic": "grain",
+                "entity_id": "central_granary",
+                "resource_id": "grain",
+                "daily_net_change": -20,
+                "emergency_floor": 300,
+                "external_purchase_available": false
+              }
+            ]
+          }
+        }
       },
       "cohorts": [
         "daming-core"

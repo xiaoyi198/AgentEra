@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.48.0**
+> 当前版本：**v0.49.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -9,7 +9,7 @@ AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的
 ## 核心能力
 
 - **多轮 Agent**：支持多轮 Function Calling、工具预算、终止条件、异常降级和调用轨迹。
-- **参数感知真实轨迹评测**：除工具顺序、轮次与预算外，可按工具调用序号校验嵌套参数，并把后续工具参数与前序工具结果做跨轮引用比较；报告仅输出脱敏状态，模型矩阵同步聚合参数契约通过率。
+- **隔离真实轨迹评测**：除工具顺序、轮次、预算和跨轮参数契约外，每个场景及矩阵重复运行都可打开独立临时 World/Memory 会话，让白名单工具读取并修改真实运行时状态，同时保持报告脱敏和状态隔离。
 - **多层记忆**：支持短期记忆、长期摘要、承诺状态、压缩恢复和跨进程持久化；v0.47.0 增加主题相关性过滤、未结承诺有限保底、意图/近重复去重与记忆类型多样性排序。
 - **持久唤醒投递**：Agent 唤醒采用有界 Outbox 与 `pending → inflight → ack/retry` 状态机，崩溃恢复提供明确的 at-least-once 语义。
 - **世界模拟器**：实体、关系、库存、数值、随机事件、延迟行动和 SQLite 持久化。
@@ -461,6 +461,19 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+
+## v0.49.0 发布说明
+
+v0.49.0 将真实模型轨迹评测从脚本化工具结果推进到隔离的 World/Memory 运行时。场景通过受限 `runtime_fixture` 声明初始世界和结构化记忆；每次场景执行以及模型矩阵的每次 repetition 都打开全新的临时会话，防止上一次运行的库存、命令或检索状态污染后续结果。
+
+- 新增 `IsolatedTrajectoryRuntimeFactory` 与每次执行独立的异步 session 生命周期；临时 SQLite 和结构化记忆只在当前评测会话内存在，结束后自动清理。
+- `recall_memory`、`inspect_memory` 使用真实 `StructuredMemoryStore` 写入与检索；`inspect_inventory`、`apply_world_command`、`inspect_world` 使用真实 `WorldState`、权威库存、价值锚和原子 `WorldCommandBus` 路径。
+- 行动场景会在转移前后读取经济不变量，动态生成资源守恒证据；矩阵重复运行测试以“源库存恰好只够一次转移”证明每次 repetition 均重新初始化。
+- `runtime_fixture` 采用固定 Schema、字段白名单、数量/文本/数值边界和安全标识符，不接受数据库路径、任意 Python import、handler、Provider URL 或配置路径；DLC 的 Unicode 实体与资源 ID 可正常使用。
+- 五个大明真实场景已移除 scripted `live.tool_results`，Agent Memory、Action、Memory Compression 和 Tianji 连接真实隔离运行时。Router 当前仍是受控终局 receipt，尚未接入生产 Router executor，文档和晋级结论保持这一边界。
+- CLI 新增 `--runtime-tools`；未显式启用 runtime session 时，声明了 `runtime_fixture` 的 live 场景会安全拒绝，不会把缺失执行器误判为成功。
+- AgentEra 四处产品版本统一升级到 `0.49.0`。
+- 发布门禁：轨迹运行时/评估/矩阵/经济不变量聚焦测试 **73 passed**；完整 Python 单元 **848 passed, 1 failed**，唯一失败为既有 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`；集成 **13 passed, 2 skipped**；前端 **102 passed**，ESLint、Vite production build、Python compileall、版本一致性和 Git Diff 检查通过。本轮未调用外部 Provider，不宣称完成真实 API 验证。
 
 ## v0.48.0 发布说明
 

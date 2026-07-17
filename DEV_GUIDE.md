@@ -4008,3 +4008,102 @@ npm run build
 ```
 
 真实 Provider 配置必须留在 Git 忽略文件中，运行报告也不得提交。矩阵只有在重复运行证据稳定且完成人工复核后才能标记晋级批准；没有人工复核时必须保持 `approved = false`，即使所有 Cell 都通过也不能声称模型已获批准。
+
+## 隔离真实轨迹 Fixture 开发指南（v0.49.0）
+
+### 最小 Fixture 示例
+
+```json
+{
+  "live": {
+    "runtime_fixture": {
+      "schema_version": "1.0",
+      "world": {
+        "generation": 4,
+        "entities": [
+          {"id": "treasury", "name": "国库"},
+          {"id": "relief_granary", "name": "赈济仓"}
+        ],
+        "resources": [
+          {
+            "name": "grain_token",
+            "unit": "券",
+            "kind": "asset",
+            "default_quantity": 0,
+            "min_quantity": 0,
+            "anchor_rate": 2
+          }
+        ],
+        "inventory": [
+          {"entity_id": "treasury", "resource_id": "grain_token", "quantity": 100},
+          {"entity_id": "relief_granary", "resource_id": "grain_token", "quantity": 0}
+        ],
+        "transfer_scopes": [
+          {
+            "scope": "anchored_transfer",
+            "source_entity": "treasury",
+            "target_entity": "relief_granary",
+            "resource_id": "grain_token"
+          }
+        ]
+      },
+      "memory": {"records": [], "retrieval": {}}
+    }
+  }
+}
+```
+
+Memory 场景在 `memory.records` 中声明受限结构化记录，并在 `memory.retrieval` 中声明查询、实体与数量/字符预算。不要把预期结果直接复制成 scripted result；终局工具应通过 `equals_tool_result` 或 receipt 校验引用真实召回结果。
+
+### CLI
+
+```powershell
+# 单 Suite：为每个场景打开独立 World/Memory session
+python -m multiagent_framework.trajectory_evaluation `
+  tests/evals/daming_live_trajectory_scenarios.json `
+  --mode live `
+  --runtime-tools `
+  --models config/models.json `
+  --output runtime/evals/live-runtime-report.json
+
+# 模型矩阵：每个 cell 的每次 repetition 都重新打开 session
+python -m multiagent_framework.trajectory_matrix `
+  tests/evals/daming_live_model_matrix.json `
+  --suite tests/evals/daming_live_trajectory_scenarios.json `
+  --runtime-tools `
+  --models config/models.json `
+  --output runtime/evals/live-runtime-matrix.json
+```
+
+真实 Provider URL 与明文 API Key 只能保存在 Git 忽略的本地 `config/models.json`；fixture、测试、文档、日志和运行报告不得包含凭据。`--runtime-tools` 不会读取 fixture 中的 Provider 或文件路径，因为这些字段在 Schema 边界即被拒绝。
+
+### 工具与安全规则
+
+1. 只使用固定白名单：`recall_memory`、`inspect_memory`、`inspect_inventory`、`apply_world_command`、`inspect_world`、`submit_report`、`submit_memory_summary`、`submit_advice`、`route_intent`。
+2. 不允许在 fixture 中加入 `database_path`、import path、handler、可执行代码、Provider URL 或配置路径；不要为了测试方便放宽未知字段检查。
+3. 每次 evaluator 执行必须打开新 session。不要缓存 `_TrajectoryRuntimeSession`、`WorldState`、Memory Store 或临时数据库，也不要在矩阵 repetition 之间复用 executor。
+4. World 变更必须走原子 `WorldCommandBus`，并用经济不变量验证统一价值锚；不要直接改 SQLite 或伪造 `_evaluation_evidence`。
+5. 终局 receipt 必须核验当前会话中的先前结果。新增工具时同时补充白名单、参数边界、脱敏失败、真实执行测试和 session 隔离测试。
+6. Router 当前只是受控 receipt。接入生产 Router executor 前，测试和文档必须明确该边界。
+
+### 回归命令
+
+```powershell
+python -m pytest -q -p no:cacheprovider `
+  tests/unit/test_trajectory_runtime.py `
+  tests/unit/test_trajectory_evaluation.py `
+  tests/unit/test_trajectory_matrix.py `
+  tests/unit/test_economic_invariants.py
+python -m pytest -q -p no:cacheprovider tests/unit
+python -m pytest -q -p no:cacheprovider tests/integration
+python -m compileall -q multiagent_framework routers tests
+python -m pytest -q -p no:cacheprovider tests/unit/test_version_consistency.py
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+cd ..
+git diff --check
+```
+
+已知 LLM deadline 浮点边界若仍是唯一失败，应如实记录；不得修改 deadline 语义、扩大断言或吞掉异常来制造全绿。

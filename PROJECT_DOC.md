@@ -2739,3 +2739,40 @@ Router 的 `_route_target()` 采用证据优先级：模型实际工具参数 �
 - 模型矩阵 Smoke：9/9 cells passed，所有 Cell 参数契约率为 1.0；未进行人工复核，因此 `approved = false`。
 - 完整 Python：855 passed, 2 skipped, 1 known failure；唯一失败为既有 LLM HTTP deadline 浮点边界。
 - Frontend：102 passed；ESLint、Vite production build、Python compileall 和版本一致性检查通过。
+
+## 隔离真实轨迹运行时架构（v0.49.0）
+
+### 每次执行独立的 Session 生命周期
+
+`TrajectoryEvaluator` 接受 `live_tool_session_factory`。在一次 `_execute()` 开始时，它通过 `AsyncExitStack` 打开会话并取得本次专用的 `LiveToolExecutor`；TurnEngine 结束或抛出异常时都会退出上下文并清理资源。旧式单例 `live_tool_executor` 与 session factory 互斥，避免同时存在两套状态所有权。
+
+`TrajectoryMatrixRunner` 将同一个 factory 传给每个 evaluator，但 factory 的 `__call__()` 在每个场景、每个 repetition 中都会新建 session。因而复用的是创建策略，不是 World、Memory、SQLite 连接或命令计数器。重复运行不会继承上一轮库存和记忆访问状态。
+
+### 受控 `runtime_fixture` 边界
+
+live 场景可在执行配置中声明 `runtime_fixture.schema_version = "1.0"`，并仅使用两个顶层域：
+
+- `world`：受限的 generation、entities、resources、inventory、transfer_scopes 与 snapshots。
+- `memory`：受限的 records 与 retrieval 参数。
+
+`IsolatedTrajectoryRuntimeFactory` 为每次会话创建临时目录和独立 SQLite。fixture 不接受数据库路径、Python import、任意 handler、Provider URL、模型配置路径或其他未知字段；数组规模、字符串长度、数值有限性、布尔类型和标识符均在构造运行时前校验。安全标识符支持 Unicode，因此 DLC 可以直接使用中文实体、资源和作用域 ID。
+
+### 真实 World 与 Memory 执行路径
+
+固定白名单工具为 `recall_memory`、`inspect_memory`、`inspect_inventory`、`apply_world_command`、`inspect_world`、`submit_report`、`submit_memory_summary`、`submit_advice`、`route_intent`。不在白名单内的名称返回固定脱敏拒绝结果。
+
+Memory fixture 会先通过 `StructuredMemoryStore.remember()` 写入，召回时再调用 `StructuredMemoryStore.retrieve()`；评测不会把 fixture 原样伪装成工具结果。World fixture 会构造真实 `WorldState`、`Entity` 和 `ResourceDefinition`，库存读取采用权威 Inventory API。`apply_world_command` 通过 `WorldCommandBus.execute_batch(..., atomic=True)` 执行借贷双边转移，并在前后调用 `get_economic_invariants()` 生成动态资源守恒证据。
+
+终局报告、记忆摘要和建议 receipt 必须引用当前 session 先前产生的真实工具结果，虚构 ID、代次或库存证据会被拒绝。Router 场景目前只验证模型提交的 `target` / `reason_code` 并返回受控 receipt；它尚未调用生产 Router executor，因此不能据此宣称生产路由实现已经通过真实运行时评估。
+
+### 故障与脱敏
+
+声明了 `runtime_fixture`、但没有 session factory 且没有 scripted result 的 live 执行会立即安全失败。fixture 打开失败统一包装为固定 `TrajectoryEvaluationError`，报告不包含临时路径、原始异常、Prompt、消息正文、Provider URL、API Key、实际参数值或期望参数值。运行报告仍应写入 Git 忽略的 `runtime/` 目录。
+
+### v0.49.0 验证证据
+
+- 轨迹 runtime/evaluator/matrix/economic invariants 聚焦回归：**73 passed**。
+- Python 单元：**848 passed, 1 failed**；唯一失败为既有 LLM deadline 浮点表示边界 `0.2000000000007276 <= 0.2`，本轮未改动 deadline 语义。
+- Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
+- Python compileall、版本一致性、ESLint、Vite production build 与 `git diff --check` 通过。
+- 本轮没有调用外部 Provider；这些证据证明隔离运行时和离线门禁，不代表真实 API 连通性或人工模型晋级复核已经完成。

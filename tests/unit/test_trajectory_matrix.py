@@ -9,6 +9,7 @@ import pytest
 from multiagent_framework.llm_client import LLMResponse
 from multiagent_framework.trajectory_evaluation import load_trajectory_suite, write_report_atomic
 from multiagent_framework.trajectory_matrix import load_matrix_config
+from multiagent_framework.trajectory_runtime import IsolatedTrajectoryRuntimeFactory
 from multiagent_framework.trajectory_matrix import (
     REVIEW_DIMENSIONS,
     TrajectoryMatrixError,
@@ -126,12 +127,19 @@ def matrix(**overrides):
     return value
 
 
-def run(matrix_value=None, suite_value=None, gateway=None, reviews=None):
+def run(
+    matrix_value=None,
+    suite_value=None,
+    gateway=None,
+    reviews=None,
+    runtime_factory=None,
+):
     gateway = gateway or MatrixGateway()
     result = asyncio.run(
-        TrajectoryMatrixRunner(gateway=gateway).evaluate(
-            matrix_value or matrix(), suite_value or suite(), reviews=reviews
-        )
+        TrajectoryMatrixRunner(
+            gateway=gateway,
+            live_tool_session_factory=runtime_factory,
+        ).evaluate(matrix_value or matrix(), suite_value or suite(), reviews=reviews)
     )
     return result, gateway
 
@@ -359,6 +367,7 @@ def test_repository_live_suite_covers_all_model_tasks_with_fake_live_gateway():
         matrix_value=matrix_value,
         suite_value=suite_value,
         gateway=SequenceGateway(),
+        runtime_factory=IsolatedTrajectoryRuntimeFactory(),
     )
 
     assert result.passed
