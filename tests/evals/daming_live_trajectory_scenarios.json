@@ -353,7 +353,23 @@
               "urgency": "normal",
               "intent_id": "router-eval-intent",
               "chain_id": "router-eval-chain"
-            }
+            },
+            "locations": [
+              {
+                "id": "capital",
+                "name": "Capital",
+                "x": 0,
+                "y": 0,
+                "region": "central"
+              },
+              {
+                "id": "remote",
+                "name": "Remote Office District",
+                "x": 1000,
+                "y": 0,
+                "region": "remote"
+              }
+            ]
           }
         }
       },

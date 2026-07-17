@@ -13,6 +13,7 @@ from multiagent_framework.trajectory_matrix import TrajectoryMatrixRunner
 from multiagent_framework.trajectory_runtime import (
     IsolatedTrajectoryRuntimeFactory,
     TrajectoryRuntimeError,
+    _TrajectoryRuntimeSession,
 )
 
 
@@ -251,6 +252,135 @@ def test_router_tool_executes_production_router_and_resets_idempotency_per_sessi
     assert fresh == accepted
 
 
+def test_router_delivery_receipt_comes_from_real_outbox_and_restore_replays_pending(tmp_path):
+    scenario = _scenario("live-router-ambiguous-intent")
+    fixture = scenario["live"]["runtime_fixture"]
+    session = _TrajectoryRuntimeSession.open(
+        fixture, database_path=tmp_path / "first-world.sqlite3",
+    )
+
+    async def run():
+        accepted = await session.execute(scenario, "route_intent", {
+            "target": "hubu",
+            "reason_code": "fiscal_reserve",
+        }, {})
+        duplicate = await session.execute(scenario, "route_intent", {
+            "target": "hubu",
+            "reason_code": "fiscal_reserve",
+        }, {})
+        rejected = await session.execute(scenario, "route_intent", {
+            "target": "ghost_office",
+            "reason_code": "fiscal_reserve",
+        }, {})
+        return accepted, duplicate, rejected
+
+    accepted, duplicate, rejected = asyncio.run(run())
+    runtime = session.router_runtime
+    assert runtime is not None
+    outbox = runtime.orchestrator._pending_wakeups
+    assert accepted["delivery_channel"] == "wakeup_outbox"
+    assert accepted["delivery_status"] == "pending"
+    assert accepted["delivery_attempts"] == 0
+    assert outbox.total_count == 1
+    entry = outbox.get(accepted["delivery_id"])
+    assert entry is not None
+    assert entry["target"] == accepted["target"]
+    assert entry["chain_id"] == accepted["chain_id"]
+    assert entry["status"] == accepted["delivery_status"]
+    assert duplicate["error_code"] == "router_route_rejected"
+    assert rejected["error_code"] == "router_route_rejected"
+    assert outbox.total_count == 1
+
+    claimed = outbox.claim_pending()
+    assert [item["delivery_id"] for item in claimed] == [accepted["delivery_id"]]
+    assert outbox.inflight_count == 1
+    snapshot = runtime.orchestrator.runtime_snapshot()
+
+    restored_session = _TrajectoryRuntimeSession.open(
+        fixture, database_path=tmp_path / "restored-world.sqlite3",
+    )
+    restored_runtime = restored_session.router_runtime
+    assert restored_runtime is not None
+    restored_runtime.orchestrator.restore_runtime_snapshot(snapshot)
+    restored_outbox = restored_runtime.orchestrator._pending_wakeups
+    restored_entry = restored_outbox.get(accepted["delivery_id"])
+    assert restored_entry is not None
+    assert restored_entry["status"] == "pending"
+    assert restored_entry["attempts"] == 1
+    assert restored_outbox.pending_count == 1
+    assert restored_outbox.inflight_count == 0
+
+
+def test_router_delivery_uses_real_timer_for_remote_reachable_target(tmp_path):
+    scenario = _scenario("live-router-ambiguous-intent")
+    fixture = scenario["live"]["runtime_fixture"]
+    fixture["router"]["agents"].append({
+        "id": "regional_finance",
+        "name": "Regional Finance Office",
+        "rank": 8,
+        "location_id": "remote",
+        "role": "finance",
+        "agent_type": "institution",
+        "superior_id": "central_router",
+        "personality_seed": "steady",
+        "enabled": True,
+    })
+    session = _TrajectoryRuntimeSession.open(
+        fixture, database_path=tmp_path / "world.sqlite3",
+    )
+
+    result = asyncio.run(session.execute(scenario, "route_intent", {
+        "target": "regional_finance",
+        "reason_code": "fiscal_reserve",
+    }, {}))
+
+    runtime = session.router_runtime
+    assert runtime is not None
+    timers = runtime.orchestrator.timers.get_in_transit()
+    assert result["accepted"] is True
+    assert result["delivery_channel"] == "timer"
+    assert result["delivery_status"] == "scheduled"
+    assert result["delivery_attempts"] == 0
+    assert len(timers) == 1
+    assert timers[0].timer_id == result["delivery_id"]
+    assert timers[0].target_agent == "regional_finance"
+    assert runtime.orchestrator._pending_wakeups.total_count == 0
+
+
+def test_router_delivery_failure_is_fixed_and_secret_free(tmp_path):
+    scenario = _scenario("live-router-ambiguous-intent")
+    session = _TrajectoryRuntimeSession.open(
+        scenario["live"]["runtime_fixture"],
+        database_path=tmp_path / "world.sqlite3",
+    )
+    runtime = session.router_runtime
+    assert runtime is not None
+
+    async def reject_execution(commands):
+        return [(commands[0], {
+            "ok": False,
+            "error": "provider-secret prompt body C:/private/runtime.sqlite3",
+        })]
+
+    runtime.orchestrator._execute_commands = reject_execution
+    result = asyncio.run(session.execute(scenario, "route_intent", {
+        "target": "hubu",
+        "reason_code": "fiscal_reserve",
+    }, {}))
+
+    assert result == {
+        "ok": False,
+        "accepted": False,
+        "error_code": "orchestrator_delivery_rejected",
+        "error": "runtime tool rejected",
+    }
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "provider-secret" not in serialized
+    assert "prompt body" not in serialized
+    assert "runtime.sqlite3" not in serialized
+    assert runtime.orchestrator._pending_wakeups.total_count == 0
+
+
 def test_router_fixture_rejects_invalid_graphs_sources_and_fields():
     base = _scenario("live-router-ambiguous-intent")["live"]["runtime_fixture"]
     invalid_fixtures = []
@@ -274,6 +404,20 @@ def test_router_fixture_rejects_invalid_graphs_sources_and_fields():
     unknown_field = deepcopy(base)
     unknown_field["router"]["provider_url"] = "https://should-not-be-accepted.invalid"
     invalid_fixtures.append(unknown_field)
+
+    duplicate_location = deepcopy(base)
+    duplicate_location["router"]["locations"].append(
+        deepcopy(duplicate_location["router"]["locations"][0])
+    )
+    invalid_fixtures.append(duplicate_location)
+
+    undeclared_location = deepcopy(base)
+    undeclared_location["router"]["agents"][2]["location_id"] = "missing_location"
+    invalid_fixtures.append(undeclared_location)
+
+    unsafe_location = deepcopy(base)
+    unsafe_location["router"]["locations"][0]["database_path"] = "C:/private/world.sqlite3"
+    invalid_fixtures.append(unsafe_location)
 
     async def open_fixture(fixture):
         async with IsolatedTrajectoryRuntimeFactory()({}, {"runtime_fixture": fixture}):

@@ -1,6 +1,6 @@
 # AgentEra 世界模拟器
 
-> 当前版本：**v0.50.0**
+> 当前版本：**v0.51.0**
 
 AgentEra 是一个基于 **FastAPI + React + SQLite + LLM Function Calling** 的多 Agent 世界模拟器。内置“大明朝堂”内容包，玩家可以扮演皇帝处理奏折、下达旨意，并观察官员、机构、资源、关系和延迟事件在持续世界中的演化。
 
@@ -461,6 +461,18 @@ python -m pytest -q tests/integration/test_external_api_connection.py
 发布时四处版本必须保持一致。
 
 
+
+## v0.51.0 发布说明
+
+v0.51.0 将真实 Router 轨迹评测从 `RouterAgent → RouterCommand` 继续推进到生产 Orchestrator 的命令执行与耐久唤醒投递边界。外层评测模型仍只调用一次 `route_intent`；生产 Router 生成命令后，隔离运行时调用 `Orchestrator._execute_commands()`，经 `command_to_fc_args()`、`dispatch_fc()` 和 `handle_wake_agent()` 写入真实 `WakeupOutboxRuntime`，或按生产距离规则进入 `TimerSystem`。
+
+- `runtime_fixture.router` 新增受限 `locations` 坐标声明。CourtGraph 绑定当前隔离 WorldState 后按生产距离算法决定立即 Outbox 投递或延迟 Timer；位置仅允许 ID、名称、坐标和区域，不接受数据库路径、Provider 配置、import path 或 handler。
+- 成功 receipt 的 `delivery_channel`、`delivery_id`、`delivery_status` 和 `delivery_attempts` 来自生产执行结果及真实 Outbox entry，不从模型参数或 fixture 伪造。立即投递必须产生唯一 `pending` entry，延迟投递必须产生真实 timer ID。
+- 同一 session 的重复 intent、未知目标、自路由和不可达目标不会增加 Outbox；新 session 会获得独立 Router、Orchestrator、Outbox、ChainLog 与执行幂等状态。矩阵 repetition 继续逐次重建完整隔离运行时。
+- 恢复回归验证 Outbox 的 `inflight` entry 经 `runtime_snapshot()` / `restore_runtime_snapshot()` 后回到 `pending`，保留 delivery ID 与 attempts，可在重启后安全重放。Orchestrator 失败统一映射为固定 `orchestrator_delivery_rejected`，不向报告暴露原始错误、Prompt、payload 或临时路径。
+- 当前可证明边界是 **`RouterAgent → RouterCommand → Orchestrator → dispatch_fc(wake_agent) → Wakeup Outbox pending / Timer scheduled`**。本版本不宣称 Agent 已 claim、执行或 ACK，也不宣称已经产生后续世界副作用、完成真实 Provider 验证或完成人工模型晋级。
+- AgentEra 四处产品版本统一升级到 `0.51.0`。
+- 发布门禁：Router/Orchestrator/Wakeup 轨迹聚焦测试 **103 passed**；完整 Python 单元 **855 passed, 1 failed**，唯一失败仍为既有 LLM deadline 浮点边界 `0.2000000000007276 <= 0.2`；集成 **13 passed, 2 skipped**；前端 **102 passed**，ESLint 与 Vite production build 通过。本轮未调用外部 Provider。
 
 ## v0.50.0 发布说明
 

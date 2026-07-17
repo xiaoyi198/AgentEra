@@ -17,10 +17,13 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any, AsyncIterator, Mapping
 
+from .chain_log import ChainLog
 from .court_graph import CourtGraph, Official
 from .llm_client import LLMResponse
 from .memory_store import StructuredMemoryStore
+from .orchestrator import Orchestrator
 from .router import RouterAgent
+from .timer_system import TimerSystem
 from .trajectory_evaluation import LiveToolExecutor
 from .types import AgentAction, RouterCommandType
 from .world_commands import WorldCommand, WorldCommandType
@@ -113,6 +116,7 @@ class _RouterRuntime:
     router: RouterAgent
     replay_llm: _RouterReplayLLM
     request: _RouterRequest
+    orchestrator: Orchestrator
 
 
 class IsolatedTrajectoryRuntimeFactory:
@@ -177,7 +181,7 @@ class _TrajectoryRuntimeSession:
             "runtime_fixture.world",
         )
         _allow_keys(memory_fixture, {"records", "retrieval"}, "runtime_fixture.memory")
-        _allow_keys(router_fixture, {"agents", "request"}, "runtime_fixture.router")
+        _allow_keys(router_fixture, {"agents", "locations", "request"}, "runtime_fixture.router")
 
         world = WorldState(str(database_path))
         resources = _bounded_list(world_fixture.get("resources", []), "world.resources")
@@ -306,6 +310,7 @@ class _TrajectoryRuntimeSession:
             _build_router_runtime(
                 router_fixture,
                 database_path=database_path.with_name("router.sqlite3"),
+                world=world,
             )
             if router_fixture
             else None
@@ -595,6 +600,47 @@ class _TrajectoryRuntimeSession:
         command = commands[0]
         if command.command_type != RouterCommandType.WAKE_AGENT or command.target != target:
             return _rejected("router_command_mismatch")
+
+        outbox = runtime.orchestrator._pending_wakeups
+        before_delivery_ids = {
+            str(entry.get("delivery_id", ""))
+            for entry in outbox.snapshot().get("entries", [])
+        }
+        execution_results = await runtime.orchestrator._execute_commands([command])
+        if len(execution_results) != 1:
+            return _rejected("orchestrator_delivery_rejected")
+        executed_command, execution_result = execution_results[0]
+        if executed_command is not command or not execution_result.get("ok"):
+            return _rejected("orchestrator_delivery_rejected")
+
+        delivery_channel = ""
+        delivery_id = ""
+        delivery_status = ""
+        delivery_attempts = 0
+        if execution_result.get("queued") is True:
+            new_entries = [
+                entry
+                for entry in outbox.snapshot().get("entries", [])
+                if str(entry.get("delivery_id", "")) not in before_delivery_ids
+                and entry.get("target") == command.target
+                and entry.get("chain_id") == command.chain_id
+            ]
+            if len(new_entries) != 1:
+                return _rejected("orchestrator_delivery_rejected")
+            delivery = new_entries[0]
+            delivery_channel = "wakeup_outbox"
+            delivery_id = str(delivery.get("delivery_id", ""))
+            delivery_status = str(delivery.get("status", ""))
+            delivery_attempts = int(delivery.get("attempts", 0))
+            if not delivery_id or delivery_status != "pending":
+                return _rejected("orchestrator_delivery_rejected")
+        elif execution_result.get("timer_id"):
+            delivery_channel = "timer"
+            delivery_id = str(execution_result.get("timer_id", ""))
+            delivery_status = "scheduled"
+        else:
+            return _rejected("orchestrator_delivery_rejected")
+
         return {
             "ok": True,
             "accepted": True,
@@ -604,10 +650,16 @@ class _TrajectoryRuntimeSession:
             "route_strategy": str(command.metadata.get("route_strategy", "")),
             "intent_id": command.intent_id,
             "chain_id": command.chain_id,
+            "delivery_channel": delivery_channel,
+            "delivery_id": delivery_id,
+            "delivery_status": delivery_status,
+            "delivery_attempts": delivery_attempts,
             "_evaluation_evidence": {
                 "route_target": command.target,
                 "router_command_type": command.command_type.value,
                 "router_route_strategy": str(command.metadata.get("route_strategy", "")),
+                "orchestrator_delivery_channel": delivery_channel,
+                "orchestrator_delivery_status": delivery_status,
             },
         }
 
@@ -626,7 +678,41 @@ def _build_router_runtime(
     fixture: Mapping[str, Any],
     *,
     database_path: Path,
+    world: WorldState,
 ) -> _RouterRuntime:
+    raw_locations = _bounded_list(fixture.get("locations", []), "router.locations")
+    location_ids: set[str] = set()
+    for index, raw in enumerate(raw_locations):
+        item = _mapping(raw, f"router.locations[{index}]")
+        _allow_keys(
+            item,
+            {"id", "name", "x", "y", "region"},
+            f"router.locations[{index}]",
+        )
+        location_id = _identifier(item.get("id"), f"router.locations[{index}].id")
+        if location_id in location_ids:
+            raise TrajectoryRuntimeError("router location ids must be unique")
+        location_ids.add(location_id)
+        world.upsert_entity(Entity(
+            id=location_id,
+            type="location",
+            name=_text(
+                item.get("name", location_id),
+                f"router.locations[{index}].name",
+                maximum=128,
+            ),
+            metadata={
+                "x": _finite(item.get("x"), f"router.locations[{index}].x"),
+                "y": _finite(item.get("y"), f"router.locations[{index}].y"),
+                "region": _text(
+                    item.get("region", ""),
+                    f"router.locations[{index}].region",
+                    maximum=96,
+                    required=False,
+                ),
+            },
+        ))
+
     raw_agents = _bounded_list(fixture.get("agents", []), "router.agents")
     if len(raw_agents) < 2:
         raise TrajectoryRuntimeError("router.agents requires at least two entries")
@@ -665,14 +751,17 @@ def _build_router_runtime(
         parent_ids[agent_id] = superior_id
         if enabled:
             enabled_ids.add(agent_id)
+        location_id = _identifier(
+            item.get("location_id"),
+            f"router.agents[{index}].location_id",
+        )
+        if location_id not in location_ids:
+            raise TrajectoryRuntimeError("router agent location is not declared")
         agents.append(Official(
             id=agent_id,
             name=_text(item.get("name"), f"router.agents[{index}].name", maximum=128),
             rank=_bounded_int(item.get("rank", 1), f"router.agents[{index}].rank", 0, 1000),
-            location_id=_identifier(
-                item.get("location_id"),
-                f"router.agents[{index}].location_id",
-            ),
+            location_id=location_id,
             role=_identifier(item.get("role", "actor"), f"router.agents[{index}].role"),
             agent_type=_identifier(
                 item.get("agent_type", "actor"),
@@ -734,12 +823,21 @@ def _build_router_runtime(
         chain_id=_identifier(request_raw.get("chain_id"), "router.request.chain_id"),
     )
     court = CourtGraph(str(database_path))
+    court.set_world_state(world)
     court.bulk_load_officials(agents)
     replay_llm = _RouterReplayLLM()
+    router = RouterAgent(replay_llm, court)
+    orchestrator = Orchestrator(
+        court_graph=court,
+        timer_system=TimerSystem(),
+        chain_log=ChainLog(str(database_path.with_name("chain_log.jsonl"))),
+        router=router,
+    )
     return _RouterRuntime(
-        router=RouterAgent(replay_llm, court),
+        router=router,
         replay_llm=replay_llm,
         request=request,
+        orchestrator=orchestrator,
     )
 
 

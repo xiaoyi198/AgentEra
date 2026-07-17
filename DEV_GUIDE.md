@@ -4009,7 +4009,7 @@ npm run build
 
 真实 Provider 配置必须留在 Git 忽略文件中，运行报告也不得提交。矩阵只有在重复运行证据稳定且完成人工复核后才能标记晋级批准；没有人工复核时必须保持 `approved = false`，即使所有 Cell 都通过也不能声称模型已获批准。
 
-## 隔离真实轨迹 Fixture 开发指南（v0.50.0）
+## 隔离真实轨迹 Fixture 开发指南（v0.51.0）
 
 ### 最小 Fixture 示例
 
@@ -4067,6 +4067,9 @@ Router 场景在 `runtime_fixture.router` 中声明：
       {"id": "petition_intake", "name": "Petition Intake", "rank": 1, "location_id": "capital", "role": "intake", "agent_type": "institution", "superior_id": "central_router", "personality_seed": "steady", "enabled": true},
       {"id": "hubu", "name": "Finance Office", "rank": 10, "location_id": "capital", "role": "finance", "agent_type": "institution", "superior_id": "central_router", "personality_seed": "steady", "enabled": true}
     ],
+    "locations": [
+      {"id": "capital", "name": "Capital", "x": 0, "y": 0, "region": "central"}
+    ],
     "request": {
       "source_agent_id": "petition_intake",
       "action": "route_petition",
@@ -4080,9 +4083,11 @@ Router 场景在 `runtime_fixture.router` 中声明：
 }
 ```
 
-至少声明两个 Agent；全部 ID 必须唯一，上级必须存在且层级不得自引用或成环，request source 必须存在并启用。用于预期选择的目标必须进入生产 Router 的最多 12 个候选中，并与 source 在启用层级图中可达。
+至少声明两个 Agent；全部 ID 必须唯一，上级必须存在且层级不得自引用或成环，request source 必须存在并启用。每个 `location_id` 必须引用 `router.locations` 中的有界坐标声明。用于预期选择的目标必须进入生产 Router 的最多 12 个候选中，并与 source 在启用层级图中可达。
 
-外层评测模型只调用一次 `route_intent`。runtime 的一次性 replay adapter 把该模型已经选择的目标转换为生产 Router 的 `wake_agent` FC，不进行第二次外部模型调用。成功结果必须来自 `RouterCommand.target`；拒绝结果不得转发 `RouterAgent.dead_letters`。测试边界止于 `RouterAgent → RouterCommand`，不要把它描述为 Orchestrator 投递或 Agent 唤醒完成。
+外层评测模型只调用一次 `route_intent`。runtime 的一次性 replay adapter 把该模型已经选择的目标转换为生产 Router 的 `wake_agent` FC，不进行第二次外部模型调用。成功结果先核验 `RouterCommand.target`，随后调用生产 `Orchestrator._execute_commands()`，经 FC bridge 进入真实 `WakeupOutboxRuntime` 或 `TimerSystem`。receipt 的 delivery 字段必须读取生产执行结果与 Outbox entry；拒绝结果不得转发 `RouterAgent.dead_letters` 或 Orchestrator 原始异常。
+
+当前可声明的边界是 `RouterAgent → RouterCommand → Orchestrator → Wakeup Outbox pending / Timer scheduled`。只有拿到 claim、Agent 调用和 ACK/retry 的独立证据后，才能继续声称 Agent 已唤醒或投递完成；Outbox pending 本身不等于 Agent 已执行。
 
 ### CLI
 
@@ -4113,7 +4118,8 @@ python -m multiagent_framework.trajectory_matrix `
 3. 每次 evaluator 执行必须打开新 session。不要缓存 `_TrajectoryRuntimeSession`、`WorldState`、Memory Store 或临时数据库，也不要在矩阵 repetition 之间复用 executor。
 4. World 变更必须走原子 `WorldCommandBus`，并用经济不变量验证统一价值锚；不要直接改 SQLite 或伪造 `_evaluation_evidence`。
 5. 终局 receipt 必须核验当前会话中的先前结果。新增工具时同时补充白名单、参数边界、脱敏失败、真实执行测试和 session 隔离测试。
-6. Router receipt 必须来自生产 `RouterCommand`；replay adapter 不得触发第二次 Provider 调用。测试和文档必须明确当前只覆盖 `RouterAgent → RouterCommand`，不覆盖 Orchestrator 投递和后续世界副作用。
+6. Router receipt 必须来自生产 `RouterCommand` 与 Orchestrator delivery；replay adapter 不得触发第二次 Provider 调用。立即投递必须核验真实 Outbox `pending` entry，延迟投递必须核验真实 timer ID；不得把 fixture 或模型参数伪装为 delivery evidence。
+7. Snapshot/restore 测试必须证明 `inflight` delivery 在新 Orchestrator 中恢复为 `pending` 且保留 attempts。文档必须明确当前不覆盖 Agent claim/执行/ACK 和后续世界副作用。
 
 ### 回归命令
 
@@ -4123,6 +4129,8 @@ python -m pytest -q -p no:cacheprovider `
   tests/unit/test_trajectory_evaluation.py `
   tests/unit/test_trajectory_matrix.py `
   tests/unit/test_router.py `
+  tests/unit/test_wakeup_runtime.py `
+  tests/unit/test_wakeup_orchestrator.py `
   tests/unit/test_economic_invariants.py
 python -m pytest -q -p no:cacheprovider tests/unit
 python -m pytest -q -p no:cacheprovider tests/integration
@@ -4137,3 +4145,5 @@ git diff --check
 ```
 
 已知 LLM deadline 浮点边界若仍是唯一失败，应如实记录；不得修改 deadline 语义、扩大断言或吞掉异常来制造全绿。
+
+v0.51.0 本地证据：Router/Orchestrator/Wakeup 聚焦回归 **103 passed**；完整 Python 单元 **855 passed, 1 failed**（仅上述既有 deadline 浮点边界）；Integration **13 passed, 2 skipped**；Frontend **102 passed**，lint/build 通过。本轮未调用外部 Provider，因此不得据此声明真实 API、Agent ACK 或人工模型晋级完成。

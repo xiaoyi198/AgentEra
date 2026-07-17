@@ -2801,3 +2801,47 @@ Memory fixture 会先通过 `StructuredMemoryStore.remember()` 写入，召回�
 - Integration：**13 passed, 2 skipped**；Frontend：**102 passed**。
 - Python compileall、版本一致性、ESLint、Vite production build 与 `git diff --check` 通过。
 - 本轮没有调用外部 Provider；这些证据只证明离线 replay 到生产 `RouterCommand` 的边界，不代表真实 API 连通性、Orchestrator 副作用或人工模型晋级复核已经完成。
+
+## 生产 Orchestrator 轨迹投递边界（v0.51.0）
+
+### 执行链
+
+Router 轨迹场景继续由外层模型单次调用 `route_intent(target, reason_code)`。一次性 replay adapter 只负责把已作出的目标选择交给生产 `RouterAgent.process_batch()`；生成唯一 `RouterCommand` 后，隔离 session 继续调用生产 `Orchestrator._execute_commands()`。命令通过 `command_type_to_fc_name()`、`command_to_fc_args()` 与 `dispatch_fc()` 到达 `handle_wake_agent()`，不在评测代码中复制 Router 或 FC 执行语义。
+
+立即通信的完整可验证链为：
+
+```text
+route_intent
+→ RouterAgent.process_batch
+→ RouterCommand(WAKE_AGENT)
+→ Orchestrator._execute_commands
+→ dispatch_fc("wake_agent")
+→ handle_wake_agent
+→ WakeupOutboxRuntime.enqueue
+→ pending delivery entry
+```
+
+若生产 `CourtGraph.get_distance()` 判定通信需要延迟，则同一执行链进入真实 `TimerSystem.schedule()`，receipt 标记 `delivery_channel=timer` 与 `delivery_status=scheduled`。评测不把延迟投递伪装为已经进入 Outbox。
+
+### 有界位置 Fixture
+
+`runtime_fixture.router.locations` 只允许 `id`、`name`、`x`、`y` 与 `region`。每个 Router Agent 的 `location_id` 必须引用已声明位置；位置被写入当前隔离 `WorldState`，并通过 `CourtGraph.set_world_state()` 参与生产距离计算。重复位置、未声明位置、未知字段、任意路径、Provider 配置、import path 和 handler 均在 session 打开阶段拒绝。
+
+### Receipt 与恢复证据
+
+成功 receipt 的 `delivery_channel`、`delivery_id`、`delivery_status`、`delivery_attempts` 来自 `_execute_commands()` 的生产结果和执行后 Outbox snapshot。Outbox 立即投递必须新增一个与 `RouterCommand.target`、`chain_id` 一致的真实 `pending` entry；无法找到唯一 entry 时固定拒绝，不回显内部执行错误。无效目标、重复 intent、自路由和不可达目标不会产生新 delivery。
+
+Outbox snapshot/restore 回归覆盖 crash recovery：执行后将 entry claim 为 `inflight`，保存 `runtime_snapshot()`，在新隔离 Orchestrator 中恢复后 entry 回到 `pending`，保留稳定 delivery ID 与 attempts。该证据证明耐久投递可重放，但尚未证明 Agent 已被调用或 ACK。
+
+### 安全边界与未覆盖范围
+
+执行失败统一返回 `orchestrator_delivery_rejected`，报告不包含原始异常、Prompt、消息 payload、Provider URL、API Key、数据库路径或 dead-letter 原因。每个 evaluator 场景和矩阵 repetition 均创建新的 WorldState、CourtGraph、RouterAgent、Orchestrator、Wakeup Outbox、ChainLog 与执行幂等集合。
+
+v0.51.0 可证明的生产边界止于 `Wakeup Outbox pending` 或 `Timer scheduled`。它不证明 Outbox 已 claim、Agent 已执行、投递已 ACK、失败已 retry，亦不证明后续 Agent 行动产生世界副作用；真实 Provider 连通性与人工模型晋级复核仍是独立门禁。
+
+### v0.51.0 验证证据
+
+- Router/Orchestrator/Wakeup 轨迹聚焦回归：**103 passed**。
+- Python 单元：**855 passed, 1 failed**；唯一失败仍为既有 LLM deadline 浮点表示边界 `0.2000000000007276 <= 0.2`，未修改 deadline 语义、断言或异常处理。
+- Integration：**13 passed, 2 skipped**；Frontend：**102 passed**，ESLint 与 Vite production build 通过。
+- 本轮未调用外部 Provider；以上证据只证明离线 replay 到生产耐久投递边界，不代表真实 API、Agent ACK、世界副作用或人工晋级已经完成。
